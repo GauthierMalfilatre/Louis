@@ -6,7 +6,7 @@
 ##
 
 class User:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str = "Anonymous") -> None:
         """ Initialize a user """
         self.__name: str = name
         self.__role: str = "user"
@@ -15,7 +15,7 @@ class User:
     def name(self) -> str:
         return self.__name
 
-    @property.setter
+    @name.setter
     def name(self, name: str) -> None:
         if name and isinstance(name, str):
             self.__name = name

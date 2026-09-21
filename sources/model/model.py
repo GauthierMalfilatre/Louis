@@ -33,7 +33,7 @@ class Model:
         if not self.__uri or not self.__model:
             raise ModelException("Bad uri or model name")
         self.__history.append({
-            "role": "user",
+            "role": user.role if user else "user",
             "content": content
         })
         response = requests.post(
