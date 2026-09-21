@@ -35,6 +35,27 @@ class Model:
         except requests.RequestException:
             raise ModelException(f"Unknown model {model}")
 
+    def switch(self, *, newuri = None, newmodel: str = None) -> None:
+        """ Switch model """
+        olduri, oldmodel = self.__uri, self.__model
+        if newuri:
+            self.__uri = newuri
+        if newmodel:
+            self.__model = newmodel
+        try:
+            res = requests.post(
+                f"{self.__uri}/api/show",
+                json={"model": self.__model},
+                timeout=5.0
+            )
+            if res.status_code != 200:
+                self.__uri, self.__model = olduri, oldmodel
+                raise ModelException(f"Unknown model {newmodel}")
+        except requests.RequestException:
+            self.__uri, self.__model = olduri, oldmodel
+            raise ModelException(f"Unknown model {newmodel}")
+
+
     def post(
             self: "Model",
             session: Session,

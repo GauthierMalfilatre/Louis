@@ -40,7 +40,7 @@ class CommandTree:
         keyword = keyword.removeprefix(self.__prefix)
         for cmd in self.__commands:
             if cmd.match(keyword):
-                return cmd.handler("".join(keyword[1:]), manager)
+                return cmd.handler("".join(keyword_[1:]), manager)
         return False
 
     def register(self, command: Command) -> "CommandTree":

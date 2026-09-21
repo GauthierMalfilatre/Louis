@@ -9,6 +9,7 @@ from commands.command import CommandTree
 from commands.sub.command_pong import PongCommand
 from commands.sub.command_exit import ExitCommand
 from commands.sub.command_newsession import NewSessionCommand
+from commands.sub.command_model import NewModelCommand
 from model.model import Model, ModelException
 from interface.interface import CLI, Interface
 from database.database import Database
@@ -51,7 +52,8 @@ class App:
         self.__commandTree: CommandTree = CommandTree()\
             .register(PongCommand())\
             .register(ExitCommand())\
-            .register(NewSessionCommand())
+            .register(NewSessionCommand())\
+            .register(NewModelCommand())
 
         self.__toolTree: ToolRegistry = ToolRegistry()\
             .register(TimenowTool())
@@ -59,6 +61,11 @@ class App:
     @property
     def model(self) -> Model:
         return self.__model
+
+    @model.setter
+    def model(self, model: str) -> "Model":
+        """ Change model """
+        self.__model.switch(model)
 
     @property
     def db(self) -> Database | None:
