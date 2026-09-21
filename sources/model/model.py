@@ -5,11 +5,14 @@
 ## Model class def
 ##
 import requests
+from user.user import User 
+import json
+from collections.abc import Generator
 
 class ModelException(Exception):
     def __init__(self, message: str = "Wrong Model usage"):
         self.message = message
-        super.__init__(self.message)
+        super().__init__(self.message)
 
 class Model:
     def __init__(
@@ -21,27 +24,45 @@ class Model:
         self.__uri    : str | None = uri
         self.__model  : str | None = model
 
-        self.__history: list[dict[str]] = []
-
     def post(
             self: "Model",
-            user: None,
+            user: User,
             content: str,
-            stream: bool = False
+            *,
+            stream: bool = True
         ) -> dict[str]:
         """ Post a question to the model """
         if not self.__uri or not self.__model:
             raise ModelException("Bad uri or model name")
-        self.__history.append({
-            "role": user.role if user else "user",
-            "content": content
-        })
-        response = requests.post(
+        history: list[dict[str]] = user.stack(content)
+        response: requests.Response = requests.post(
             self.__uri,
             json={
                 "model": self.__model,
-                "messages": self.__history,
-                "stream": stream
-            }
+                "messages": history,
+            },
+            stream=stream
         )
-        return response.json()
+        response.raise_for_status()
+
+        if not stream:
+            jsoned = response.json()
+            user.stack(jsoned["message"]["content"], role="assistant")
+            return jsoned
+
+        # Stream generator
+        def _stream_generator() -> Generator[str, None, None]:
+            resp_acc = ""
+
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                text = chunk.get("message", {}).get("content", "")
+                if text:
+                    resp_acc += text
+                    yield text
+                if chunk.get("done", False):
+                    user.stack(text, role="assistant")
+                    break
+        return _stream_generator()

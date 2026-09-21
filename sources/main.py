@@ -23,7 +23,11 @@ def run() -> None:
             userInput: str  = stream.get()
             response : dict = model.post(user, userInput)
 
-            stream.out(response["message"]["content"])
+            for chunk in response:
+                stream.out(chunk, end="", flush=True)
+            print()
+
+            # stream.out(response["message"]["content"])
 
         except KeyboardInterrupt:
             stream.out("\nGoodby...")
