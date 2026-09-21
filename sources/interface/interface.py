@@ -4,10 +4,12 @@
 ## File description:
 ## CLI Interface
 ##
+import os
+import subprocess
 
 class Interface:
     def __init__(self) -> None:
-        self.__prompt   : str = "> "
+        self.__close: bool = False
 
     def get(self) -> str | None:
         ...
@@ -15,11 +17,31 @@ class Interface:
     def out(self, response: str) -> None:
         ...
 
-    def setCallback(self, evt: str, func: "function") -> None:
-        """ Set a callback """
-        if evt not in self.__callBacks.keys():
-            raise KeyError(f"Callbacks catalog does not have a {evt} event")
-        self.__callBacks[evt] = func
+    def isOpen(self) -> bool:
+        return not self.__close
+
+    def close(self) -> None:
+        """ Close interface """
+        self.__close = True
+
+class CLI(Interface):
+    def __init__(self, prompt: str = "> ") -> None:
+        super().__init__()
+        self.__prompt = prompt
+
+    def get(self) -> str:
+        """ Get a message from terminal """
+        message = input(self.prompt)
+        return message
+
+    def out(self, response: str, *, end: str ="\n", flush: bool = False) -> None:
+        """ Show smth in the CLI """
+        print(response, end=end, flush=flush)
+
+    def close(self) -> None:
+        """ Close CLI """
+        subprocess.run("clear")
+        super().close()
 
     @property
     def prompt(self) -> str:
@@ -31,18 +53,3 @@ class Interface:
         """ Set the prompt """
         if prompt and isinstance(prompt, str):
             self.__prompt = prompt
-
-class CLI(Interface):
-    def __init__(self, prompt: str | None = None) -> None:
-        super().__init__()
-        if prompt:
-            self.prompt = prompt
-
-    def get(self) -> str:
-        """ Get a message from terminal """
-        message = input(self.prompt)
-        return message
-
-    def out(self, response: str, *, end: str ="\n", flush: bool = False) -> None:
-        """ Show smth in the CLI """
-        print(response, end=end, flush=flush)

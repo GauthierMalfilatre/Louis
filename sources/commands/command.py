@@ -4,7 +4,6 @@
 ## File description:
 ## Command file
 ##
-
 class Command:
     def __init__(self, name: str, *, alias: list[str] = []) -> "Command":
         """ Init a command """
@@ -15,7 +14,7 @@ class Command:
         """ Check if command match a keyword """
         return (keyword == self.__name) or (keyword in self.__alias)
 
-    def handler(self, content: str) -> bool:
+    def handler(self, content: str, manager) -> bool:
         """ Handler to override """
         return True
 
@@ -30,7 +29,7 @@ class CommandTree:
         self.__prefix  : str           = prefix
         self.__commands: list[Command] = []
 
-    def fetch(self, content: str) -> bool:
+    def fetch(self, content: str, manager) -> bool:
         """ Check if is a command and then execute it """
         keyword: str = content.split()
         if not keyword or len(keyword) < 1:
@@ -41,7 +40,7 @@ class CommandTree:
         keyword = keyword.removeprefix(self.__prefix)
         for cmd in self.__commands:
             if cmd.match(keyword):
-                return cmd.handler(keyword)
+                return cmd.handler(keyword, manager)
         return False
 
     def register(self, command: Command) -> "CommandTree":

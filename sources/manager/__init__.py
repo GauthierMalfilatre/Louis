@@ -1,1 +1,1 @@
-# Manager init
+# App init
