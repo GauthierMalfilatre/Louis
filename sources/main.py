@@ -11,6 +11,8 @@ from session.session import Session
 from database.database import Database
 import sys
 from settings import settings
+from commands.command import Command, CommandTree
+from commands.sub.command_pong import PongCommand
 
 def run(
         settings: dict[str],
@@ -22,6 +24,8 @@ def run(
     user  : User     = User.get_or_create(db, "Anonymous")
     stream: CLI      = CLI(f"({user.name})$ ")
 
+    commandTree: CommandTree = CommandTree().register(PongCommand())
+
     session: Session | None = user.last_session() if settings["resume"] else None
     if session is None:
         session = user.new_session(system_prompt)
@@ -29,9 +33,12 @@ def run(
     while True:
         try:
             userInput: str  = stream.get()
-            response : dict = model.post(session, userInput, role=user.role, stream=settings["stream"])
+            if commandTree.fetch(userInput):
+                continue
 
             stream.out("")
+
+            response : dict = model.post(session, userInput, role=user.role, stream=settings["stream"])
 
             if settings["stream"]:
                 for chunk in response:
