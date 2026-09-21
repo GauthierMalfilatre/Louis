@@ -9,19 +9,33 @@ from commands.command import CommandTree
 from commands.sub.command_pong import PongCommand
 from commands.sub.command_exit import ExitCommand
 from commands.sub.command_newsession import NewSessionCommand
-from model.model import Model
+from model.model import Model, ModelException
 from interface.interface import CLI, Interface
 from database.database import Database
 from session.session import Session
 from settings import settings
 
+class AppException(Exception):
+    def __init__(self, message: str = "Bad App usage"):
+        self.message = message
+        super().__init__(self.message)
+
 class App:
     def __init__(self,
+            model: str,
             username: str = ANONYMOUS,
             *,
             system_prompt: str = ""
         ):
-        self.__model  : Model    = Model("http://localhost:11434/api/chat", "qwen2.5-coder:7b")
+
+        if not model:
+            raise AppException("You must provide a model name")
+
+        try:
+            self.__model  : Model    = Model("http://localhost:11434", model)
+        except ModelException:
+            raise AppException(f"Unknown model {model}")
+
         self.__db     : Database | None = None
         if username == ANONYMOUS:
             # Anonymous leaves no trace: the database is not even opened

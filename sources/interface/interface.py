@@ -31,42 +31,45 @@ class CLI(Interface):
         super().__init__()
         self.__prompt = prompt
 
-        self.__win = curses.initscr()
-        self.__ended: bool = False
+        # self.__win = curses.initscr()
+        # self.__ended: bool = False
 
-        curses.cbreak()
-        curses.start_color()
-        curses.use_default_colors()
-        purple = self.PURPLE_256 if curses.COLORS >= 256 else curses.COLOR_MAGENTA
-        curses.init_pair(1, purple, -1)
-        self.__win.keypad(True)
-        self.__win.scrollok(True)
+        # curses.cbreak()
+        # curses.start_color()
+        # curses.use_default_colors()
+        # purple = self.PURPLE_256 if curses.COLORS >= 256 else curses.COLOR_MAGENTA
+        # curses.init_pair(1, purple, -1)
+        # self.__win.keypad(True)
+        # self.__win.scrollok(True)
 
     def get(self) -> str:
         """ Get a message from terminal """
-        self.__win.addstr(self.prompt, curses.color_pair(1))
-        self.__win.refresh()
-        curses.echo()
-        try:
-            message = self.__win.getstr().decode("utf-8", errors="replace")
-        finally:
-            curses.noecho()
+        # self.__win.move(self.__win.getmaxyx()[0] - 3, 0)
+        # self.__win.addstr(self.prompt, curses.color_pair(1))
+        # self.__win.refresh()
+        # curses.echo()
+        # try:
+        #     message = self.__win.getstr().decode("utf-8", errors="replace")
+        # finally:
+        #     curses.noecho()
+        message = input(self.__prompt)
         return message
 
     def out(self, response: str, *, end: str ="\n", flush: bool = False) -> None:
         """ Show smth in the CLI """
-        if self.__ended:
+        # if self.__ended:
             # refresh() after endwin() would re-enter curses mode and never leave it
-            print(response, end=end, flush=True)
-            return
-        self.__win.addstr(response + end)
-        self.__win.refresh()
+        print(response, end=end, flush=True)
+        return
+        # self.__win.move(0, 0)
+        # self.__win.addstr(response + end)
+        # self.__win.refresh()
 
     def close(self) -> None:
         """ Close CLI """
-        if not self.__ended:
-            self.__ended = True
-            curses.endwin()
+        # if not self.__ended:
+        #     self.__ended = True
+        #     curses.endwin()
         super().close()
 
     @property

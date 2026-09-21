@@ -24,6 +24,17 @@ class Model:
         self.__uri    : str | None = uri
         self.__model  : str | None = model
 
+        try:
+            res = requests.post(
+                f"{self.__uri}/api/show",
+                json={"model": self.__model},
+                timeout=5.0
+            )
+            if res.status_code != 200:
+                raise ModelException(f"Unknown model {model}")
+        except requests.RequestException:
+            raise ModelException(f"Unknown model {model}")
+
     def post(
             self: "Model",
             session: Session,
@@ -37,7 +48,7 @@ class Model:
             raise ModelException("Bad uri or model name")
         session.stack(content, role=role)
         response: requests.Response = requests.post(
-            self.__uri,
+            f"{self.__uri}/api/chat",
             json={
                 "model": self.__model,
                 "messages": session.history,
