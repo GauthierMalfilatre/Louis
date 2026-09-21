@@ -8,6 +8,7 @@ from user.user import User, ANONYMOUS
 from commands.command import CommandTree
 from commands.sub.command_pong import PongCommand
 from commands.sub.command_exit import ExitCommand
+from commands.sub.command_newsession import NewSessionCommand
 from model.model import Model
 from interface.interface import CLI, Interface
 from database.database import Database
@@ -36,7 +37,8 @@ class App:
 
         self.__commandTree: CommandTree = CommandTree()\
             .register(PongCommand())\
-            .register(ExitCommand())
+            .register(ExitCommand())\
+            .register(NewSessionCommand())
 
     @property
     def model(self) -> Model:
@@ -57,6 +59,11 @@ class App:
     @property
     def session(self) -> Session:
         return self.__session
+
+    @session.setter
+    def session(self, session: Session) -> "App":
+        if isinstance(session, Session):
+            self.__session = session
 
     @property
     def commandTree(self) -> CommandTree:

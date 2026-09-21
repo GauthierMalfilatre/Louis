@@ -5,7 +5,5 @@ class PongCommand(Command):
         super().__init__("ping")
 
     def handler(self, content: str, manager) -> bool:
-        if content == "ping":
-            manager.stream.out("pong")
-            return True
-        return False
+        manager.stream.out("pong")
+        return True

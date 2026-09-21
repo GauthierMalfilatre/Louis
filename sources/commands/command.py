@@ -31,16 +31,16 @@ class CommandTree:
 
     def fetch(self, content: str, manager) -> bool:
         """ Check if is a command and then execute it """
-        keyword: str = content.split()
-        if not keyword or len(keyword) < 1:
+        keyword_: str = content.split()
+        if not keyword_ or len(keyword_) < 1:
             raise CommandTreeException(f"Bad message {content}")
-        keyword = keyword[0]
+        keyword = keyword_[0]
         if not keyword.startswith(self.__prefix):
             return False
         keyword = keyword.removeprefix(self.__prefix)
         for cmd in self.__commands:
             if cmd.match(keyword):
-                return cmd.handler(keyword, manager)
+                return cmd.handler("".join(keyword[1:]), manager)
         return False
 
     def register(self, command: Command) -> "CommandTree":
