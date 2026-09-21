@@ -8,7 +8,7 @@
 import requests
 import json
 
-from interface.Interface import CLI
+from sources.interface.interface import CLI
 from model.model import Model
 
 def run() -> None:
