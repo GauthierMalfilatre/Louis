@@ -63,6 +63,6 @@ class CLI(Interface):
         message = input(self.prompt)
         return message
 
-    def out(self, response: str, *, end: str ="", flush: bool = False) -> None:
+    def out(self, response: str, *, end: str ="\n", flush: bool = False) -> None:
         """ Show smth in the CLI """
         print(response, end=end, flush=flush)

@@ -63,6 +63,6 @@ class Model:
                     resp_acc += text
                     yield text
                 if chunk.get("done", False):
-                    user.stack(text, role="assistant")
+                    user.stack(resp_acc, role="assistant")
                     break
         return _stream_generator()
