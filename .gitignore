@@ -1,0 +1,13 @@
+# IDE Folder
+.vscode/
+.idea/
+
+# Cache
+.cache/
+__pycache__/
+
+# Artifacts
+*.log
+
+# Environment
+.env
