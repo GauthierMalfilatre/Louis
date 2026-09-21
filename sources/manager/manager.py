@@ -4,7 +4,7 @@
 ## File description:
 ## App file
 ##
-from user.user import User
+from user.user import User, ANONYMOUS
 from commands.command import CommandTree
 from commands.sub.command_pong import PongCommand
 from commands.sub.command_exit import ExitCommand
@@ -16,16 +16,18 @@ from settings import settings
 
 class App:
     def __init__(self,
-            username: str = "Anonymous",
+            username: str = ANONYMOUS,
             *,
             system_prompt: str = ""
         ):
         self.__model  : Model    = Model("http://localhost:11434/api/chat", "qwen2.5-coder:7b")
-        self.__db     : Database = Database(settings["db_path"])
-        if username == "Anonymous":
-            self.__user: User = User(self.__db, "Anonymous")
+        self.__db     : Database | None = None
+        if username == ANONYMOUS:
+            # Anonymous leaves no trace: the database is not even opened
+            self.__user: User = User.anonymous()
         else:
-            self.__user: User = User.get_or_create(self.__db, username)
+            self.__db = Database(settings["db_path"])
+            self.__user = User.get_or_create(self.__db, username)
         self.__stream : Interface      = CLI(f"({self.__user.name})$ ")
         self.__session: Session | None = self.__user.last_session() if settings["resume"] else None
         if self.__session is None:
@@ -40,7 +42,7 @@ class App:
         return self.__model
 
     @property
-    def db(self) -> Database:
+    def db(self) -> Database | None:
         return self.__db
 
     @property
@@ -82,9 +84,9 @@ class App:
                     self.__stream.out(response["message"]["content"] + "\n")
 
             except KeyboardInterrupt:
-                self.__stream.out("\nGoodby...")
                 break
 
-        self.__db.close()
+        if self.__db is not None:
+            self.__db.close()
         self.__stream.out(f"Goodbye, {self.__user.name}!")
         return self

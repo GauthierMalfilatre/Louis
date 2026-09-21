@@ -18,8 +18,8 @@ class SessionException(Exception):
 
 @dataclass
 class Session:
-    db        : Database = field(repr=False, compare=False)
-    user_id   : int
+    db        : Database | None = field(repr=False, compare=False)
+    user_id   : int | None
     id        : int | None      = None
     created_at: datetime | None = None
 
@@ -31,6 +31,11 @@ class Session:
             row["id"],
             datetime.fromisoformat(row["created_at"])
         )
+
+    @classmethod
+    def ephemeral(cls) -> "Session":
+        """ Create a memory-only session, never written to the database """
+        return cls(None, None, None, datetime.now())
 
     @classmethod
     def create(cls, db: Database, user_id: int) -> "Session":
@@ -59,6 +64,8 @@ class Session:
     @cached_property
     def messages(self) -> list[Message]:
         """ Get messages, loaded from the database on first access """
+        if self.db is None:
+            return []
         rows = self.db.fetchall(
             "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (self.id,)
         )
@@ -82,6 +89,12 @@ class Session:
         """ Stack a message into the session (saved immediately) """
         if not isinstance(role, str) or not isinstance(content, str):
             raise SessionException("Bad stacking")
+
+        if self.db is None:
+            # Ephemeral session: the message only lives in memory
+            message: Message = Message(role, content, None, None, datetime.now())
+            self.messages.append(message)
+            return message
 
         cur = self.db.execute(
             "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
