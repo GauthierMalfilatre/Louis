@@ -9,31 +9,24 @@ import requests
 import json
 
 from interface.Interface import CLI
-
-def onReadCallback(input: str) -> str:
-    response = requests.post(
-        "http://localhost:11434/api/chat",
-        json={
-            "model": "qwen2.5-coder:7b",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": input
-                }
-            ],
-            "stream": False
-        }
-    )
-    data = response.json()
-    return data["message"]["content"]
-
+from model.model import Model
 
 def run() -> None:
     """ Run the CLI / Interface """
-    stream: CLI = CLI()
-    stream.setCallback("onRead", onReadCallback)
-    stream.setCallback("onDrain", print)
-    stream.run()
+    model : Model = Model("http://localhost:11434/api/chat", "qwen2.5-coder:7b")
+    stream: CLI   = CLI("(you)$ ")
+
+    while True:
+        try:
+            userInput: str = stream.get()
+
+            response = model.post(None, userInput)
+
+            stream.out(response["message"]["content"])
+
+        except KeyboardInterrupt:
+            stream.out("Exiting")
+            break
 
 if __name__ == "__main__":
     run()
