@@ -14,6 +14,8 @@ from interface.interface import CLI, Interface
 from database.database import Database
 from session.session import Session
 from settings import settings
+from tool.tools import ToolRegistry
+from tool.sub.tool_gettime import TimenowTool
 
 class AppException(Exception):
     def __init__(self, message: str = "Bad App usage"):
@@ -30,15 +32,12 @@ class App:
 
         if not model:
             raise AppException("You must provide a model name")
-
         try:
             self.__model  : Model    = Model("http://localhost:11434", model)
         except ModelException:
             raise AppException(f"Unknown model {model}")
-
         self.__db     : Database | None = None
         if username == ANONYMOUS:
-            # Anonymous leaves no trace: the database is not even opened
             self.__user: User = User.anonymous()
         else:
             self.__db = Database(settings["db_path"])
@@ -46,13 +45,16 @@ class App:
         self.__session: Session | None = self.__user.last_session() if settings["resume"] else None
         if self.__session is None:
             self.__session = self.__user.new_session(system_prompt)
-        # Created last: once curses is initialised, a failure here would leave the terminal broken
+
         self.__stream : Interface      = CLI("> ")
 
         self.__commandTree: CommandTree = CommandTree()\
             .register(PongCommand())\
             .register(ExitCommand())\
             .register(NewSessionCommand())
+
+        self.__toolTree: ToolRegistry = ToolRegistry()\
+            .register(TimenowTool())
 
     @property
     def model(self) -> Model:
@@ -94,9 +96,11 @@ class App:
                     self.__stream.out("")
 
                     response : dict = self.__model.post(
-                        self.__session, userInput,
+                        self.__session,
+                        userInput,
                         role=self.__user.role,
-                        stream=settings["stream"]
+                        tools=self.__toolTree.all(),
+                        stream=settings["stream"],
                     )
 
                     if settings["stream"]:

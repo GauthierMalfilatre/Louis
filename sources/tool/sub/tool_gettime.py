@@ -1,7 +1,8 @@
 from tool.tools import Tool
+from datetime import datetime
 
 class TimenowTool(Tool):
-    def __init__(self, name, description, parameters):
+    def __init__(self):
         super().__init__("get_current_time", "Get the current time", {
             "type": "object",
             "properties": {},

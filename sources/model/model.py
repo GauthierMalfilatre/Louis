@@ -41,6 +41,7 @@ class Model:
             content: str,
             *,
             role: str = "user",
+            tools: list[dict[str]] = [],
             stream: bool = True
         ) -> dict[str]:
         """ Post a question to the model """
@@ -52,6 +53,7 @@ class Model:
             json={
                 "model": self.__model,
                 "messages": session.history,
+                "tools": tools
             },
             stream=stream
         )
@@ -71,6 +73,9 @@ class Model:
                     continue
                 chunk = json.loads(line)
                 text = chunk.get("message", {}).get("content", "")
+                # needed = chunk.get("message", {}).get("tool_calls", None)
+                # if needed is not None:
+                #     print("Tool needed ", needed)
                 if text:
                     resp_acc += text
                     yield text
