@@ -8,7 +8,7 @@
 import requests
 import json
 
-from sources.interface.interface import CLI
+from interface.interface import CLI
 from model.model import Model
 
 def run() -> None:
@@ -25,7 +25,7 @@ def run() -> None:
             stream.out(response["message"]["content"])
 
         except KeyboardInterrupt:
-            stream.out("Exiting")
+            stream.out("\nGoodby...")
             break
 
 if __name__ == "__main__":

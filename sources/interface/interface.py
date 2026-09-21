@@ -40,24 +40,27 @@ class Interface:
     #             if self.__callBacks["onDrain"]:
     #                 self.__callBacks["onDrain"](resp)
 
-    def setPrompt(self, prompt: str) -> None:
-        """ Set the prompt """
-        if prompt:
-            self.__prompt = prompt
 
-    def getPrompt(self) -> str:
+    @property
+    def prompt(self) -> str:
         """ Get the prompt """
         return self.__prompt
+
+    @prompt.setter
+    def prompt(self, prompt: str) -> None:
+        """ Set the prompt """
+        if prompt and isinstance(prompt, str):
+            self.__prompt = prompt
 
 class CLI(Interface):
     def __init__(self, prompt: str | None = None) -> None:
         super().__init__()
         if prompt:
-            self.setPrompt(prompt)
+            self.prompt = prompt
 
     def get(self) -> str:
         """ Get a message from terminal """
-        message = input(self.getPrompt())
+        message = input(self.prompt)
         return message
 
     def out(self, response: str) -> None:

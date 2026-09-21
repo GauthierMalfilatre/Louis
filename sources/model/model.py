@@ -18,8 +18,10 @@ class Model:
             model: str | None = None
         ) -> "Model":
         """ Init model with given parameters """
-        self.__uri  : str | None = uri
-        self.__model: str | None = model
+        self.__uri    : str | None = uri
+        self.__model  : str | None = model
+
+        self.__history: list[dict[str]] = []
 
     def post(
             self: "Model",
@@ -30,16 +32,15 @@ class Model:
         """ Post a question to the model """
         if not self.__uri or not self.__model:
             raise ModelException("Bad uri or model name")
+        self.__history.append({
+            "role": "user",
+            "content": content
+        })
         response = requests.post(
             self.__uri,
             json={
                 "model": self.__model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": content
-                    }
-                ],
+                "messages": self.__history,
                 "stream": stream
             }
         )
