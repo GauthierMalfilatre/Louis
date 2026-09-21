@@ -28,10 +28,11 @@ class App:
         else:
             self.__db = Database(settings["db_path"])
             self.__user = User.get_or_create(self.__db, username)
-        self.__stream : Interface      = CLI(f"({self.__user.name})$ ")
         self.__session: Session | None = self.__user.last_session() if settings["resume"] else None
         if self.__session is None:
             self.__session = self.__user.new_session(system_prompt)
+        # Created last: once curses is initialised, a failure here would leave the terminal broken
+        self.__stream : Interface      = CLI("> ")
 
         self.__commandTree: CommandTree = CommandTree()\
             .register(PongCommand())\
@@ -62,31 +63,35 @@ class App:
         return self.__commandTree
 
     def run(self) -> "App":
-        while self.__stream.isOpen():
-            try:
-                userInput: str  = self.__stream.get()
-                if self.__commandTree.fetch(userInput, self):
-                    continue
+        try:
+            while self.__stream.isOpen():
+                try:
+                    userInput: str  = self.__stream.get()
+                    if self.__commandTree.fetch(userInput, self):
+                        continue
 
-                self.__stream.out("")
+                    self.__stream.out("")
 
-                response : dict = self.__model.post(
-                    self.__session, userInput,
-                    role=self.__user.role,
-                    stream=settings["stream"]
-                )
+                    response : dict = self.__model.post(
+                        self.__session, userInput,
+                        role=self.__user.role,
+                        stream=settings["stream"]
+                    )
 
-                if settings["stream"]:
-                    for chunk in response:
-                        self.__stream.out(chunk, end="", flush=True)
-                    self.__stream.out("\n")
-                else:
-                    self.__stream.out(response["message"]["content"] + "\n")
+                    if settings["stream"]:
+                        for chunk in response:
+                            self.__stream.out(chunk, end="", flush=True)
+                        self.__stream.out("\n")
+                    else:
+                        self.__stream.out(response["message"]["content"] + "\n")
 
-            except KeyboardInterrupt:
-                break
+                except (KeyboardInterrupt, EOFError):
+                    break
+        finally:
+            # Always give the terminal back, even on a crash
+            self.__stream.close()
 
         if self.__db is not None:
             self.__db.close()
-        self.__stream.out(f"Goodbye, {self.__user.name}!")
+        self.__stream.out(f"\nGoodbye, {self.__user.name}!\n")
         return self

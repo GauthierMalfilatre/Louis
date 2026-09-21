@@ -10,7 +10,7 @@ from manager.manager import App
 
 def parse_args() -> argparse.Namespace:
     """ Parse the command line arguments """
-    parser = argparse.ArgumentParser(description="SENSAI")
+    parser = argparse.ArgumentParser(description="KRONKAI")
 
     parser.add_argument("prompt", nargs="?", default=None, help="system prompt")
     parser.add_argument("--user", type=str, default="Anonymous", help="user name")
@@ -18,15 +18,12 @@ def parse_args() -> argparse.Namespace:
 
 def run(
         settings: dict[str],
-        system_prompt: str | None = None,
-        user: str = "Eratz"
+        system_prompt: str | None,
+        user: str
     ) -> None:
     """ Run the CLI / Interface """
-    manager: App = App(user, system_prompt=system_prompt)
-
-    manager.run()
+    App(user, system_prompt=system_prompt).run()
 
 if __name__ == "__main__":
     args: argparse.Namespace = parse_args()
-
     run(settings, args.prompt, args.user)

@@ -4,8 +4,8 @@
 ## File description:
 ## CLI Interface
 ##
+import curses
 import os
-import subprocess
 
 class Interface:
     def __init__(self) -> None:
@@ -25,22 +25,48 @@ class Interface:
         self.__close = True
 
 class CLI(Interface):
+    PURPLE_256: int = 135
+
     def __init__(self, prompt: str = "> ") -> None:
         super().__init__()
         self.__prompt = prompt
 
+        self.__win = curses.initscr()
+        self.__ended: bool = False
+
+        curses.cbreak()
+        curses.start_color()
+        curses.use_default_colors()
+        purple = self.PURPLE_256 if curses.COLORS >= 256 else curses.COLOR_MAGENTA
+        curses.init_pair(1, purple, -1)
+        self.__win.keypad(True)
+        self.__win.scrollok(True)
+
     def get(self) -> str:
         """ Get a message from terminal """
-        message = input(self.prompt)
+        self.__win.addstr(self.prompt, curses.color_pair(1))
+        self.__win.refresh()
+        curses.echo()
+        try:
+            message = self.__win.getstr().decode("utf-8", errors="replace")
+        finally:
+            curses.noecho()
         return message
 
     def out(self, response: str, *, end: str ="\n", flush: bool = False) -> None:
         """ Show smth in the CLI """
-        print(response, end=end, flush=flush)
+        if self.__ended:
+            # refresh() after endwin() would re-enter curses mode and never leave it
+            print(response, end=end, flush=True)
+            return
+        self.__win.addstr(response + end)
+        self.__win.refresh()
 
     def close(self) -> None:
         """ Close CLI """
-        subprocess.run("clear")
+        if not self.__ended:
+            self.__ended = True
+            curses.endwin()
         super().close()
 
     @property
