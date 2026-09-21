@@ -5,7 +5,7 @@
 ## Model class def
 ##
 import requests
-from user.user import User 
+from session.session import Session
 import json
 from collections.abc import Generator
 
@@ -26,20 +26,21 @@ class Model:
 
     def post(
             self: "Model",
-            user: User,
+            session: Session,
             content: str,
             *,
+            role: str = "user",
             stream: bool = True
         ) -> dict[str]:
         """ Post a question to the model """
         if not self.__uri or not self.__model:
             raise ModelException("Bad uri or model name")
-        history: list[dict[str]] = user.stack(content)
+        session.stack(content, role=role)
         response: requests.Response = requests.post(
             self.__uri,
             json={
                 "model": self.__model,
-                "messages": history,
+                "messages": session.history,
             },
             stream=stream
         )
@@ -47,7 +48,7 @@ class Model:
 
         if not stream:
             jsoned = response.json()
-            user.stack(jsoned["message"]["content"], role="assistant")
+            session.stack(jsoned["message"]["content"], role="assistant")
             return jsoned
 
         # Stream generator
@@ -63,6 +64,6 @@ class Model:
                     resp_acc += text
                     yield text
                 if chunk.get("done", False):
-                    user.stack(resp_acc, role="assistant")
+                    session.stack(resp_acc, role="assistant")
                     break
         return _stream_generator()

@@ -12,3 +12,7 @@ __pycache__/
 # Environment
 .env
 .venv/
+
+# Database
+*.db
+*.db-journal
