@@ -8,5 +8,5 @@ class NewModelCommand(Command):
     def handler(self, content: str, manager) -> bool:
         manager.stream.out("\nSwitching to new model...\n")
         manager.session = manager.model.switch(newmodel=content)
-        manager.stream.out("\nSwitched new model...\n")
+        manager.stream.out(f"New model {manager.model.model}\n")
         return True

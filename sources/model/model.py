@@ -35,6 +35,11 @@ class Model:
         except requests.RequestException:
             raise ModelException(f"Unknown model {model}")
 
+    @property
+    def model(self) -> str:
+        """ Get the current model """
+        return self.__model
+
     def switch(self, *, newuri = None, newmodel: str = None) -> None:
         """ Switch model """
         olduri, oldmodel = self.__uri, self.__model
@@ -94,9 +99,6 @@ class Model:
                     continue
                 chunk = json.loads(line)
                 text = chunk.get("message", {}).get("content", "")
-                # needed = chunk.get("message", {}).get("tool_calls", None)
-                # if needed is not None:
-                #     print("Tool needed ", needed)
                 if text:
                     resp_acc += text
                     yield text
