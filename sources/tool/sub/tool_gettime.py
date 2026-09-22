@@ -9,5 +9,5 @@ class TimenowTool(Tool):
             "required": []
         })
 
-    def handler(self, manager):
+    def handler(self, manager, **kwargs) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

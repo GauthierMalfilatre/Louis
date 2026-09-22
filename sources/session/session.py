@@ -7,9 +7,11 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import cached_property
+import json
 import sqlite3
 from .message import Message
 from database.database import Database
+from tool.tools import ToolCall
 
 class SessionException(Exception):
     def __init__(self, message: str = "Bad Session usage") -> None:
@@ -61,6 +63,15 @@ class Session:
         )
         return cls.__from_row(db, row) if row else None
 
+    def __load_tool_calls(self, message_id: int) -> list[ToolCall] | None:
+        """ Get the tool calls attached to a message, if any """
+        rows = self.db.fetchall(
+            "SELECT * FROM tool_calls WHERE message_id = ? ORDER BY id", (message_id,)
+        )
+        if not rows:
+            return None
+        return [ToolCall(row["name"], json.loads(row["arguments"])) for row in rows]
+
     @cached_property
     def messages(self) -> list[Message]:
         """ Get messages, loaded from the database on first access """
@@ -75,38 +86,58 @@ class Session:
                 row["content"],
                 row["id"],
                 row["session_id"],
-                datetime.fromisoformat(row["created_at"])
+                datetime.fromisoformat(row["created_at"]),
+                self.__load_tool_calls(row["id"]),
+                row["tool_name"]
             )
             for row in rows
         ]
 
     @property
-    def history(self) -> list[dict[str, str]]:
-        """ Get history as a list of {role, content} for the model API """
+    def history(self) -> list[dict]:
+        """ Get history in the model API format """
         return [message.to_dict() for message in self.messages]
 
-    def stack(self, content: str, *, role: str = "user") -> Message:
+    def stack(
+            self,
+            content: str,
+            *,
+            role: str = "user",
+            tool_calls: list[ToolCall] | None = None,
+            tool_name: str | None = None
+        ) -> Message:
         """ Stack a message into the session (saved immediately) """
         if not isinstance(role, str) or not isinstance(content, str):
             raise SessionException("Bad stacking")
 
         if self.db is None:
             # Ephemeral session: the message only lives in memory
-            message: Message = Message(role, content, None, None, datetime.now())
+            message: Message = Message(
+                role, content, None, None, datetime.now(), tool_calls or None, tool_name
+            )
             self.messages.append(message)
             return message
 
         cur = self.db.execute(
-            "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-            (self.id, role, content)
+            "INSERT INTO messages (session_id, role, content, tool_name) VALUES (?, ?, ?, ?)",
+            (self.id, role, content, tool_name)
         )
         row = self.db.fetchone("SELECT * FROM messages WHERE id = ?", (cur.lastrowid,))
+
+        for call in tool_calls or []:
+            self.db.execute(
+                "INSERT INTO tool_calls (message_id, name, arguments) VALUES (?, ?, ?)",
+                (row["id"], call.name, json.dumps(call.arguments))
+            )
+
         message: Message = Message(
             role,
             content,
             row["id"],
             self.id,
-            datetime.fromisoformat(row["created_at"])
+            datetime.fromisoformat(row["created_at"]),
+            tool_calls or None,
+            tool_name
         )
 
         # Keep the cache coherent only if it was already loaded,

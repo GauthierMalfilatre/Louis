@@ -6,15 +6,23 @@
 ##
 from dataclasses import dataclass
 from datetime import datetime
+from tool.tools import ToolCall
 
 @dataclass(frozen=True, slots=True)
 class Message:
     role      : str
     content   : str
-    id        : int | None      = None
-    session_id: int | None      = None
-    created_at: datetime | None = None
+    id        : int | None            = None
+    session_id: int | None            = None
+    created_at: datetime | None       = None
+    tool_calls: list[ToolCall] | None = None
+    tool_name : str | None            = None
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict:
         """ Format for the model API """
-        return {"role": self.role, "content": self.content}
+        message: dict = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            message["tool_calls"] = [call.to_dict() for call in self.tool_calls]
+        if self.tool_name:
+            message["tool_name"] = self.tool_name
+        return message

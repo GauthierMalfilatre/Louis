@@ -4,105 +4,98 @@
 ## File description:
 ## Model class def
 ##
-import requests
-from session.session import Session
+from collections.abc import Callable
+from dataclasses import dataclass, field
 import json
-from collections.abc import Generator
+import requests
+from tool.tools import ToolCall
+
+# (connect, read) seconds, the read timeout bounds the silence between two chunks
+CHAT_TIMEOUT: tuple[float, float] = (5.0, 600.0)
 
 class ModelException(Exception):
     def __init__(self, message: str = "Wrong Model usage"):
         self.message = message
         super().__init__(self.message)
 
-class Model:
-    def __init__(
-            self,
-            uri  : str | None = None,
-            model: str | None = None
-        ) -> "Model":
-        """ Init model with given parameters """
-        self.__uri    : str | None = uri
-        self.__model  : str | None = model
+@dataclass
+class Reply:
+    content   : str            = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
-        try:
-            res = requests.post(
-                f"{self.__uri}/api/show",
-                json={"model": self.__model},
-                timeout=5.0
-            )
-            if res.status_code != 200:
-                raise ModelException(f"Unknown model {model}")
-        except requests.RequestException:
-            raise ModelException(f"Unknown model {model}")
+class Model:
+    def __init__(self, uri: str, model: str) -> None:
+        """ Init model, checking it is available """
+        self.__uri          : str  = uri
+        self.__model        : str  = model
+        self.__tools_support: bool = self.__probe(uri, model)
 
     @property
     def model(self) -> str:
         """ Get the current model """
         return self.__model
 
-    def switch(self, *, newuri = None, newmodel: str = None) -> None:
-        """ Switch model """
-        olduri, oldmodel = self.__uri, self.__model
-        if newuri:
-            self.__uri = newuri
-        if newmodel:
-            self.__model = newmodel
+    @staticmethod
+    def __probe(uri: str, model: str) -> bool:
+        """ Check a model is available, and tell whether it can call tools """
         try:
-            res = requests.post(
-                f"{self.__uri}/api/show",
-                json={"model": self.__model},
-                timeout=5.0
-            )
-            if res.status_code != 200:
-                self.__uri, self.__model = olduri, oldmodel
-                raise ModelException(f"Unknown model {newmodel}")
+            res = requests.post(f"{uri}/api/show", json={"model": model}, timeout=5.0)
         except requests.RequestException:
-            self.__uri, self.__model = olduri, oldmodel
-            raise ModelException(f"Unknown model {newmodel}")
+            raise ModelException(f"Cannot reach {uri}")
+        if res.status_code != 200:
+            raise ModelException(f"Unknown model {model}")
+        # Older Ollama versions don't report capabilities: assume tools work
+        capabilities: list[str] | None = res.json().get("capabilities")
+        return capabilities is None or "tools" in capabilities
 
+    def switch(self, *, newuri: str | None = None, newmodel: str | None = None) -> None:
+        """ Switch model, the current one is kept if the new one is not available """
+        uri  : str = newuri or self.__uri
+        model: str = newmodel or self.__model
+        tools_support: bool = self.__probe(uri, model)
+        self.__uri, self.__model, self.__tools_support = uri, model, tools_support
 
-    def post(
-            self: "Model",
-            session: Session,
-            content: str,
+    def chat(
+            self,
+            messages: list[dict],
+            tools: list[dict] | None = None,
             *,
-            role: str = "user",
-            tools: list[dict[str]] = [],
-            stream: bool = True
-        ) -> dict[str]:
-        """ Post a question to the model """
-        if not self.__uri or not self.__model:
-            raise ModelException("Bad uri or model name")
-        session.stack(content, role=role)
-        response: requests.Response = requests.post(
-            f"{self.__uri}/api/chat",
-            json={
-                "model": self.__model,
-                "messages": session.history,
-                "tools": tools
-            },
-            stream=stream
-        )
-        response.raise_for_status()
+            on_text: Callable[[str], None] | None = None
+        ) -> Reply:
+        """ Send a conversation to the model, streaming its text through on_text if given """
+        payload: dict = {
+            "model": self.__model,
+            "messages": messages,
+            "stream": on_text is not None,
+        }
+        if tools and self.__tools_support:
+            payload["tools"] = tools
 
-        if not stream:
-            jsoned = response.json()
-            session.stack(jsoned["message"]["content"], role="assistant")
-            return jsoned
-
-        # Stream generator
-        def _stream_generator() -> Generator[str, None, None]:
-            resp_acc = ""
-
-            for line in response.iter_lines(decode_unicode=True):
-                if not line:
-                    continue
-                chunk = json.loads(line)
-                text = chunk.get("message", {}).get("content", "")
-                if text:
-                    resp_acc += text
-                    yield text
-                if chunk.get("done", False):
-                    session.stack(resp_acc, role="assistant")
-                    break
-        return _stream_generator()
+        reply: Reply = Reply()
+        try:
+            with requests.post(
+                f"{self.__uri}/api/chat", json=payload, stream=True, timeout=CHAT_TIMEOUT
+            ) as res:
+                # Not streamed, the whole reply is a single line: both modes are read the same way
+                for line in res.iter_lines():
+                    if not line:
+                        continue
+                    chunk: dict = json.loads(line)
+                    # Ollama sends errors as an {"error": ...} line, as HTTP error body or mid-stream
+                    if "error" in chunk:
+                        raise ModelException(f"Model error: {chunk['error']}")
+                    message: dict = chunk.get("message") or {}
+                    if text := message.get("content"):
+                        reply.content += text
+                        if on_text is not None:
+                            on_text(text)
+                    # Tool calls can be spread over several chunks: collect them all
+                    reply.tool_calls += [
+                        ToolCall.from_dict(call) for call in message.get("tool_calls") or []
+                    ]
+                res.raise_for_status()
+        except requests.RequestException as e:
+            raise ModelException(f"Model request failed: {e}") from e
+        except json.JSONDecodeError as e:
+            raise ModelException(f"Bad response from model: {e}") from e
+        return reply

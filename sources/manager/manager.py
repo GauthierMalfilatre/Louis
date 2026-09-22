@@ -10,10 +10,11 @@ from commands.sub.command_pong import PongCommand
 from commands.sub.command_exit import ExitCommand
 from commands.sub.command_newsession import NewSessionCommand
 from commands.sub.command_model import NewModelCommand
-from model.model import Model, ModelException
+from model.model import Model, ModelException, Reply
 from interface.interface import CLI, Interface
 from database.database import Database
 from session.session import Session
+from session.message import Message
 from settings import settings
 from tool.tools import ToolRegistry
 from tool.sub.tool_gettime import TimenowTool
@@ -35,8 +36,8 @@ class App:
             raise AppException("You must provide a model name")
         try:
             self.__model  : Model    = Model("http://localhost:11434", model)
-        except ModelException:
-            raise AppException(f"Unknown model {model}")
+        except ModelException as e:
+            raise AppException(e.message)
         self.__db     : Database | None = None
         if username == ANONYMOUS:
             self.__user: User = User.anonymous()
@@ -63,9 +64,9 @@ class App:
         return self.__model
 
     @model.setter
-    def model(self, model: str) -> "Model":
+    def model(self, model: str) -> None:
         """ Change model """
-        self.__model.switch(model)
+        self.__model.switch(newmodel=model)
 
     @property
     def db(self) -> Database | None:
@@ -96,34 +97,55 @@ class App:
         try:
             while self.__stream.isOpen():
                 try:
-                    userInput: str  = self.__stream.get()
-                    if self.__commandTree.fetch(userInput, self):
+                    userInput: str = self.__stream.get()
+                    if not userInput.strip() or self.__commandTree.fetch(userInput, self):
                         continue
 
                     self.__stream.out("")
-
-                    response : dict = self.__model.post(
-                        self.__session,
-                        userInput,
-                        role=self.__user.role,
-                        tools=self.__toolTree.all(),
-                        stream=settings["stream"],
-                    )
-
-                    if settings["stream"]:
-                        for chunk in response:
-                            self.__stream.out(chunk, end="", flush=True)
-                        self.__stream.out("\n")
-                    else:
-                        self.__stream.out(response["message"]["content"] + "\n")
-
+                    self.__turn(userInput)
+                except ModelException as e:
+                    self.__stream.out(f"\n{e.message}\n")
                 except (KeyboardInterrupt, EOFError):
                     break
         finally:
-            # Always give the terminal back, even on a crash
             self.__stream.close()
 
         if self.__db is not None:
             self.__db.close()
         self.__stream.out(f"\nGoodbye, {self.__user.name}!\n")
         return self
+
+    def __turn(self, text: str) -> None:
+        """ Answer a user message, running the tools the model asks for """
+        # Saved only once complete: a failure or Ctrl+C leaves no half-turn in the session
+        pending: list[Message] = [Message("user", text)]
+
+        for _ in range(settings["max_tool_rounds"]):
+            reply: Reply = self.__model.chat(
+                self.__session.history + [message.to_dict() for message in pending],
+                self.__toolTree.all(),
+                on_text=self.__print_chunk if settings["stream"] else None,
+            )
+            if reply.content:
+                if not settings["stream"]:
+                    self.__stream.out(reply.content, end="")
+                self.__stream.out("\n")
+
+            pending.append(Message("assistant", reply.content, tool_calls=reply.tool_calls or None))
+            if not reply.tool_calls:
+                break
+            for call in reply.tool_calls:
+                pending.append(Message("tool", self.__toolTree.call(call, self), tool_name=call.name))
+        else:
+            self.__stream.out(f"Stopped after {settings['max_tool_rounds']} rounds of tool calls.\n")
+
+        for message in pending:
+            self.__session.stack(
+                message.content,
+                role=message.role,
+                tool_calls=message.tool_calls,
+                tool_name=message.tool_name
+            )
+
+    def __print_chunk(self, chunk: str) -> None:
+        self.__stream.out(chunk, end="", flush=True)

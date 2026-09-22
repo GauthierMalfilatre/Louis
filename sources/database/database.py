@@ -28,10 +28,25 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role       TEXT NOT NULL,
     content    TEXT NOT NULL,
+    tool_name  TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    arguments  TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_message ON tool_calls(message_id, id);
 """
+
+# Columns added after their table: CREATE TABLE IF NOT EXISTS won't add them to an existing database
+MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("messages", "tool_name", "TEXT"),
+)
 
 class Database:
     def __init__(self, path: str | Path = "sensai.db") -> None:
@@ -40,6 +55,14 @@ class Database:
         self.__conn.row_factory = sqlite3.Row
         self.__conn.execute("PRAGMA foreign_keys = ON")
         self.__conn.executescript(SCHEMA)
+        self.__migrate()
+
+    def __migrate(self) -> None:
+        """ Add the columns missing from a database created by an older version """
+        for table, column, definition in MIGRATIONS:
+            columns = {row["name"] for row in self.fetchall(f"PRAGMA table_info({table})")}
+            if column not in columns:
+                self.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         """ Run a write statement in its own transaction """
