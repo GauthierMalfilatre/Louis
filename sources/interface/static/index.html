@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<title>KAI</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%238b3dff'/%3E%3Cpath d='M9 22l7-12 7 12' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<!-- Markdown rendering; without them (offline) answers are shown as plain text -->
+<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js" defer></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f6fb;
+    --surface: #ffffff;
+    --surface-2: #efedf5;
+    --border: #e1dde9;
+    --text: #1d1a24;
+    --muted: #6b6578;
+    --accent: #7b2ff2;
+    --accent-text: #ffffff;
+    --user-bg: #7b2ff2;
+    --user-text: #ffffff;
+    --code-bg: #f1eff6;
+    --ok: #1f9d55;
+    --warn: #c27c0e;
+    --off: #9a93a8;
+    --danger: #c92a5c;
+    --shadow: 0 1px 2px rgb(30 20 50 / 0.06), 0 4px 16px rgb(30 20 50 / 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121016;
+      --surface: #1b1820;
+      --surface-2: #25212c;
+      --border: #332d3d;
+      --text: #ebe7f2;
+      --muted: #9d95ab;
+      --accent: #b98aff;
+      --accent-text: #1a1024;
+      --user-bg: #5a24b8;
+      --user-text: #f5efff;
+      --code-bg: #221e29;
+      --ok: #3ccf7a;
+      --warn: #e8a93a;
+      --off: #6f6880;
+      --danger: #ff7aa2;
+      --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: 0.01em; }
+  .brand svg { display: block; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); }
+  .status[data-state="ready"] .dot { background: var(--ok); }
+  .status[data-state="busy"] .dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  .status[data-state="reconnecting"] .dot { background: var(--warn); }
+
+  main { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
+  .log {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 24px 16px 32px;
+  }
+
+  .empty {
+    margin: 18vh auto 0;
+    max-width: 360px;
+    text-align: center;
+    color: var(--muted);
+  }
+  .empty h1 { margin: 0 0 6px; font-size: 20px; color: var(--text); font-weight: 650; }
+  .empty p { margin: 0; }
+  .empty code { font-size: 13px; white-space: nowrap; }
+
+  .msg { max-width: 100%; overflow-wrap: anywhere; }
+  .msg.user {
+    align-self: flex-end;
+    max-width: min(80%, 620px);
+    padding: 9px 14px;
+    border-radius: 18px 18px 4px 18px;
+    background: var(--user-bg);
+    color: var(--user-text);
+    white-space: pre-wrap;
+  }
+  .msg.assistant { align-self: stretch; }
+  .msg.assistant.plain { white-space: pre-wrap; }
+  .msg.assistant[hidden] { display: none; }
+
+  .msg.assistant > :first-child { margin-top: 0; }
+  .msg.assistant > :last-child { margin-bottom: 0; }
+  .msg.assistant p, .msg.assistant ul, .msg.assistant ol, .msg.assistant pre,
+  .msg.assistant blockquote, .msg.assistant table { margin: 0 0 12px; }
+  .msg.assistant h1, .msg.assistant h2, .msg.assistant h3, .msg.assistant h4 {
+    margin: 20px 0 8px;
+    line-height: 1.3;
+  }
+  .msg.assistant h1 { font-size: 1.35em; }
+  .msg.assistant h2 { font-size: 1.2em; }
+  .msg.assistant h3, .msg.assistant h4 { font-size: 1.05em; }
+  .msg.assistant ul, .msg.assistant ol { padding-left: 22px; }
+  .msg.assistant li + li { margin-top: 4px; }
+  .msg.assistant a { color: var(--accent); }
+  .msg.assistant blockquote {
+    padding-left: 12px;
+    border-left: 3px solid var(--border);
+    color: var(--muted);
+  }
+  .msg.assistant table { border-collapse: collapse; display: block; overflow-x: auto; }
+  .msg.assistant th, .msg.assistant td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .msg.assistant hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+  code, pre { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+  .msg.assistant code { font-size: 0.88em; padding: 1px 5px; border-radius: 5px; background: var(--code-bg); }
+  .msg.assistant pre {
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--code-bg);
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  .msg.assistant pre code { padding: 0; background: none; font-size: 13px; }
+
+  .pending { display: flex; gap: 5px; padding: 6px 0; }
+  .pending[hidden] { display: none; }
+  .pending span {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted);
+    animation: bounce 1.2s ease-in-out infinite;
+  }
+  .pending span:nth-child(2) { animation-delay: 0.15s; }
+  .pending span:nth-child(3) { animation-delay: 0.3s; }
+
+  .notice {
+    align-self: center;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .composer {
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .composer form {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 6px 6px 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--bg);
+    box-shadow: var(--shadow);
+  }
+  .composer form:focus-within { border-color: var(--accent); }
+  textarea {
+    flex: 1;
+    min-height: 24px;
+    max-height: 200px;
+    margin: 5px 0;
+    padding: 0;
+    border: 0;
+    outline: none;
+    resize: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+  }
+  textarea::placeholder { color: var(--muted); }
+  textarea:disabled { cursor: not-allowed; }
+  button {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-text);
+    cursor: pointer;
+  }
+  button:disabled { background: var(--surface-2); color: var(--off); cursor: default; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hint {
+    max-width: 780px;
+    margin: 6px auto 0;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+  }
+  .hint.error { color: var(--danger); }
+
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-4px); opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .pending span, .status .dot { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="9" fill="var(--accent)"/>
+        <path d="M9 22l7-12 7 12" fill="none" stroke="var(--accent-text)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      KAI
+    </div>
+    <div class="status" id="status" data-state="connecting" role="status">
+      <span class="dot"></span><span id="status-text">Connecting…</span>
+    </div>
+  </header>
+
+  <main id="scroller">
+    <div class="log" id="log" aria-live="polite"></div>
+  </main>
+
+  <footer class="composer">
+    <form id="form">
+      <textarea id="input" rows="1" placeholder="Send a message or a /command" aria-label="Message" autofocus></textarea>
+      <button id="send" type="submit" aria-label="Send" disabled>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 19V5M5 12l7-7 7 7"/>
+        </svg>
+      </button>
+    </form>
+    <p class="hint" id="hint">Enter to send · Shift+Enter for a new line</p>
+  </footer>
+
+<script>
+  const HINT = "Enter to send · Shift+Enter for a new line";
+
+  const $ = (id) => document.getElementById(id);
+  const scroller = $("scroller"), logEl = $("log"), form = $("form"), input = $("input");
+  const send = $("send"), hint = $("hint"), statusEl = $("status"), statusText = $("status-text");
+
+  // Same state as the server: the log is rebuilt from its snapshot on every (re)connection
+  const state = { log: [], waiting: false, closed: false, connected: false, sending: false };
+  let pending = null;          // "thinking" dots, shown until the answer starts
+  let dirty = null;            // assistant entry waiting for a re-render
+  let frame = 0;
+
+  function markdown(text) {
+    if (!window.marked || !window.DOMPurify) return null;
+    return DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+  }
+
+  function renderEntry(entry) {
+    const el = entry.el;
+    const text = entry.text.trim();
+    if (entry.role === "user") {
+      el.textContent = text;
+      return;
+    }
+    el.hidden = !text;  // The CLI's blank lines around answers
+    const html = markdown(text);
+    el.classList.toggle("plain", html === null);
+    if (html === null) el.textContent = text;
+    else el.innerHTML = html;
+  }
+
+  function addEntry(entry) {
+    entry.el = document.createElement("div");
+    entry.el.className = `msg ${entry.role}`;
+    renderEntry(entry);
+    logEl.insertBefore(entry.el, pending);
+  }
+
+  function nearBottom() {
+    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+  }
+
+  function scrollDown(force) {
+    if (force || stick) scroller.scrollTop = scroller.scrollHeight;
+  }
+  let stick = true;
+  scroller.addEventListener("scroll", () => { stick = nearBottom(); });
+
+  function renderAll() {
+    logEl.replaceChildren();
+    if (!state.log.length && !state.closed) {
+      logEl.innerHTML = `<div class="empty"><h1>How can I help?</h1>
+        <p>Chat with the model, or type a command like <code>/new-session</code> or <code>/exit</code>.</p></div>`;
+    }
+    pending = document.createElement("div");
+    pending.className = "pending";
+    pending.setAttribute("aria-label", "Thinking");
+    pending.innerHTML = "<span></span><span></span><span></span>";
+    logEl.append(pending);
+    state.log.forEach(addEntry);
+    if (state.closed) addNotice();
+    update();
+    scrollDown(true);
+  }
+
+  function addNotice() {
+    const el = document.createElement("div");
+    el.className = "notice";
+    el.textContent = "Session ended";
+    logEl.append(el);
+  }
+
+  function update() {
+    const busy = state.connected && !state.waiting && !state.closed;
+    const last = state.log[state.log.length - 1];
+    pending.hidden = !busy || !last || (last.role === "assistant" && last.text.trim() !== "");
+
+    let label, key;
+    if (state.closed) [key, label] = ["closed", state.connected ? "Session ended" : "Server stopped"];
+    else if (!state.connected) [key, label] = ["reconnecting", "Reconnecting…"];
+    else if (state.waiting) [key, label] = ["ready", "Ready"];
+    else [key, label] = ["busy", "Thinking…"];
+    statusEl.dataset.state = key;
+    statusText.textContent = label;
+
+    input.disabled = state.closed;
+    send.disabled = !canSend() || !input.value.trim();
+    if (state.closed) input.placeholder = "This session has ended";
+    hint.hidden = state.closed;
+  }
+
+  function canSend() {
+    return state.connected && state.waiting && !state.closed && !state.sending;
+  }
+
+  function flush() {
+    frame = 0;
+    if (dirty) renderEntry(dirty);
+    dirty = null;
+    update();
+    scrollDown();
+  }
+
+  function handle(event) {
+    switch (event.type) {
+      case "snapshot":
+        Object.assign(state, { log: event.log, waiting: event.waiting, closed: event.closed });
+        dirty = null;
+        renderAll();
+        return;
+      case "waiting":
+        state.waiting = true;
+        break;
+      case "input": {
+        state.waiting = false;
+        const entry = { role: "user", text: event.text };
+        state.log.push(entry);
+        addEntry(entry);
+        empty();
+        stick = true;
+        break;
+      }
+      case "output": {
+        let last = state.log[state.log.length - 1];
+        if (!last || last.role !== "assistant") {
+          last = { role: "assistant", text: "" };
+          state.log.push(last);
+          addEntry(last);
+          empty();
+        }
+        last.text += event.text;
+        dirty = last;
+        break;
+      }
+      case "closed":
+        state.waiting = false;
+        state.closed = true;
+        addNotice();
+        break;
+    }
+    if (!frame) frame = requestAnimationFrame(flush);
+  }
+
+  function empty() {
+    logEl.querySelector(".empty")?.remove();
+  }
+
+  // Server-Sent Events: reconnects by itself, the snapshot then replaces everything shown
+  const source = new EventSource("/api/events");
+  source.onopen = () => { state.connected = true; update(); };
+  source.onmessage = (e) => handle(JSON.parse(e.data));
+  source.onerror = () => {
+    state.connected = false;
+    if (state.closed) source.close();  // The server stopped for good
+    update();
+  };
+
+  async function submit() {
+    const text = input.value;
+    if (!text.trim() || !canSend()) return;
+    state.sending = true;
+    update();
+    try {
+      const res = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error(res.status === 409 ? "The session has ended" : `Error ${res.status}`);
+      state.waiting = false;  // Until the server says otherwise, avoids sending twice
+      input.value = "";
+      resize();
+      setHint(HINT);
+    } catch (err) {
+      setHint(err instanceof TypeError ? "Cannot reach the server" : err.message, true);
+    } finally {
+      state.sending = false;
+      update();
+    }
+  }
+
+  function setHint(text, error = false) {
+    hint.textContent = text;
+    hint.classList.toggle("error", error);
+  }
+
+  function resize() {
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  }
+
+  form.addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+  input.addEventListener("input", () => { resize(); update(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      submit();
+    }
+  });
+
+  // The markdown libraries load after this script: re-render what came in meanwhile
+  document.addEventListener("DOMContentLoaded", () => {
+    state.log.forEach((entry) => entry.el && renderEntry(entry));
+  });
+
+  renderAll();
+</script>
+</body>
+</html>

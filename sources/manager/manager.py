@@ -29,7 +29,8 @@ class App:
             model: str,
             username: str = ANONYMOUS,
             *,
-            system_prompt: str = ""
+            system_prompt: str = "",
+            stream: Interface | None = None
         ):
 
         if not model:
@@ -48,7 +49,7 @@ class App:
         if self.__session is None:
             self.__session = self.__user.new_session(system_prompt)
 
-        self.__stream : Interface      = CLI("> ")
+        self.__stream : Interface      = stream if stream is not None else CLI("> ")
 
         self.__commandTree: CommandTree = CommandTree()\
             .register(PongCommand())\
