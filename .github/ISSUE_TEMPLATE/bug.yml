@@ -1,0 +1,38 @@
+name: Bug
+description: Something is broken
+title: "[Bug] "
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where
+      options: [backend, frontend, docker, ci]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Branch or commit
+      description: Where you saw it — a branch name, or `git rev-parse --short HEAD`.
+      placeholder: dev @ 0004ad0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: API output, browser console, or the failing CI job. Optional.
+      render: shell
