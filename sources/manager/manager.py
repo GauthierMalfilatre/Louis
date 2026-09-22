@@ -49,7 +49,7 @@ class App:
         if self.__session is None:
             self.__session = self.__user.new_session(system_prompt)
 
-        self.__stream : Interface      = stream if stream is not None else CLI("> ")
+        self.__stream : Interface      = stream if stream is not None else CLI(f"[{self.__user.name}]:{self.__model.model}> ")
 
         self.__commandTree: CommandTree = CommandTree()\
             .register(PongCommand())\
@@ -59,6 +59,8 @@ class App:
 
         self.__toolTree: ToolRegistry = ToolRegistry()\
             .register(TimenowTool())
+
+        self.__stream.bind(self)
 
     @property
     def model(self) -> Model:

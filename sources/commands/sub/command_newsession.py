@@ -3,7 +3,7 @@ from session.session import Session
 
 class NewSessionCommand(Command):
     def __init__(self):
-        super().__init__("new-session")
+        super().__init__("new-session", usage="[system prompt]", description="Start a new conversation")
 
     def handler(self, content: str, manager) -> bool:
         manager.session = manager.user.new_session(content)

@@ -13,6 +13,10 @@ from tool.tools import ToolCall
 # (connect, read) seconds, the read timeout bounds the silence between two chunks
 CHAT_TIMEOUT: tuple[float, float] = (5.0, 600.0)
 
+# Some models (qwen2.5-coder...) write their tool calls as text, with or without these tags
+TOOL_CALL_OPEN : str = "<tool_call>"
+TOOL_CALL_CLOSE: str = "</tool_call>"
+
 class ModelException(Exception):
     def __init__(self, message: str = "Wrong Model usage"):
         self.message = message
@@ -48,6 +52,15 @@ class Model:
         capabilities: list[str] | None = res.json().get("capabilities")
         return capabilities is None or "tools" in capabilities
 
+    def available(self) -> list[str]:
+        """ Get the names of the models the server has """
+        try:
+            res = requests.get(f"{self.__uri}/api/tags", timeout=5.0)
+            res.raise_for_status()
+        except requests.RequestException:
+            raise ModelException(f"Cannot reach {self.__uri}")
+        return sorted(model["name"] for model in res.json().get("models") or [])
+
     def switch(self, *, newuri: str | None = None, newmodel: str | None = None) -> None:
         """ Switch model, the current one is kept if the new one is not available """
         uri  : str = newuri or self.__uri
@@ -70,8 +83,11 @@ class Model:
         }
         if tools and self.__tools_support:
             payload["tools"] = tools
+        names: set[str] = {tool["function"]["name"] for tool in payload.get("tools") or []}
 
         reply: Reply = Reply()
+        # Length of the content given to on_text, the rest is held while it may be a tool call
+        shown: int = 0
         try:
             with requests.post(
                 f"{self.__uri}/api/chat", json=payload, stream=True, timeout=CHAT_TIMEOUT
@@ -87,8 +103,9 @@ class Model:
                     message: dict = chunk.get("message") or {}
                     if text := message.get("content"):
                         reply.content += text
-                        if on_text is not None:
-                            on_text(text)
+                        if on_text is not None and not (names and self.__maybe_call(reply.content)):
+                            on_text(reply.content[shown:])
+                            shown = len(reply.content)
                     # Tool calls can be spread over several chunks: collect them all
                     reply.tool_calls += [
                         ToolCall.from_dict(call) for call in message.get("tool_calls") or []
@@ -98,4 +115,39 @@ class Model:
             raise ModelException(f"Model request failed: {e}") from e
         except json.JSONDecodeError as e:
             raise ModelException(f"Bad response from model: {e}") from e
+
+        if names and not reply.tool_calls and (calls := self.__text_calls(reply.content, names)):
+            reply.content, reply.tool_calls = "", calls
+        if on_text is not None and shown < len(reply.content):
+            on_text(reply.content[shown:])
         return reply
+
+    @staticmethod
+    def __maybe_call(content: str) -> bool:
+        """ Tell whether a reply being streamed may still turn out to be a tool call written as text """
+        start: str = content.lstrip()
+        return start.startswith("{") or TOOL_CALL_OPEN.startswith(start[:len(TOOL_CALL_OPEN)])
+
+    @staticmethod
+    def __text_calls(content: str, names: set[str]) -> list[ToolCall]:
+        """ Get the tool calls written as text, if the whole reply is made of calls to known tools """
+        decoder: json.JSONDecoder = json.JSONDecoder()
+        calls  : list[ToolCall] = []
+        text   : str = content.strip()
+        while text:
+            text = text.removeprefix(TOOL_CALL_OPEN).lstrip()
+            try:
+                data, end = decoder.raw_decode(text)
+            except json.JSONDecodeError:
+                return []
+            name = data.get("name") if isinstance(data, dict) else None
+            # Unknown names are left as text: the model made the tool up
+            if not isinstance(name, str) or name not in names:
+                return []
+            # llama3.2 says "parameters" where the others say "arguments"
+            arguments = data.get("arguments", data.get("parameters")) or {}
+            if not isinstance(arguments, dict):
+                return []
+            calls.append(ToolCall(name, arguments))
+            text = text[end:].lstrip().removeprefix(TOOL_CALL_CLOSE).lstrip()
+        return calls

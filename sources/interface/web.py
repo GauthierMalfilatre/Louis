@@ -12,6 +12,7 @@ import json
 import queue
 import threading
 from interface.interface import Interface
+from model.model import ModelException
 
 PAGE: Path = Path(__file__).with_name("static") / "index.html"
 KEEPALIVE: float = 15.0        # Seconds of silence before pinging a page, which also detects closed ones
@@ -28,6 +29,7 @@ class WebInterface(Interface):
         # What the pages show, replayed to the ones connecting later
         self.__log        : list[dict]              = []
         self.__waiting    : bool                    = False
+        self.__info       : dict | None             = None
 
         self.__server: ThreadingHTTPServer = ThreadingHTTPServer(
             (host, port), partial(_Handler, web=self)
@@ -41,10 +43,18 @@ class WebInterface(Interface):
     def __exit__(self, *_) -> None:
         self.shutdown()
 
+    def bind(self, manager) -> "WebInterface":
+        """ Give access to the manager, whose info is shown on the pages """
+        super().bind(manager)
+        self.__publish_info()
+        return self
+
     def get(self) -> str:
         """ Wait for a message sent from a page """
         if not self.isOpen():
             raise EOFError
+        # The last message may have changed them (/model, ...)
+        self.__publish_info()
         self.__publish({"type": "waiting"})
         text: str | None = self.__inputs.get()
         if text is None:
@@ -57,6 +67,9 @@ class WebInterface(Interface):
         """ Show smth on every page, always sent right away """
         if response + end:
             self.__publish({"type": "output", "text": response + end})
+
+    def debug(self, response, *, end, flush):
+        print(response, end=end, flush=flush)
 
     def close(self) -> None:
         """ Close the interface, pages stay connected to get what is shown until shutdown """
@@ -91,6 +104,7 @@ class WebInterface(Interface):
                 "log": [dict(entry) for entry in self.__log],
                 "waiting": self.__waiting,
                 "closed": not self.isOpen(),
+                "info": self.__info,
             })
             self.__subscribers.add(events)
         return events
@@ -108,7 +122,9 @@ class WebInterface(Interface):
                 self.__waiting = True
             elif event["type"] in ("input", "closed"):
                 self.__waiting = False
-            if event["type"] == "input":
+            if event["type"] == "info":
+                self.__info = event["info"]
+            elif event["type"] == "input":
                 self.__log.append({"role": "user", "text": event["text"]})
             elif event["type"] == "output":
                 # Everything shown between two messages is the answer to the first one
@@ -117,6 +133,26 @@ class WebInterface(Interface):
                 self.__log[-1]["text"] += event["text"]
             for events in self.__subscribers:
                 events.put(event)
+
+    def __publish_info(self) -> None:
+        """ Send what the pages show about the manager, when it changed """
+        commands = self.manager.commandTree
+        info: dict = {
+            "user": self.manager.user.name,
+            "model": self.manager.model.model,
+            "prefix": commands.prefix,
+            "commands": [
+                {
+                    "name": command.name,
+                    "alias": command.alias,
+                    "usage": command.usage,
+                    "description": command.description,
+                }
+                for command in commands.commands
+            ],
+        }
+        if info != self.__info:
+            self.__publish({"type": "info", "info": info})
 
 class _Handler(BaseHTTPRequestHandler):
     def __init__(self, *args, web: WebInterface, **kwargs) -> None:
@@ -132,6 +168,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.__page()
         elif path == "/api/events":
             self.__events()
+        elif path == "/api/models":
+            self.__models()
         else:
             self.send_error(404)
 
@@ -162,6 +200,24 @@ class _Handler(BaseHTTPRequestHandler):
         body: bytes = PAGE.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def __models(self) -> None:
+        """ Send the models the manager can switch to """
+        manager = self.__web.manager
+        if manager is None:
+            self.send_error(503, "Not ready")
+            return
+        try:
+            models: list[str] = manager.model.available()
+        except ModelException as e:
+            self.send_error(502, e.message)
+            return
+        body: bytes = json.dumps({"models": models}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

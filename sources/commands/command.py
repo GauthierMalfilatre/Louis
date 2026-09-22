@@ -5,10 +5,34 @@
 ## Command file
 ##
 class Command:
-    def __init__(self, name: str, *, alias: list[str] = []) -> "Command":
-        """ Init a command """
-        self.__name   = name
-        self.__alias  = alias
+    def __init__(self,
+            name: str,
+            *,
+            alias: list[str] = [],
+            description: str = "",
+            usage: str = ""
+        ) -> "Command":
+        """ Init a command, usage describes its arguments (e.g. "<name>") """
+        self.__name        = name
+        self.__alias       = alias
+        self.__description = description
+        self.__usage       = usage
+
+    @property
+    def name(self) -> str:
+        return self.__name
+
+    @property
+    def alias(self) -> list[str]:
+        return self.__alias
+
+    @property
+    def description(self) -> str:
+        return self.__description
+
+    @property
+    def usage(self) -> str:
+        return self.__usage
 
     def match(self, keyword: str) -> bool:
         """ Check if command match a keyword """
@@ -28,6 +52,15 @@ class CommandTree:
         """ Init a command tree """
         self.__prefix  : str           = prefix
         self.__commands: list[Command] = []
+
+    @property
+    def prefix(self) -> str:
+        return self.__prefix
+
+    @property
+    def commands(self) -> list[Command]:
+        """ Get the registered commands """
+        return list(self.__commands)
 
     def fetch(self, content: str, manager) -> bool:
         """ Check if is a command and then execute it """

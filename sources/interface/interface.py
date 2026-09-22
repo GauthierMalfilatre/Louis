@@ -9,12 +9,26 @@ import os
 
 class Interface:
     def __init__(self) -> None:
-        self.__close: bool = False
+        self.__close  : bool = False
+        self.__manager       = None
+
+    def bind(self, manager) -> "Interface":
+        """ Give access to the manager running this interface """
+        self.__manager = manager
+        return self
+
+    @property
+    def manager(self):
+        """ Get the manager, None until bound """
+        return self.__manager
 
     def get(self) -> str | None:
         ...
 
-    def out(self, response: str) -> None:
+    def out(self, response: str, *, end, flush) -> None:
+        ...
+
+    def debug(self, response: str, *, end, flush) -> None:
         ...
 
     def isOpen(self) -> bool:
@@ -64,6 +78,9 @@ class CLI(Interface):
         # self.__win.move(0, 0)
         # self.__win.addstr(response + end)
         # self.__win.refresh()
+
+    def debug(self, response: str, *, end: str = "\n", flush: bool = False) -> None:
+        print(response, end=end, flush=flush)
 
     def close(self) -> None:
         """ Close CLI """

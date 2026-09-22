@@ -5,9 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>KAI</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%238b3dff'/%3E%3Cpath d='M9 22l7-12 7 12' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<!-- Markdown rendering; without them (offline) answers are shown as plain text -->
+<!-- Markdown rendering and code highlighting; without them (offline) answers are shown as plain text -->
 <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/highlight.min.js" defer></script>
 <style>
   :root {
     color-scheme: light dark;
@@ -18,7 +19,9 @@
     --text: #1d1a24;
     --muted: #6b6578;
     --accent: #7b2ff2;
+    --accent-2: #d63fb8;
     --accent-text: #ffffff;
+    --accent-soft: rgb(123 47 242 / 0.09);
     --user-bg: #7b2ff2;
     --user-text: #ffffff;
     --code-bg: #f1eff6;
@@ -27,17 +30,31 @@
     --off: #9a93a8;
     --danger: #c92a5c;
     --shadow: 0 1px 2px rgb(30 20 50 / 0.06), 0 4px 16px rgb(30 20 50 / 0.06);
+    --shadow-lg: 0 2px 6px rgb(30 20 50 / 0.06), 0 12px 32px rgb(30 20 50 / 0.12);
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    /* Code highlighting */
+    --hl-keyword: #7c3aed;
+    --hl-string: #2f7d32;
+    --hl-number: #c2410c;
+    --hl-comment: #6b6479;
+    --hl-function: #1d4ed8;
+    --hl-type: #955a06;
+    --hl-builtin: #be123c;
+    --hl-meta: #b5179e;
+    --hl-attr: #0f766e;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #121016;
       --surface: #1b1820;
-      --surface-2: #25212c;
+      --surface-2: #2a2532;
       --border: #332d3d;
       --text: #ebe7f2;
       --muted: #9d95ab;
       --accent: #b98aff;
+      --accent-2: #ff8ad8;
       --accent-text: #1a1024;
+      --accent-soft: rgb(185 138 255 / 0.12);
       --user-bg: #5a24b8;
       --user-text: #f5efff;
       --code-bg: #221e29;
@@ -46,6 +63,16 @@
       --off: #6f6880;
       --danger: #ff7aa2;
       --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
+      --shadow-lg: 0 2px 6px rgb(0 0 0 / 0.35), 0 12px 32px rgb(0 0 0 / 0.45);
+      --hl-keyword: #c4a7ff;
+      --hl-string: #a6e3a1;
+      --hl-number: #fab387;
+      --hl-comment: #8e869e;
+      --hl-function: #89b4fa;
+      --hl-type: #f9e2af;
+      --hl-builtin: #f38ba8;
+      --hl-meta: #f5a8e8;
+      --hl-attr: #94e2d5;
     }
   }
 
@@ -59,45 +86,115 @@
     color: var(--text);
     font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
+  button { font: inherit; color: inherit; }
+  code, pre, kbd { font-family: var(--mono); }
+  kbd {
+    display: inline-block;
+    min-width: 1.6em;
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: var(--surface);
+    font-size: 0.85em;
+    line-height: 1.5;
+    text-align: center;
+  }
 
+  /* Header */
   .bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 12px 16px;
+    padding: 10px 16px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
   }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: 0.01em; }
   .brand svg { display: block; }
-  .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); }
+  .bar-end { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--off); }
   .status[data-state="ready"] .dot { background: var(--ok); }
   .status[data-state="busy"] .dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
   .status[data-state="reconnecting"] .dot { background: var(--warn); }
+  .model-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 220px;
+    padding: 4px 8px 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .model-chip:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+  .model-chip:disabled { cursor: default; opacity: 0.6; }
+  .model-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .model-chip[hidden] { display: none; }
+  .model-chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model-chip svg { flex: none; color: var(--muted); }
 
+  /* Conversation */
   main { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
   .log {
     display: flex;
     flex-direction: column;
     gap: 18px;
     max-width: 780px;
+    min-height: 100%;
     margin: 0 auto;
     padding: 24px 16px 32px;
   }
 
   .empty {
-    margin: 18vh auto 0;
-    max-width: 360px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    margin: auto 0;
+    padding: 24px 0 8vh;
     text-align: center;
-    color: var(--muted);
+    animation: rise 0.5s ease-out both;
   }
-  .empty h1 { margin: 0 0 6px; font-size: 20px; color: var(--text); font-weight: 650; }
-  .empty p { margin: 0; }
-  .empty code { font-size: 13px; white-space: nowrap; }
+  .greeting {
+    margin: 0;
+    font-size: clamp(28px, 6vw, 40px);
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    overflow-wrap: anywhere;
+  }
+  .greeting .name {
+    background: linear-gradient(100deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .empty .lead { margin: 0 0 18px; color: var(--muted); font-size: 16px; }
+  .suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 560px; }
+  .suggestion {
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, transform 0.15s;
+  }
+  .suggestion:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
+  .suggestion:disabled { cursor: default; opacity: 0.6; }
+  .suggestion:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tip { margin: 18px 0 0; color: var(--muted); font-size: 13px; }
 
-  .msg { max-width: 100%; overflow-wrap: anywhere; }
+  .msg { max-width: 100%; overflow-wrap: anywhere; animation: rise 0.2s ease-out; }
   .msg.user {
     align-self: flex-end;
     max-width: min(80%, 620px);
@@ -107,13 +204,14 @@
     color: var(--user-text);
     white-space: pre-wrap;
   }
+  .msg.user.command { font-family: var(--mono); font-size: 14px; }
   .msg.assistant { align-self: stretch; }
   .msg.assistant.plain { white-space: pre-wrap; }
   .msg.assistant[hidden] { display: none; }
 
   .msg.assistant > :first-child { margin-top: 0; }
   .msg.assistant > :last-child { margin-bottom: 0; }
-  .msg.assistant p, .msg.assistant ul, .msg.assistant ol, .msg.assistant pre,
+  .msg.assistant p, .msg.assistant ul, .msg.assistant ol, .msg.assistant pre, .msg.assistant .code,
   .msg.assistant blockquote, .msg.assistant table { margin: 0 0 12px; }
   .msg.assistant h1, .msg.assistant h2, .msg.assistant h3, .msg.assistant h4 {
     margin: 20px 0 8px;
@@ -133,17 +231,57 @@
   .msg.assistant table { border-collapse: collapse; display: block; overflow-x: auto; }
   .msg.assistant th, .msg.assistant td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
   .msg.assistant hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
-  code, pre { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
   .msg.assistant code { font-size: 0.88em; padding: 1px 5px; border-radius: 5px; background: var(--code-bg); }
-  .msg.assistant pre {
-    padding: 12px 14px;
+  .msg.assistant .code {
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--code-bg);
+    overflow: hidden;
+  }
+  .code-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 6px 4px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .msg.assistant .code pre {
+    margin: 0;
+    padding: 12px 14px;
     overflow-x: auto;
     line-height: 1.5;
   }
   .msg.assistant pre code { padding: 0; background: none; font-size: 13px; }
+  .copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .copy:hover { background: var(--surface-2); color: var(--text); }
+  .copy:focus-visible { outline: 2px solid var(--accent); }
+
+  .hljs-keyword, .hljs-selector-tag, .hljs-doctag { color: var(--hl-keyword); }
+  .hljs-string, .hljs-regexp, .hljs-char, .hljs-addition { color: var(--hl-string); }
+  .hljs-number, .hljs-literal, .hljs-symbol { color: var(--hl-number); }
+  .hljs-comment, .hljs-quote { color: var(--hl-comment); font-style: italic; }
+  .hljs-title, .hljs-section, .hljs-selector-id { color: var(--hl-function); }
+  .hljs-type, .hljs-title.class_, .hljs-selector-class { color: var(--hl-type); }
+  .hljs-built_in, .hljs-deletion { color: var(--hl-builtin); }
+  .hljs-meta, .hljs-meta .hljs-keyword { color: var(--hl-meta); }
+  .hljs-meta .hljs-string { color: var(--hl-string); }
+  .hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-template-variable, .hljs-name { color: var(--hl-attr); }
+  .hljs-emphasis { font-style: italic; }
+  .hljs-strong { font-weight: 650; }
 
   .pending { display: flex; gap: 5px; padding: 6px 0; }
   .pending[hidden] { display: none; }
@@ -164,17 +302,17 @@
     font-size: 13px;
   }
 
+  /* Composer */
   .composer {
     padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
     border-top: 1px solid var(--border);
     background: var(--surface);
   }
+  .composer-inner { position: relative; max-width: 780px; margin: 0 auto; }
   .composer form {
     display: flex;
     align-items: flex-end;
     gap: 8px;
-    max-width: 780px;
-    margin: 0 auto;
     padding: 6px 6px 6px 14px;
     border: 1px solid var(--border);
     border-radius: 20px;
@@ -197,7 +335,7 @@
   }
   textarea::placeholder { color: var(--muted); }
   textarea:disabled { cursor: not-allowed; }
-  button {
+  .send {
     display: grid;
     place-items: center;
     flex: none;
@@ -208,9 +346,11 @@
     background: var(--accent);
     color: var(--accent-text);
     cursor: pointer;
+    transition: transform 0.1s;
   }
-  button:disabled { background: var(--surface-2); color: var(--off); cursor: default; }
-  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .send:active:not(:disabled) { transform: scale(0.92); }
+  .send:disabled { background: var(--surface-2); color: var(--off); cursor: default; }
+  .send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .hint {
     max-width: 780px;
     margin: 6px auto 0;
@@ -220,10 +360,87 @@
   }
   .hint.error { color: var(--danger); }
 
+  /* Command menu */
+  .menu {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 8px);
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    max-height: min(340px, 55dvh);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    animation: pop 0.12s ease-out;
+  }
+  .menu[hidden] { display: none; }
+  .menu-title {
+    padding: 10px 14px 4px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+  .menu-list { padding: 2px 6px 6px; overflow-y: auto; }
+  .item {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 9px;
+    cursor: pointer;
+  }
+  .item[aria-selected="true"] { background: var(--accent-soft); }
+  .item .cmd { flex: none; font-family: var(--mono); font-weight: 650; color: var(--accent); }
+  .item .cmd mark { background: none; color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+  .item .usage { flex: none; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+  .item .desc {
+    min-width: 0;
+    margin-left: auto;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .item .current {
+    margin-left: auto;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
+  }
+  .menu-empty { padding: 10px; color: var(--muted); font-size: 13px; }
+  .menu-foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    padding: 7px 14px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+
+  @media (max-width: 560px) {
+    .status-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .model-chip { max-width: 170px; }
+    .item { flex-wrap: wrap; row-gap: 0; }
+    .item .desc { flex-basis: 100%; margin-left: 0; white-space: normal; }
+    .extra { display: none; }
+  }
+
   @keyframes pulse { 50% { opacity: 0.35; } }
   @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-4px); opacity: 1; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  @keyframes pop { from { opacity: 0; transform: translateY(4px) scale(0.99); } }
   @media (prefers-reduced-motion: reduce) {
-    .pending span, .status .dot { animation: none !important; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
   }
 </style>
 </head>
@@ -236,8 +453,19 @@
       </svg>
       KAI
     </div>
-    <div class="status" id="status" data-state="connecting" role="status">
-      <span class="dot"></span><span id="status-text">Connecting…</span>
+    <div class="bar-end">
+      <div class="status" id="status" data-state="connecting" role="status">
+        <span class="dot"></span><span class="status-text" id="status-text">Connecting…</span>
+      </div>
+      <button class="model-chip" id="model-chip" type="button" title="Switch model" hidden>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>
+        </svg>
+        <span class="name" id="model-name"></span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
+      </button>
     </div>
   </header>
 
@@ -246,33 +474,60 @@
   </main>
 
   <footer class="composer">
-    <form id="form">
-      <textarea id="input" rows="1" placeholder="Send a message or a /command" aria-label="Message" autofocus></textarea>
-      <button id="send" type="submit" aria-label="Send" disabled>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 19V5M5 12l7-7 7 7"/>
-        </svg>
-      </button>
-    </form>
-    <p class="hint" id="hint">Enter to send · Shift+Enter for a new line</p>
+    <div class="composer-inner">
+      <div class="menu" id="menu" hidden>
+        <div class="menu-title" id="menu-title"></div>
+        <div class="menu-list" id="menu-list" role="listbox" aria-labelledby="menu-title"></div>
+        <div class="menu-foot">
+          <span><kbd>↑</kbd> <kbd>↓</kbd> navigate</span>
+          <span><kbd>Enter</kbd> select</span>
+          <span class="extra"><kbd>Tab</kbd> complete</span>
+          <span><kbd>Esc</kbd> close</span>
+        </div>
+      </div>
+      <form id="form">
+        <textarea id="input" rows="1" placeholder="Send a message, or / for commands" aria-label="Message"
+          aria-autocomplete="list" aria-controls="menu-list" aria-expanded="false" autofocus></textarea>
+        <button class="send" id="send" type="submit" aria-label="Send" disabled>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5M5 12l7-7 7 7"/>
+          </svg>
+        </button>
+      </form>
+    </div>
+    <p class="hint" id="hint"></p>
   </footer>
 
 <script>
-  const HINT = "Enter to send · Shift+Enter for a new line";
+  const HINT = 'Enter to send · Shift+Enter for a new line<span class="extra"> · ↑ for your last messages</span>';
+  const SUGGESTIONS = ["What time is it?", "Explain recursion like I'm five", "Write a haiku about Python"];
+  // Commands whose argument is a model name, completed from the models the server has
+  const MODEL_COMMANDS = ["model"];
 
   const $ = (id) => document.getElementById(id);
   const scroller = $("scroller"), logEl = $("log"), form = $("form"), input = $("input");
   const send = $("send"), hint = $("hint"), statusEl = $("status"), statusText = $("status-text");
+  const modelChip = $("model-chip"), modelName = $("model-name");
+  const menuEl = $("menu"), menuTitle = $("menu-title"), menuList = $("menu-list");
 
-  // Same state as the server: the log is rebuilt from its snapshot on every (re)connection
-  const state = { log: [], waiting: false, closed: false, connected: false, sending: false };
+  // Same state as the server: rebuilt from its snapshot on every (re)connection
+  const state = { log: [], waiting: false, closed: false, info: null, connected: false, sending: false };
   let pending = null;          // "thinking" dots, shown until the answer starts
   let dirty = null;            // assistant entry waiting for a re-render
   let frame = 0;
 
+  /* ---------- Rendering ---------- */
+
   function markdown(text) {
     if (!window.marked || !window.DOMPurify) return null;
     return DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+  }
+
+  function isCommand(text) {
+    const info = state.info;
+    if (!info) return false;
+    const word = text.trim().split(/\s+/)[0];
+    return word.startsWith(info.prefix) && !!findCommand(word.slice(info.prefix.length));
   }
 
   function renderEntry(entry) {
@@ -280,13 +535,41 @@
     const text = entry.text.trim();
     if (entry.role === "user") {
       el.textContent = text;
+      el.classList.toggle("command", isCommand(text));
       return;
     }
     el.hidden = !text;  // The CLI's blank lines around answers
     const html = markdown(text);
     el.classList.toggle("plain", html === null);
-    if (html === null) el.textContent = text;
-    else el.innerHTML = html;
+    if (html === null) {
+      el.textContent = text;
+      return;
+    }
+    el.innerHTML = html;
+    el.querySelectorAll("pre").forEach(decorateCode);
+  }
+
+  // Highlight a code block when its language is given (```py, ```c, ...), and add its header
+  function decorateCode(pre) {
+    const code = pre.querySelector("code");
+    const lang = code?.className.match(/language-(\S+)/)?.[1];
+    const known = lang && window.hljs?.getLanguage(lang);
+    if (known) hljs.highlightElement(code);
+
+    const box = document.createElement("div");
+    box.className = "code";
+    const head = document.createElement("div");
+    head.className = "code-head";
+    const label = document.createElement("span");
+    label.textContent = known?.name ?? lang ?? "";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "copy";
+    button.textContent = "Copy";
+    button.addEventListener("click", () => copy(code?.textContent ?? pre.textContent, button));
+    head.append(label, button);
+    pre.replaceWith(box);
+    box.append(head, pre);
   }
 
   function addEntry(entry) {
@@ -296,22 +579,38 @@
     logEl.insertBefore(entry.el, pending);
   }
 
-  function nearBottom() {
-    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+  function emptyState() {
+    const box = document.createElement("div");
+    box.className = "empty";
+    const greeting = document.createElement("h1");
+    greeting.className = "greeting";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = state.info?.user ?? "";
+    greeting.append(name.textContent ? "Bonjour, " : "Bonjour", name, ".");
+    const lead = document.createElement("p");
+    lead.className = "lead";
+    lead.textContent = "How can I help you today?";
+    const suggestions = document.createElement("div");
+    suggestions.className = "suggestions";
+    for (const text of SUGGESTIONS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "suggestion";
+      button.textContent = text;
+      button.addEventListener("click", () => { input.value = text; submit(); });
+      suggestions.append(button);
+    }
+    const tip = document.createElement("p");
+    tip.className = "tip";
+    tip.innerHTML = `Type <kbd>${escapeHtml(state.info?.prefix ?? "/")}</kbd> to see the commands`;
+    box.append(greeting, lead, suggestions, tip);
+    return box;
   }
-
-  function scrollDown(force) {
-    if (force || stick) scroller.scrollTop = scroller.scrollHeight;
-  }
-  let stick = true;
-  scroller.addEventListener("scroll", () => { stick = nearBottom(); });
 
   function renderAll() {
     logEl.replaceChildren();
-    if (!state.log.length && !state.closed) {
-      logEl.innerHTML = `<div class="empty"><h1>How can I help?</h1>
-        <p>Chat with the model, or type a command like <code>/new-session</code> or <code>/exit</code>.</p></div>`;
-    }
+    if (!state.log.length && !state.closed) logEl.append(emptyState());
     pending = document.createElement("div");
     pending.className = "pending";
     pending.setAttribute("aria-label", "Thinking");
@@ -319,8 +618,22 @@
     logEl.append(pending);
     state.log.forEach(addEntry);
     if (state.closed) addNotice();
+    renderInfo();
     update();
     scrollDown(true);
+  }
+
+  function renderInfo() {
+    const info = state.info;
+    modelChip.hidden = !info;
+    if (!info) return;
+    modelName.textContent = info.model;
+    const empty = logEl.querySelector(".empty");
+    if (empty && empty.querySelector(".name").textContent !== info.user) {
+      empty.replaceWith(emptyState());
+    }
+    logEl.querySelectorAll(".msg.user").forEach((el) => el.classList.toggle("command", isCommand(el.textContent)));
+    if (!menuEl.hidden) refreshMenu(false);
   }
 
   function addNotice() {
@@ -328,6 +641,19 @@
     el.className = "notice";
     el.textContent = "Session ended";
     logEl.append(el);
+  }
+
+  function removeEmptyState() {
+    logEl.querySelector(".empty")?.remove();
+  }
+
+  let stick = true;
+  scroller.addEventListener("scroll", () => {
+    stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+  });
+
+  function scrollDown(force) {
+    if (force || stick) scroller.scrollTop = scroller.scrollHeight;
   }
 
   function update() {
@@ -341,11 +667,17 @@
     else if (state.waiting) [key, label] = ["ready", "Ready"];
     else [key, label] = ["busy", "Thinking…"];
     statusEl.dataset.state = key;
+    statusEl.title = label;
     statusText.textContent = label;
 
     input.disabled = state.closed;
     send.disabled = !canSend() || !input.value.trim();
-    if (state.closed) input.placeholder = "This session has ended";
+    modelChip.disabled = state.closed;
+    logEl.querySelectorAll(".suggestion").forEach((button) => { button.disabled = !canSend(); });
+    if (state.closed) {
+      input.placeholder = "This session has ended";
+      closeMenu();
+    }
     hint.hidden = state.closed;
   }
 
@@ -361,13 +693,19 @@
     scrollDown();
   }
 
+  /* ---------- Events from the server ---------- */
+
   function handle(event) {
     switch (event.type) {
       case "snapshot":
-        Object.assign(state, { log: event.log, waiting: event.waiting, closed: event.closed });
+        Object.assign(state, { log: event.log, waiting: event.waiting, closed: event.closed, info: event.info });
         dirty = null;
         renderAll();
         return;
+      case "info":
+        state.info = event.info;
+        renderInfo();
+        break;
       case "waiting":
         state.waiting = true;
         break;
@@ -376,7 +714,7 @@
         const entry = { role: "user", text: event.text };
         state.log.push(entry);
         addEntry(entry);
-        empty();
+        removeEmptyState();
         stick = true;
         break;
       }
@@ -386,7 +724,7 @@
           last = { role: "assistant", text: "" };
           state.log.push(last);
           addEntry(last);
-          empty();
+          removeEmptyState();
         }
         last.text += event.text;
         dirty = last;
@@ -401,10 +739,6 @@
     if (!frame) frame = requestAnimationFrame(flush);
   }
 
-  function empty() {
-    logEl.querySelector(".empty")?.remove();
-  }
-
   // Server-Sent Events: reconnects by itself, the snapshot then replaces everything shown
   const source = new EventSource("/api/events");
   source.onopen = () => { state.connected = true; update(); };
@@ -415,10 +749,13 @@
     update();
   };
 
+  /* ---------- Sending ---------- */
+
   async function submit() {
     const text = input.value;
     if (!text.trim() || !canSend()) return;
     state.sending = true;
+    closeMenu();
     update();
     try {
       const res = await fetch("/api/messages", {
@@ -429,6 +766,7 @@
       if (!res.ok) throw new Error(res.status === 409 ? "The session has ended" : `Error ${res.status}`);
       state.waiting = false;  // Until the server says otherwise, avoids sending twice
       input.value = "";
+      recallPos = null;
       resize();
       setHint(HINT);
     } catch (err) {
@@ -440,7 +778,8 @@
   }
 
   function setHint(text, error = false) {
-    hint.textContent = text;
+    if (error) hint.textContent = text;
+    else hint.innerHTML = text;
     hint.classList.toggle("error", error);
   }
 
@@ -449,10 +788,256 @@
     input.style.height = `${input.scrollHeight}px`;
   }
 
+  async function copy(text, button) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Plain http from another computer: no Clipboard API
+        const area = Object.assign(document.createElement("textarea"), { value: text });
+        area.style.cssText = "position:fixed;opacity:0";
+        document.body.append(area);
+        area.select();
+        const ok = document.execCommand("copy");
+        area.remove();
+        if (!ok) throw new Error();
+      }
+      button.textContent = "Copied";
+    } catch {
+      button.textContent = "Failed";
+    }
+    setTimeout(() => { button.textContent = "Copy"; }, 1500);
+  }
+
+  /* ---------- Previous messages (↑ / ↓) ---------- */
+
+  let recallPos = null;  // Index of the recalled message among the sent ones
+
+  function recall(step) {
+    const sent = state.log.filter((entry) => entry.role === "user").map((entry) => entry.text);
+    const recalling = recallPos !== null && input.value === sent[recallPos];
+    if (!recalling && input.value) return false;  // Never replace a draft
+    if (input.value.includes("\n")) return false; // Let the arrows move in multi-line text
+    const pos = recalling ? recallPos + step : step < 0 ? sent.length - 1 : null;
+    if (pos === null || pos < 0) return recalling;
+    if (pos >= sent.length) {
+      recallPos = null;
+      input.value = "";
+    } else {
+      recallPos = pos;
+      input.value = sent[pos];
+    }
+    resize();
+    update();
+    return true;
+  }
+
+  /* ---------- Command menu ---------- */
+
+  const menu = { mode: null, items: [], active: 0, dismissed: null };
+  let models = null;  // null: to load, "loading", "error", or the names
+
+  function escapeHtml(text) {
+    return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  }
+
+  function escapeRegex(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function findCommand(word) {
+    return state.info?.commands.find((cmd) => cmd.name === word || cmd.alias.includes(word));
+  }
+
+  function menuContext() {
+    const info = state.info;
+    if (!info || state.closed) return null;
+    const prefix = escapeRegex(info.prefix);
+    let match = input.value.match(new RegExp(`^${prefix}(\\S*)$`));
+    if (match) return { mode: "commands", query: match[1].toLowerCase() };
+    match = input.value.match(new RegExp(`^${prefix}(\\S+)\\s+(\\S*)$`));
+    const command = match && findCommand(match[1]);
+    if (command && MODEL_COMMANDS.includes(command.name)) {
+      return { mode: "models", command: match[1], query: match[2].toLowerCase() };
+    }
+    return null;
+  }
+
+  function menuItems(context) {
+    const prefix = state.info.prefix;
+    if (context.mode === "commands") {
+      return state.info.commands
+        .filter((cmd) => [cmd.name, ...cmd.alias].some((word) => word.startsWith(context.query)))
+        .map((cmd) => ({
+          label: cmd.name,
+          usage: cmd.usage,
+          description: cmd.description,
+          value: `${prefix}${cmd.name}${cmd.usage ? " " : ""}`,
+          final: !cmd.usage,  // Nothing more to type: selecting it sends it
+        }));
+    }
+    if (!Array.isArray(models)) return [];
+    return models
+      .filter((name) => name.toLowerCase().includes(context.query))
+      .map((name) => ({
+        label: name,
+        current: name === state.info.model,
+        value: `${prefix}${context.command} ${name}`,
+        final: true,
+      }));
+  }
+
+  async function loadModels() {
+    if (!Array.isArray(models)) models = "loading";  // Otherwise show the last list meanwhile
+    try {
+      const res = await fetch("/api/models");
+      if (!res.ok) throw new Error();
+      models = (await res.json()).models;
+    } catch {
+      models = "error";
+    }
+    if (menu.mode === "models") refreshMenu(false);
+  }
+
+  function refreshMenu(resetActive = true) {
+    const context = menuContext();
+    if (!context || menu.dismissed === input.value) return closeMenu();
+    // Reload the models each time their menu opens: some may have been pulled meanwhile
+    if (context.mode === "models" && menu.mode !== "models") loadModels();
+    menu.mode = context.mode;
+    menu.items = menuItems(context);
+    if (resetActive || menu.active >= menu.items.length) menu.active = 0;
+    renderMenu(context);
+  }
+
+  function renderMenu(context) {
+    const prefix = state.info.prefix;
+    menuTitle.textContent = context.mode === "commands" ? "Commands" : "Models";
+    menuList.replaceChildren();
+    if (!menu.items.length) {
+      const empty = document.createElement("div");
+      empty.className = "menu-empty";
+      if (context.mode === "commands") empty.textContent = "No command matches: it will be sent as a message";
+      else if (models === "loading" || models === null) empty.textContent = "Loading models…";
+      else if (models === "error") empty.textContent = "Cannot list the models";
+      else empty.textContent = "No model matches";
+      menuList.append(empty);
+    }
+    menu.items.forEach((item, i) => {
+      const el = document.createElement("div");
+      el.className = "item";
+      el.id = `menu-item-${i}`;
+      el.setAttribute("role", "option");
+      el.setAttribute("aria-selected", String(i === menu.active));
+      const name = document.createElement("span");
+      name.className = "cmd";
+      if (context.mode === "commands") {
+        // Underline what was typed
+        const typed = item.label.startsWith(context.query) ? context.query.length : 0;
+        const mark = document.createElement("mark");
+        mark.textContent = item.label.slice(0, typed);
+        name.append(prefix, mark, item.label.slice(typed));
+      } else {
+        name.textContent = item.label;
+      }
+      el.append(name);
+      if (item.usage) el.append(Object.assign(document.createElement("span"), { className: "usage", textContent: item.usage }));
+      if (item.description) el.append(Object.assign(document.createElement("span"), { className: "desc", textContent: item.description }));
+      if (item.current) el.append(Object.assign(document.createElement("span"), { className: "current", textContent: "current" }));
+      el.addEventListener("mousemove", () => { if (menu.active !== i) setActive(i); });
+      el.addEventListener("click", () => choose(item));
+      menuList.append(el);
+    });
+    menuEl.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    setActive(menu.active);
+  }
+
+  function setActive(i) {
+    menu.active = i;
+    menuList.querySelectorAll(".item").forEach((el, j) => el.setAttribute("aria-selected", String(j === i)));
+    const el = $(`menu-item-${i}`);
+    if (el) {
+      el.scrollIntoView({ block: "nearest" });
+      input.setAttribute("aria-activedescendant", el.id);
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  function closeMenu() {
+    menu.mode = null;
+    menuEl.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  }
+
+  // Enter / click: send what needs nothing more, otherwise complete it. Tab: always complete.
+  function choose(item, completeOnly = false) {
+    input.value = item.value;
+    input.focus();
+    resize();
+    if (item.final && !completeOnly && canSend()) {
+      submit();
+      return;
+    }
+    refreshMenu();  // May open the menu of its argument
+    update();
+  }
+
+  menuEl.addEventListener("mousedown", (e) => e.preventDefault());  // Keep the focus in the input
+
+  modelChip.addEventListener("click", () => {
+    if (!state.info || state.closed) return;
+    input.value = `${state.info.prefix}${MODEL_COMMANDS[0]} `;
+    menu.dismissed = null;
+    input.focus();
+    resize();
+    refreshMenu();
+    update();
+  });
+
+  /* ---------- Input ---------- */
+
   form.addEventListener("submit", (e) => { e.preventDefault(); submit(); });
-  input.addEventListener("input", () => { resize(); update(); });
+  input.addEventListener("input", () => {
+    menu.dismissed = null;
+    resize();
+    refreshMenu();
+    update();
+  });
+  input.addEventListener("blur", () => closeMenu());
+  input.addEventListener("focus", () => refreshMenu());
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    if (e.isComposing) return;
+    if (!menuEl.hidden) {
+      const count = menu.items.length;
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && count) {
+        e.preventDefault();
+        setActive((menu.active + (e.key === "ArrowDown" ? 1 : -1) + count) % count);
+        return;
+      }
+      if (e.key === "Tab" && count) {
+        e.preventDefault();
+        choose(menu.items[menu.active], true);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey && count) {
+        e.preventDefault();
+        choose(menu.items[menu.active]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        menu.dismissed = input.value;
+        closeMenu();
+        return;
+      }
+    } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && recall(e.key === "ArrowUp" ? -1 : 1)) {
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
     }
@@ -463,6 +1048,7 @@
     state.log.forEach((entry) => entry.el && renderEntry(entry));
   });
 
+  setHint(HINT);
   renderAll();
 </script>
 </body>

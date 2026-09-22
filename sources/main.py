@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("prompt", nargs="?", default=None, help="system prompt")
     parser.add_argument("--user", type=str, default="Anonymous", help="user name")
     parser.add_argument("--model", type=str, default=None, help="Model name")
+
     parser.add_argument("--web", action="store_true", help="chat from a browser instead of the terminal")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="web interface host")
     parser.add_argument("--port", type=int, default=8000, help="web interface port")
