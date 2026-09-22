@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/EpitechPGE3-2026/G-WEB-500-NCY-5-1-dashboard-1/security/advisories/new
+    about: Report privately instead of opening a public issue. See SECURITY.md.
