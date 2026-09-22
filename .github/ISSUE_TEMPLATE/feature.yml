@@ -22,8 +22,8 @@ body:
       required: true
   - type: dropdown
     id: scope
-    attributes:
-      label: Where
-      options: [backend, frontend, docker, ci]
+    # attributes:
+    #   label: Where
+    #   options: [backend, frontend, docker, ci]
     validations:
       required: true
