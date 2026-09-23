@@ -63,6 +63,23 @@ class Session:
         )
         return cls.__from_row(db, row) if row else None
 
+    @classmethod
+    def summaries(cls, db: Database, user_id: int) -> list[dict]:
+        """ Get every session of a user with its size and first message, newest first """
+        rows = db.fetchall(
+            """
+            SELECT s.id, s.created_at,
+                   (SELECT COUNT(*) FROM messages m
+                    WHERE m.session_id = s.id AND m.role IN ('user', 'assistant')) AS messages,
+                   (SELECT m.content FROM messages m
+                    WHERE m.session_id = s.id AND m.role = 'user'
+                    ORDER BY m.id LIMIT 1) AS preview
+            FROM sessions s WHERE s.user_id = ? ORDER BY s.id DESC
+            """,
+            (user_id,)
+        )
+        return [dict(row) for row in rows]
+
     def __load_tool_calls(self, message_id: int) -> list[ToolCall] | None:
         """ Get the tool calls attached to a message, if any """
         rows = self.db.fetchall(
@@ -104,16 +121,22 @@ class Session:
             *,
             role: str = "user",
             tool_calls: list[ToolCall] | None = None,
-            tool_name: str | None = None
+            tool_name: str | None = None,
+            images: list[str] | None = None
         ) -> Message:
-        """ Stack a message into the session (saved immediately) """
+        """ Stack a message into the session (saved immediately)
+
+            Images stay in memory: base64 in the database would weigh down every history read,
+            so a resumed session keeps its text but loses its pictures.
+        """
         if not isinstance(role, str) or not isinstance(content, str):
             raise SessionException("Bad stacking")
 
         if self.db is None:
             # Ephemeral session: the message only lives in memory
             message: Message = Message(
-                role, content, None, None, datetime.now(), tool_calls or None, tool_name
+                role, content, None, None, datetime.now(), tool_calls or None, tool_name,
+                images or None
             )
             self.messages.append(message)
             return message
@@ -137,7 +160,8 @@ class Session:
             self.id,
             datetime.fromisoformat(row["created_at"]),
             tool_calls or None,
-            tool_name
+            tool_name,
+            images or None
         )
 
         # Keep the cache coherent only if it was already loaded,

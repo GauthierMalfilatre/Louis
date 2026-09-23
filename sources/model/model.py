@@ -30,27 +30,45 @@ class Reply:
 class Model:
     def __init__(self, uri: str, model: str) -> None:
         """ Init model, checking it is available """
-        self.__uri          : str  = uri
-        self.__model        : str  = model
-        self.__tools_support: bool = self.__probe(uri, model)
+        self.__uri         : str      = uri
+        self.__model       : str      = model
+        self.__capabilities: set[str] = self.__probe(uri, model)
 
     @property
     def model(self) -> str:
         """ Get the current model """
         return self.__model
 
+    @property
+    def vision(self) -> bool:
+        """ Whether the model can read the images sent with a message """
+        return "vision" in self.__capabilities
+
     @staticmethod
-    def __probe(uri: str, model: str) -> bool:
-        """ Check a model is available, and tell whether it can call tools """
+    def __probe(uri: str, model: str) -> set[str]:
+        """ Check a model is available, and get what it is able to do """
         try:
             res = requests.post(f"{uri}/api/show", json={"model": model}, timeout=5.0)
         except requests.RequestException:
             raise ModelException(f"Cannot reach {uri}")
         if res.status_code != 200:
             raise ModelException(f"Unknown model {model}")
-        # Older Ollama versions don't report capabilities: assume tools work
         capabilities: list[str] | None = res.json().get("capabilities")
-        return capabilities is None or "tools" in capabilities
+        # Older Ollama versions don't report them: assume the model can do everything
+        return set(capabilities) if capabilities is not None else {"tools", "vision"}
+
+    @staticmethod
+    def __attach(messages: list[dict], images: list[str]) -> list[dict]:
+        """ Put images on the last message of the user, where the model expects them """
+        attached: list[dict] = list(messages)
+        for index in reversed(range(len(attached))):
+            if attached[index].get("role") == "user":
+                attached[index] = {
+                    **attached[index],
+                    "images": [*(attached[index].get("images") or []), *images]
+                }
+                break
+        return attached
 
     def available(self) -> list[str]:
         """ Get the names of the models the server has """
@@ -65,23 +83,42 @@ class Model:
         """ Switch model, the current one is kept if the new one is not available """
         uri  : str = newuri or self.__uri
         model: str = newmodel or self.__model
-        tools_support: bool = self.__probe(uri, model)
-        self.__uri, self.__model, self.__tools_support = uri, model, tools_support
+        capabilities: set[str] = self.__probe(uri, model)
+        self.__uri, self.__model, self.__capabilities = uri, model, capabilities
 
     def chat(
             self,
             messages: list[dict],
             tools: list[dict] | None = None,
+            images: list[str] | None = None,
             *,
             on_text: Callable[[str], None] | None = None
         ) -> Reply:
-        """ Send a conversation to the model, streaming its text through on_text if given """
+        """ Send a conversation to the model, streaming its text through on_text if given
+
+            Images are base64 strings, either carried by the messages or given here for the
+            last one of the user. A model that cannot see them says so before anything is sent.
+        """
+        if images:
+            messages = self.__attach(messages, images)
+        if not self.vision and any(message.get("images") for message in messages):
+            current: dict = next(
+                (message for message in reversed(messages) if message.get("role") == "user"), {}
+            )
+            if current.get("images"):
+                raise ModelException(f"{self.__model} cannot read images")
+            # Pictures from earlier in the session: go on without them rather than block it
+            messages = [
+                {key: value for key, value in message.items() if key != "images"}
+                for message in messages
+            ]
+
         payload: dict = {
             "model": self.__model,
             "messages": messages,
             "stream": on_text is not None,
         }
-        if tools and self.__tools_support:
+        if tools and "tools" in self.__capabilities:
             payload["tools"] = tools
         names: set[str] = {tool["function"]["name"] for tool in payload.get("tools") or []}
 

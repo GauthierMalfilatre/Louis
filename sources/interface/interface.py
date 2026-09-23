@@ -6,6 +6,7 @@
 ##
 import curses
 import os
+from events.events import MODEL_SWITCHED
 
 class Interface:
     def __init__(self) -> None:
@@ -27,6 +28,10 @@ class Interface:
 
     def out(self, response: str, *, end, flush) -> None:
         ...
+
+    def attachments(self) -> list[str]:
+        """ Images sent with the last get(), base64 encoded (a terminal sends none) """
+        return []
 
     def debug(self, response: str, *, end="\n", flush=False) -> None:
         ...
@@ -55,6 +60,16 @@ class CLI(Interface):
         # curses.init_pair(1, purple, -1)
         # self.__win.keypad(True)
         # self.__win.scrollok(True)
+
+    def bind(self, manager) -> "CLI":
+        """ Give access to the manager, and listen for what is worth telling in a terminal """
+        super().bind(manager)
+        manager.events.subscribe(self.__on_event, MODEL_SWITCHED)
+        return self
+
+    def __on_event(self, event) -> None:
+        if event.name == MODEL_SWITCHED:
+            self.out(f"\n[model] {event.data['previous']} -> {event.data['current']}\n")
 
     def get(self) -> str:
         """ Get a message from terminal """

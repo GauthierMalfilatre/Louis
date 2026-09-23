@@ -5,7 +5,6 @@ class NewModelCommand(Command):
         super().__init__("model", usage="<name>", description="Switch to another model")
 
     def handler(self, content: str, manager) -> bool:
-        manager.stream.out("\nSwitching to new model...\n")
+        # The switch itself dispatches MODEL_SWITCHED: each interface shows it its own way
         manager.model = content
-        manager.stream.out(f"New model {manager.model.model}\n")
         return True

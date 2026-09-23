@@ -10,6 +10,7 @@ from commands.sub.command_pong import PongCommand
 from commands.sub.command_exit import ExitCommand
 from commands.sub.command_newsession import NewSessionCommand
 from commands.sub.command_model import NewModelCommand
+from commands.sub.command_session import OpenSessionCommand
 from model.model import Model, ModelException, Reply
 from interface.interface import CLI, Interface
 from database.database import Database
@@ -18,6 +19,7 @@ from session.message import Message
 from settings import settings
 from tool.tools import ToolRegistry
 from tool.sub.tool_gettime import TimenowTool
+from events.events import EventBus, MODEL_SWITCHED
 from tool.sub.tool_internet import InternetTool
 from tool.sub.tool_ls import LSTool
 from tool.sub.tool_cd import CDTool
@@ -65,18 +67,20 @@ class App:
             .register(PongCommand())\
             .register(ExitCommand())\
             .register(NewSessionCommand())\
-            .register(NewModelCommand())
+            .register(NewModelCommand())\
+            .register(OpenSessionCommand())
 
         self.__toolTree: ToolRegistry = ToolRegistry()\
             .register(TimenowTool())\
             .register(InternetTool())\
-            .register(LSTool())\
             .register(CatTool())\
             .register(CDTool())\
             .register(WriteTool())\
             .register(EditTool())\
             .register(TreeTool())\
+            # .register(LSTool())\
 
+        self.__events: EventBus = EventBus()
         self.__stream.bind(self)
 
     @property
@@ -85,8 +89,15 @@ class App:
 
     @model.setter
     def model(self, model: str) -> None:
-        """ Change model """
+        """ Change model, notifying whoever is listening (an interface, a logger...) """
+        previous: str = self.__model.model
         self.__model.switch(newmodel=model)
+        self.__events.dispatch(MODEL_SWITCHED, previous=previous, current=self.__model.model)
+
+    @property
+    def events(self) -> EventBus:
+        """ Subscribe here to react to what happens, without changing where it happens """
+        return self.__events
 
     @property
     def cwd(self) -> str:
@@ -130,7 +141,8 @@ class App:
                         continue
 
                     self.__stream.out("")
-                    self.__turn(userInput)
+                    # Whatever the interface attached to that message (images from a page)
+                    self.__turn(userInput, self.__stream.attachments())
                 except ModelException as e:
                     self.__stream.out(f"\n{e.message}\n")
                 except (KeyboardInterrupt, EOFError):
@@ -143,10 +155,11 @@ class App:
         self.__stream.out(f"\nGoodbye, {self.__user.name}!\n")
         return self
 
-    def __turn(self, text: str) -> None:
+    def __turn(self, text: str, images: list[str] | None = None) -> None:
         """ Answer a user message, running the tools the model asks for """
         # Saved only once complete: a failure or Ctrl+C leaves no half-turn in the session
-        pending: list[Message] = [Message("user", text)]
+        # The images ride with the message, so every tool round sends them again
+        pending: list[Message] = [Message("user", text, images=images or None)]
 
         for _ in range(settings["max_tool_rounds"]):
             reply: Reply = self.__model.chat(
@@ -172,7 +185,8 @@ class App:
                 message.content,
                 role=message.role,
                 tool_calls=message.tool_calls,
-                tool_name=message.tool_name
+                tool_name=message.tool_name,
+                images=message.images
             )
 
     def __print_chunk(self, chunk: str) -> None:

@@ -59,6 +59,12 @@ class User:
             return []
         return Session.for_user(self.db, self.id)
 
+    def summaries(self) -> list[dict]:
+        """ Get a summary of every session, newest first (the anonymous user keeps none) """
+        if self.is_anonymous:
+            return []
+        return Session.summaries(self.db, self.id)
+
     def new_session(self, system_prompt: str | None = None) -> Session:
         """ Start a new session, optionally seeded with a system prompt """
         if self.is_anonymous:
