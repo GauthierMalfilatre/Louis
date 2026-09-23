@@ -6,6 +6,7 @@
 ##
 from dataclasses import dataclass, field
 import json
+from events.events import TOOL_START, TOOL_END
 
 @dataclass(frozen=True, slots=True)
 class ToolCall:
@@ -64,11 +65,16 @@ class ToolRegistry:
         tool: Tool | None = self.__tools.get(call.name)
         if tool is None:
             return f"Error: unknown tool '{call.name}'"
+
+        manager.events.dispatch(TOOL_START, name=call.name, arguments=call.arguments)
         try:
             result = tool.handler(manager, **call.arguments)
+            ok: bool = True
         except Exception as e:
-            return f"Error: tool '{call.name}' failed: {e}"
-        return result if isinstance(result, str) else json.dumps(result, default=str)
+            result, ok = f"Error: tool '{call.name}' failed: {e}", False
+        result = result if isinstance(result, str) else json.dumps(result, default=str)
+        manager.events.dispatch(TOOL_END, name=call.name, ok=ok, result=result)
+        return result
 
     def all(self) -> list[dict]:
         """ Get every tool schema, for the model API """

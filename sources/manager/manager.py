@@ -19,7 +19,7 @@ from session.message import Message
 from settings import settings
 from tool.tools import ToolRegistry
 from tool.sub.tool_gettime import TimenowTool
-from events.events import EventBus, MODEL_SWITCHED
+from events.events import EventBus, MODEL_SWITCHED, SESSION_OPENED
 from tool.sub.tool_internet import InternetTool
 from tool.sub.tool_ls import LSTool
 from tool.sub.tool_cd import CDTool
@@ -127,6 +127,7 @@ class App:
     def session(self, session: Session) -> "App":
         if isinstance(session, Session):
             self.__session = session
+            self.__events.dispatch(SESSION_OPENED, id=session.id)
 
     @property
     def commandTree(self) -> CommandTree:

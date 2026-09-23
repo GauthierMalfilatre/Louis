@@ -56,25 +56,29 @@ class Session:
 
     @classmethod
     def latest(cls, db: Database, user_id: int) -> "Session | None":
-        """ Get the most recent session of a user, if any """
+        """ Get the session a user is most likely to want to resume: the one they were
+            last active in, not simply the last one created
+        """
         row = db.fetchone(
-            "SELECT * FROM sessions WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            "SELECT * FROM sessions WHERE user_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
             (user_id,)
         )
         return cls.__from_row(db, row) if row else None
 
     @classmethod
     def summaries(cls, db: Database, user_id: int) -> list[dict]:
-        """ Get every session of a user with its size and first message, newest first """
+        """ Get every session of a user with its size and first message,
+            most recently active first (matches what resume would reopen)
+        """
         rows = db.fetchall(
             """
-            SELECT s.id, s.created_at,
+            SELECT s.id, s.created_at, s.updated_at,
                    (SELECT COUNT(*) FROM messages m
                     WHERE m.session_id = s.id AND m.role IN ('user', 'assistant')) AS messages,
                    (SELECT m.content FROM messages m
                     WHERE m.session_id = s.id AND m.role = 'user'
                     ORDER BY m.id LIMIT 1) AS preview
-            FROM sessions s WHERE s.user_id = ? ORDER BY s.id DESC
+            FROM sessions s WHERE s.user_id = ? ORDER BY s.updated_at DESC, s.id DESC
             """,
             (user_id,)
         )
@@ -146,6 +150,10 @@ class Session:
             (self.id, role, content, tool_name)
         )
         row = self.db.fetchone("SELECT * FROM messages WHERE id = ?", (cur.lastrowid,))
+        # What "resume" (Session.latest) follows: the session just used, not just created
+        self.db.execute(
+            "UPDATE sessions SET updated_at = datetime('now', 'subsec') WHERE id = ?", (self.id,)
+        )
 
         for call in tool_calls or []:
             self.db.execute(

@@ -139,6 +139,80 @@
   }
   :root[data-theme="light"] { color-scheme: light; }
 
+  /* UltraVision: a theme with no chill whatsoever */
+  :root[data-theme="ultravision"] {
+    color-scheme: dark;
+    --bg: #05010f;
+    --sidebar: #0a0420;
+    --surface: #0e0526;
+    --surface-2: #170a38;
+    --border: #ff2fd0;
+    --border-soft: #6c2bb3;
+    --text: #f5f7ff;
+    --muted: #9be8ff;
+    --accent: #00f6ff;
+    --accent-2: #ff2fd0;
+    --accent-text: #05010f;
+    --accent-soft: rgb(0 246 255 / 0.16);
+    --user-bg: linear-gradient(120deg, #ff2fd0, #00f6ff 55%, #ffe14d);
+    --user-text: #05010f;
+    --code-bg: #0b0420;
+    --ok: #39ff9d;
+    --warn: #ffe14d;
+    --off: #7a6bb5;
+    --danger: #ff2f6d;
+    --logo-1: #00f6ff;
+    --logo-2: #ff2fd0;
+    --glow: rgb(255 47 208 / 0.5);
+    --halo: rgb(0 246 255 / 0.85);
+    --shadow: 0 0 1px #ff2fd0, 0 4px 24px rgb(255 47 208 / 0.35);
+    --shadow-lg: 0 0 1px #00f6ff, 0 8px 48px rgb(0 246 255 / 0.4);
+    --hl-keyword: #ff2fd0;
+    --hl-string: #39ff9d;
+    --hl-number: #ffe14d;
+    --hl-comment: #9be8ff;
+    --hl-function: #00f6ff;
+    --hl-type: #ff9df6;
+    --hl-builtin: #ff2f6d;
+    --hl-meta: #b98aff;
+    --hl-attr: #39ffe0;
+  }
+  /* A drifting rainbow nebula, confined to the empty chat backdrop: panels with their own
+     opaque background (header, sidebar, bubbles, composer) sit on top and are unaffected */
+  :root[data-theme="ultravision"] body {
+    background-image:
+      radial-gradient(circle at 12% 18%, rgb(255 47 208 / 0.4), transparent 42%),
+      radial-gradient(circle at 88% 12%, rgb(0 246 255 / 0.35), transparent 42%),
+      radial-gradient(circle at 50% 92%, rgb(255 225 77 / 0.3), transparent 46%),
+      radial-gradient(circle at 92% 85%, rgb(57 255 157 / 0.3), transparent 42%);
+    background-size: 200% 200%;
+    animation: uv-drift 16s ease-in-out infinite alternate;
+  }
+  :root[data-theme="ultravision"] .mark { stroke-width: 1.1; }
+  :root[data-theme="ultravision"] .logo-start { animation: uv-hue 5s linear infinite; }
+  :root[data-theme="ultravision"] .logo-end { animation: uv-hue 5s linear infinite -2.5s; }
+  :root[data-theme="ultravision"] .prompt.busy::before,
+  :root[data-theme="ultravision"] .prompt.busy::after { animation-duration: 0.9s; }
+  :root[data-theme="ultravision"] .greeting .name {
+    /* background-image, not the "background" shorthand: the shorthand resets
+       background-clip to border-box, which would undo the base rule's text-clip */
+    background-image: linear-gradient(90deg, #ff2fd0, #00f6ff, #ffe14d, #39ff9d, #ff2fd0);
+    background-size: 300% 100%;
+    animation: uv-sweep 4s linear infinite;
+  }
+  @keyframes uv-drift {
+    from { background-position: 0% 0%, 100% 0%, 50% 100%, 100% 100%; }
+    to   { background-position: 30% 40%, 65% 30%, 40% 65%, 70% 55%; }
+  }
+  @keyframes uv-hue {
+    0%   { stop-color: #ff2fd0; }
+    25%  { stop-color: #00f6ff; }
+    50%  { stop-color: #ffe14d; }
+    75%  { stop-color: #39ff9d; }
+    100% { stop-color: #ff2fd0; }
+  }
+  @keyframes uv-sweep { to { background-position: 300% 0; } }
+
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
@@ -959,6 +1033,10 @@
         <svg data-theme="dark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
         </svg>
+        <svg data-theme="ultravision" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>
+          <circle cx="12" cy="12" r="3.4"/>
+        </svg>
       </button>
     </div>
   </header>
@@ -1029,7 +1107,7 @@
   const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
   const MAX_IMAGE = 12 * 1024 * 1024;  // Same limit as the server
   const MAX_SHOTS = 6;                 // Images attached to one message
-  const THEMES = ["system", "light", "dark"];
+  const THEMES = ["system", "light", "dark", "ultravision"];
 
   const $ = (id) => document.getElementById(id);
   const scroller = $("scroller"), logEl = $("log"), form = $("form"), input = $("input");
@@ -1061,11 +1139,12 @@
   themeBtn.addEventListener("click", () => {
     theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
     applyTheme();
+    if (theme === "ultravision") addNotice("🛸 UltraVision engaged.");
   });
   applyTheme();
 
   // Same state as the server: rebuilt from its snapshot on every (re)connection
-  const state = { log: [], waiting: false, closed: false, info: null, connected: false, sending: false };
+  const state = { log: [], waiting: false, closed: false, info: null, connected: false, sending: false, tool: null };
   let pending = null;          // The thinking line, shown until the answer starts
   let dirty = null;            // assistant entry waiting for a re-render
   let frame = 0;
@@ -1265,7 +1344,7 @@
     }
     let group = null;
     for (const session of info.sessions) {
-      const label = day(session.created_at);
+      const label = day(session.updated_at);  // Sessions are now ordered by activity, not creation
       if (label !== group) {
         group = label;
         sessionsEl.append(Object.assign(document.createElement("div"), { className: "group-title", textContent: label }));
@@ -1279,7 +1358,7 @@
       title.textContent = session.preview?.trim().split("\n")[0] || "Empty session";
       const meta = document.createElement("span");
       meta.className = "meta";
-      meta.textContent = `${when(session.created_at)} · ${session.messages} message${session.messages === 1 ? "" : "s"}`;
+      meta.textContent = `${when(session.updated_at)} · ${session.messages} message${session.messages === 1 ? "" : "s"}`;
       button.append(title, meta);
       button.addEventListener("click", () => openSession(session.id));
       sessionsEl.append(button);
@@ -1393,6 +1472,14 @@
     statusEl.title = label;
     statusText.textContent = label;
 
+    // The inline "thinking" line names the tool actually running, when one is
+    const thinking = pending.querySelector(".thinking");
+    if (thinking) {
+      thinking.textContent = state.tool
+        ? `Using ${state.tool.name}${state.tool.detail ? ` · ${state.tool.detail}` : ""}…`
+        : "Thinking…";
+    }
+
     input.disabled = state.closed;
     const blind = state.info?.vision === false;  // null while the model says nothing
     attachBtn.disabled = state.closed || blind;
@@ -1428,7 +1515,9 @@
   function handle(event) {
     switch (event.type) {
       case "snapshot":
-        Object.assign(state, { log: event.log, waiting: event.waiting, closed: event.closed, info: event.info });
+        Object.assign(state, {
+          log: event.log, waiting: event.waiting, closed: event.closed, info: event.info, tool: null
+        });
         dirty = null;
         renderAll();
         return;
@@ -1438,11 +1527,13 @@
         break;
       case "reset":
         state.log = event.log;
+        state.tool = null;
         dirty = null;
         renderAll();
         return;
       case "waiting":
         state.waiting = true;
+        state.tool = null;  // Whatever ran during the last turn is over
         break;
       case "tools": {
         // They served the answer that was just shown
@@ -1487,6 +1578,13 @@
         removeEmptyState();
         break;
       }
+      case "tool_start":
+        // Live only, not part of the log: the "N tools used" summary is the lasting record
+        state.tool = { name: event.name, detail: event.detail };
+        break;
+      case "tool_end":
+        if (state.tool?.name === event.name) state.tool = null;
+        break;
     }
     if (!frame) frame = requestAnimationFrame(flush);
   }

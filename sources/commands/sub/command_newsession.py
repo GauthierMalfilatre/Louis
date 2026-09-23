@@ -6,6 +6,6 @@ class NewSessionCommand(Command):
         super().__init__("new-session", usage="[system prompt]", description="Start a new conversation")
 
     def handler(self, content: str, manager) -> bool:
+        # SESSION_OPENED tells each interface, no need to print it here
         manager.session = manager.user.new_session(content)
-        manager.stream.out("\nNew session started.\n")
         return True

@@ -16,6 +16,6 @@ class OpenSessionCommand(Command):
         if session is None:
             manager.stream.out(f"\nNo session {identifier}.\n")
             return True
+        # SESSION_OPENED tells each interface, no need to print it here
         manager.session = session
-        manager.stream.out(f"\nSession {session.id} opened.\n")
         return True

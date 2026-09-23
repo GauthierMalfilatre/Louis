@@ -19,9 +19,13 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sessions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- subsec (millisecond) precision: plain datetime('now') ties within the same second,
+    -- which is common for rapid tool-calling turns and would make resume fall back to id order
+    updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, id);
+-- idx_sessions_user_updated: created after the migration below, it needs the updated_at column
 
 CREATE TABLE IF NOT EXISTS messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,6 +50,7 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_message ON tool_calls(message_id, id);
 # Columns added after their table: CREATE TABLE IF NOT EXISTS won't add them to an existing database
 MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("messages", "tool_name", "TEXT"),
+    ("sessions", "updated_at", "TEXT"),
 )
 
 class Database:
@@ -63,6 +68,13 @@ class Database:
             columns = {row["name"] for row in self.fetchall(f"PRAGMA table_info({table})")}
             if column not in columns:
                 self.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        # A session with no updated_at yet was never touched by this column: its creation
+        # time is the best guess for its last activity, better than leaving it unsortable
+        self.execute("UPDATE sessions SET updated_at = created_at WHERE updated_at IS NULL")
+        # Only safe once the column above is guaranteed to exist, fresh database or migrated
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_user_updated ON sessions(user_id, updated_at)"
+        )
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         """ Run a write statement in its own transaction """

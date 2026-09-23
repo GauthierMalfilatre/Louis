@@ -15,7 +15,7 @@ import queue
 import threading
 from interface.interface import Interface
 from model.model import ModelException
-from events.events import Event, MODEL_SWITCHED
+from events.events import Event, MODEL_SWITCHED, TOOL_START, TOOL_END
 
 PAGE: Path = Path(__file__).with_name("static") / "index.html"
 KEEPALIVE: float = 15.0        # Seconds of silence before pinging a page, which also detects closed ones
@@ -66,17 +66,28 @@ class WebInterface(Interface):
     def bind(self, manager) -> "WebInterface":
         """ Give access to the manager, whose info is shown on the pages """
         super().bind(manager)
-        manager.events.subscribe(self.__on_event, MODEL_SWITCHED)
+        # SESSION_OPENED isn't subscribed here: __sync_session() already detects and
+        # announces a switch itself, from the same identity check it needs anyway
+        manager.events.subscribe(self.__on_event, MODEL_SWITCHED, TOOL_START, TOOL_END)
         self.__sync_session()
         self.__publish_info()
         return self
 
     def __on_event(self, event: Event) -> None:
-        """ Turn a backend event into a plain-language line shown in the conversation,
-            clearly not an answer from the model
-        """
+        """ Turn a backend event into something shown on every page """
         if event.name == MODEL_SWITCHED:
+            # A plain-language line in the conversation, clearly not an answer from the model
             self.__publish({"type": "system", "text": f"Now using {event.data['current']}"})
+        elif event.name == TOOL_START:
+            # Live only: not stacked in __log, the real record is the "N tools used" list
+            # built once the answer lands, from what the session actually kept
+            self.__publish({
+                "type": "tool_start",
+                "name": event.data["name"],
+                "detail": _detail(event.data["arguments"]),
+            })
+        elif event.name == TOOL_END:
+            self.__publish({"type": "tool_end", "name": event.data["name"], "ok": event.data["ok"]})
 
     def get(self) -> str:
         """ Wait for a message sent from a page """
@@ -201,10 +212,15 @@ class WebInterface(Interface):
         session = self.manager.session
         if session is self.__session:
             return
+        # False only for the very first sync (App just started): nothing to announce then
+        switched: bool = self.__session is not None
         self.__session = session
         # Only what a page can show: the system prompt and the tool results stay hidden,
         # the tools a round called are kept for the answer that followed them
         log  : list[dict] = []
+        if switched:
+            # SESSION_OPENED isn't used here: it would land before this reset and be wiped by it
+            log.append({"role": "system", "text": f"Now in session #{session.id}"})
         tools: list[dict] = []
         for message in session.messages:
             if message.role == "user":

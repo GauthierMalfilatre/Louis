@@ -9,7 +9,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 # One name per thing worth reacting to. Add here, not ad hoc strings elsewhere.
-MODEL_SWITCHED: str = "model.switched"  # data: previous, current
+MODEL_SWITCHED : str = "model.switched"   # data: previous, current
+SESSION_OPENED : str = "session.opened"   # data: id (a fresh or a switched-to session)
+TOOL_START     : str = "tool.start"       # data: name, arguments
+TOOL_END       : str = "tool.end"         # data: name, ok, result
 
 @dataclass(frozen=True, slots=True)
 class Event:
@@ -25,8 +28,11 @@ class EventBus:
         self.__handlers.append((handler, frozenset(names)))
         return self
 
-    def dispatch(self, name: str, **data) -> None:
-        """ Notify every handler that cares about this event """
+    def dispatch(self, name: str, /, **data) -> None:
+        """ Notify every handler that cares about this event.
+            name is positional-only: an event's own data may legitimately need a "name"
+            field too (e.g. TOOL_START's tool name), and must not collide with this one.
+        """
         event: Event = Event(name, data)
         for handler, names in self.__handlers:
             if names and name not in names:

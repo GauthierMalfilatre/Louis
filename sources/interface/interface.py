@@ -6,7 +6,7 @@
 ##
 import curses
 import os
-from events.events import MODEL_SWITCHED
+from events.events import MODEL_SWITCHED, SESSION_OPENED, TOOL_START
 
 class Interface:
     def __init__(self) -> None:
@@ -64,12 +64,16 @@ class CLI(Interface):
     def bind(self, manager) -> "CLI":
         """ Give access to the manager, and listen for what is worth telling in a terminal """
         super().bind(manager)
-        manager.events.subscribe(self.__on_event, MODEL_SWITCHED)
+        manager.events.subscribe(self.__on_event, MODEL_SWITCHED, SESSION_OPENED, TOOL_START)
         return self
 
     def __on_event(self, event) -> None:
         if event.name == MODEL_SWITCHED:
             self.out(f"\n[model] {event.data['previous']} -> {event.data['current']}\n")
+        elif event.name == SESSION_OPENED:
+            self.out(f"\n[session] #{event.data['id']}\n")
+        elif event.name == TOOL_START:
+            self.out(f"[tool] {event.data['name']}", end="\n")
 
     def get(self) -> str:
         """ Get a message from terminal """
