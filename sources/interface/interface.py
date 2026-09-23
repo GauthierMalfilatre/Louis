@@ -28,7 +28,7 @@ class Interface:
     def out(self, response: str, *, end, flush) -> None:
         ...
 
-    def debug(self, response: str, *, end, flush) -> None:
+    def debug(self, response: str, *, end="\n", flush=False) -> None:
         ...
 
     def isOpen(self) -> bool:

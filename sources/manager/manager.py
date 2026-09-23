@@ -18,6 +18,11 @@ from session.message import Message
 from settings import settings
 from tool.tools import ToolRegistry
 from tool.sub.tool_gettime import TimenowTool
+from tool.sub.tool_internet import InternetTool
+from tool.sub.tool_ls import LSTool
+from tool.sub.tool_cd import CDTool
+from tool.sub.tool_cat import CatTool
+from tool.sub.tool_write import WriteTool
 
 class AppException(Exception):
     def __init__(self, message: str = "Bad App usage"):
@@ -58,7 +63,12 @@ class App:
             .register(NewModelCommand())
 
         self.__toolTree: ToolRegistry = ToolRegistry()\
-            .register(TimenowTool())
+            .register(TimenowTool())\
+            .register(InternetTool())\
+            .register(LSTool())\
+            .register(CatTool())\
+            .register(CDTool())\
+            # .register(WriteTool())\
 
         self.__stream.bind(self)
 

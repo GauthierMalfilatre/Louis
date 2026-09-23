@@ -68,7 +68,7 @@ class WebInterface(Interface):
         if response + end:
             self.__publish({"type": "output", "text": response + end})
 
-    def debug(self, response, *, end, flush):
+    def debug(self, response, *, end="\n", flush=False):
         print(response, end=end, flush=flush)
 
     def close(self) -> None:
