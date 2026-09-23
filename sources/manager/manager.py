@@ -23,6 +23,9 @@ from tool.sub.tool_ls import LSTool
 from tool.sub.tool_cd import CDTool
 from tool.sub.tool_cat import CatTool
 from tool.sub.tool_write import WriteTool
+from tool.paths import *
+from tool.sub.edit_tool import EditTool
+from tool.sub.tree_tool import TreeTool
 
 class AppException(Exception):
     def __init__(self, message: str = "Bad App usage"):
@@ -56,6 +59,8 @@ class App:
 
         self.__stream : Interface      = stream if stream is not None else CLI(f"[{self.__user.name}]:{self.__model.model}> ")
 
+        self.__cwd: str = ROOT
+
         self.__commandTree: CommandTree = CommandTree()\
             .register(PongCommand())\
             .register(ExitCommand())\
@@ -68,7 +73,9 @@ class App:
             .register(LSTool())\
             .register(CatTool())\
             .register(CDTool())\
-            # .register(WriteTool())\
+            .register(WriteTool())\
+            .register(EditTool())\
+            .register(TreeTool())\
 
         self.__stream.bind(self)
 
@@ -80,6 +87,14 @@ class App:
     def model(self, model: str) -> None:
         """ Change model """
         self.__model.switch(newmodel=model)
+
+    @property
+    def cwd(self) -> str:
+        return self.__cwd
+
+    @cwd.setter
+    def cwd(self, nwd: str) -> None:
+        self.__cwd = nwd
 
     @property
     def db(self) -> Database | None:
