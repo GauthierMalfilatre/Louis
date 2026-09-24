@@ -150,7 +150,7 @@ class App:
         self.stream.out(f"\n{event.data['summary']}")
         if event.data.get("preview"):
             self.stream.out(event.data["preview"])
-        answer: str = self.stream.ask("Autoriser ? [o/N] ")
+        answer: str = self.stream.ask("Autoriser ? [y/n] ")
         self.__bus.dispatch(
             TOOL_GRANT_PERMISSION,
             id=event.data["id"],
