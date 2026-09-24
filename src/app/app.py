@@ -13,6 +13,8 @@ from tool.tool_manager import ToolManager
 from tool.tool import Tool
 from tool.impl.file.tool_tree import TreeTool
 from tool.impl.file.tool_cat import CatTool
+from tool.impl.file.tool_edit import EditTool
+from tool.impl.file.tool_write import WriteTool
 from events.event_bus import EventBus, Event
 from events.event_list import *
 
@@ -27,6 +29,8 @@ class App:
         self.__toolManager: ToolManager = ToolManager()\
             .register(TreeTool())\
             .register(CatTool())\
+            .register(EditTool())\
+            .register(WriteTool())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -80,6 +84,7 @@ class App:
                     self.__bus.dispatch(TOOL_USAGE_STARTED)
                     for call in reply.tool_calls:
                         tool: Tool = self.__toolManager.get(call.name)
+                        self.stream.debug(f"Calling tool {call.name}\n")
                         resp = tool.handle(self, **call.arguments)
 
                         self.__history.append(
