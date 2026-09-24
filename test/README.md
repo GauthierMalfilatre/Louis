@@ -1,1 +1,0 @@
-# Meilleur script python ever !!!!

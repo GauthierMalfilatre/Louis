@@ -72,8 +72,16 @@ class OllamaModel:
         payload: dict[str] = {
             "model": self.__model,
             "messages": messages,
-            "stream": settings.get("chat.stream", True)
+            "stream": settings.get("chat.stream", True),
+            # Without it, Ollama unloads the model after 5 minutes idle, and reloads it on the next message
+            "keep_alive": settings.get("chat.keepalive", "30m"),
+            # Must stay the same on every request: a different num_ctx makes Ollama reload the model
+            "options": {"num_ctx": settings.get("chat.context", 12288)}
         }
+
+        # The thinking is not shown: left on, it is a silent wait before every reply and tool call
+        if self.thinking:
+            payload["think"] = settings.get("chat.think", False)
 
         if tools and self.tools:
             payload["tools"] = tools

@@ -16,3 +16,6 @@ __pycache__/
 # Database
 *.db
 *.db-journal
+
+# Test 
+test/
