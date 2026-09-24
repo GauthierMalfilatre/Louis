@@ -13,12 +13,16 @@ from tool.tool_manager import ToolManager
 from tool.tool import Tool
 from tool.impl.file.tool_tree import TreeTool
 from tool.impl.file.tool_cat import CatTool
+from events.event_bus import EventBus, Event
+from events.event_list import *
 
 class App:
     """ App Class """
     def __init__(self, settings: dict[str], system_prompt: str):
         """ Init the Application class """
         self.__settings: dict[str] = settings
+
+        self.__bus: EventBus = EventBus()
 
         self.__toolManager: ToolManager = ToolManager()\
             .register(TreeTool())\
@@ -73,6 +77,7 @@ class App:
                     if not reply.tool_calls:
                         break
 
+                    self.__bus.dispatch(TOOL_USAGE_STARTED)
                     for call in reply.tool_calls:
                         tool: Tool = self.__toolManager.get(call.name)
                         resp = tool.handle(self, **call.arguments)
@@ -84,6 +89,7 @@ class App:
                                 "tool_name": call.name
                             }
                         )
+                    self.__bus.dispatch(TOOL_USAGE_ENDED)
 
                 else:
                     self.stream.debug(f"Stopped after {self.__settings.get("chat.tools.maxdepth", 8)} round of tool calls\n")
