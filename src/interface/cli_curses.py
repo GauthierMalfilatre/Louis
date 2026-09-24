@@ -15,6 +15,21 @@ import os
 PAD_LINES: int = 3000   # Lines of conversation kept: the oldest ones scroll away
 BUSY     : str = "Gamberging"
 
+# The colors of the web interface of the prototype, its dark theme (terminals mostly are): the closest
+# ones of 256 colors, or of the 8 basic ones. name: (text, background), -1 is the one of the terminal
+COLORS_256: dict[str, tuple[int, int]] = {
+    "user"  : (231, 54),   # --user-text #f6f0ff on --user-bg #57219f, a bit darker
+    "accent": (141, -1),   # --accent #bb8dff
+    "ok"    : (78, -1),    # --ok #3ccf7a
+    "danger": (211, -1),   # --danger #ff7aa2
+}
+COLORS_8: dict[str, tuple[int, int]] = {
+    "user"  : (curses.COLOR_WHITE, curses.COLOR_MAGENTA),
+    "accent": (curses.COLOR_MAGENTA, -1),
+    "ok"    : (curses.COLOR_GREEN, -1),
+    "danger": (curses.COLOR_RED, -1),
+}
+
 # The keys some terminals send as escape sequences curses does not know (after the \x1b)
 SEQUENCES: dict[str, int] = {
     "[A": curses.KEY_UP, "[B": curses.KEY_DOWN, "[C": curses.KEY_RIGHT, "[D": curses.KEY_LEFT,
@@ -41,6 +56,8 @@ class CursesCLI(CLI):
         self.__busy      : bool                       = False
         # The tool call running: its row, its line, and its place in the transcript
         self.__tool      : tuple[int, str, int] | None = None
+        # The attributes of the colors, by name: none when the terminal has no colors
+        self.__colors    : dict[str, int]             = {}
 
     def __enter__(self) -> "CursesCLI":
         """ Open the window """
@@ -52,6 +69,7 @@ class CursesCLI(CLI):
         curses.cbreak()
         # Ctrl+C must not throw away what curses just drew: the screen would no longer be what it believes
         curses.noqiflush()
+        self.__colors = CursesCLI.__palette()
         self.__layout()
         return self
 
@@ -119,8 +137,12 @@ class CursesCLI(CLI):
         self.__cursor(False)
         if prompt == self.promp and text.strip():
             self.__history.append(text)
-        # What the user typed stays in the conversation, as in a terminal
-        self.__add(prompt + text + "\n", curses.A_BOLD)
+        # What the user typed stays in the conversation, as in a terminal: a message on the purple of the web page
+        if prompt == self.promp:
+            self.__add(f" {prompt}{text} ", self.__colors.get("user", curses.A_NORMAL) | curses.A_BOLD)
+            self.__add("\n", curses.A_NORMAL)
+        else:
+            self.__add(prompt + text + "\n", curses.A_BOLD)
         self.__top = None
         self.__refresh()
         self.__status(self.__busy)
@@ -144,13 +166,16 @@ class CursesCLI(CLI):
         row, line, index = tool
         ok: bool = event.data["ok"]
         status: str = f"✓ {event.data['duration']:.2f}s" if ok else f"✗ {event.data['result'].splitlines()[0]}"
-        text: str = f"{line}  {status}"[:curses.COLS - 1]
-        self.__transcript[index] = (text + "\n", curses.A_DIM)
+        status = status[:max(0, curses.COLS - 3 - len(line))]
+        color: int = self.__colors.get("ok" if ok else "danger", curses.A_DIM)
+        # The line of the call dim, its status in color: kept in pieces, to be drawn again the same way
+        self.__transcript[index:index + 1] = [(f"{line}  ", curses.A_DIM), (status, color), ("\n", curses.A_NORMAL)]
         # Written over the line of the call, then back where the conversation goes on
         y, x = self.__pad.getyx()
         self.__pad.move(row, 0)
         self.__pad.clrtoeol()
-        self.__pad.addstr(row, 0, text, curses.A_DIM)
+        self.__pad.addstr(row, 0, f"{line}  ", curses.A_DIM)
+        self.__pad.addstr(status, color)
         self.__pad.move(y, x)
         self.__refresh()
 
@@ -233,8 +258,26 @@ class CursesCLI(CLI):
         self.__busy = busy
         self.__input.erase()
         if busy:
-            self.__input.addnstr(0, 0, BUSY, curses.COLS - 1, curses.A_DIM)
+            self.__input.addnstr(0, 0, BUSY, curses.COLS - 1, self.__colors.get("accent", curses.A_DIM))
         self.__input.refresh()
+
+    @staticmethod
+    def __palette() -> dict[str, int]:
+        """ The attributes of the colors of the web page, as close as the terminal can: none without colors """
+        if not curses.has_colors():
+            return {}
+        curses.start_color()
+        try:
+            # -1 is then the text or the background of the terminal itself
+            curses.use_default_colors()
+        except curses.error:
+            return {}
+        colors: dict[str, tuple[int, int]] = COLORS_256 if curses.COLORS >= 256 else COLORS_8
+        attributes: dict[str, int] = {}
+        for number, (name, (text, background)) in enumerate(colors.items(), 1):
+            curses.init_pair(number, text, background)
+            attributes[name] = curses.color_pair(number)
+        return attributes
 
     @staticmethod
     def __cursor(visible: bool) -> None:
