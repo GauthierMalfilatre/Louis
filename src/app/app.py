@@ -53,20 +53,40 @@ class App:
 
                 self.stream.out("\n", end="")
 
-                reply: Reply = self.__model.chat(
-                    self.__history,
-                    self.__toolManager.all(),
-                    on_text=self.__print_chunck
-                )
+                for _ in range(self.__settings.get("chat.tools.maxdepth", 8)):
+                    reply: Reply = self.__model.chat(
+                        self.__history,
+                        self.__toolManager.all(),
+                        on_text=self.__print_chunck
+                    )
+
+                    self.__history.append(
+                        {
+                            "role": "assistant",
+                            "content": reply.content,
+                            "tool_calls": [call.to_dict() for call in reply.tool_calls] if reply.tool_calls else None
+                        }
+                    )
+
+                    if not reply.tool_calls:
+                        break
+
+                    for call in reply.tool_calls:
+                        tool: Tool = self.__toolManager.get(call.name)
+                        resp = tool.handle(self, **call.arguments)
+
+                        self.__history.append(
+                            {
+                                "role": "tool",
+                                "content": resp,
+                                "tool_name": call.name
+                            }
+                        )
+
+                else:
+                    self.stream.debug(f"Stopped after {self.__settings.get("chat.tools.maxdepth", 8)} round of tool calls\n")
 
                 self.stream.out("\n")
-
-                self.__history.append(
-                    {
-                        "role": "assistant",
-                        "content": reply.content
-                    }
-                )
 
             except KeyboardInterrupt:
                 self.stream.debug("User has closed the session...\n")

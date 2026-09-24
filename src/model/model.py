@@ -10,6 +10,7 @@ from .model_exception import ModelException
 from .reply import Reply
 from config.settings import settings
 import json
+from tool.tool_call import ToolCall
 
 CHAT_TIMEOUT: tuple[float, float] = (
     settings.get("chat.timeout.connect", 5.0),
@@ -59,7 +60,14 @@ class OllamaModel:
         capabilities: list[str] | None = res.json().get("capabilities")
         return set(capabilities) if capabilities is not None else {"tools", "vision"}
 
-    def chat(self, messages: list[dict], tools: list[dict] = [], images: list[str] = [], *, on_text: Callable | None = None) -> Reply:
+    def chat(
+            self,
+            messages: list[dict],
+            tools: list[dict] = [],
+            images: list[str] = [],
+            *,
+            on_text: Callable | None = None
+        ) -> Reply:
         """ Send a conversation to the model, and returning its reply. Images are a list of path """
         payload: dict[str] = {
             "model": self.__model,
@@ -92,11 +100,9 @@ class OllamaModel:
                             on_text(reply.content[shown:])
                             shown = len(reply.content)
 
-                    # TODO: Tools
-                    # Tool calls can be spread over several chunks: collect them all
-                    # reply.tool_calls += [
-                    #     ToolCall.from_dict(call) for call in message.get("tool_calls") or []
-                    # ]
+                    reply.tool_calls += [
+                        ToolCall.from_dict(call) for call in message.get("tool_calls") or []
+                    ]
 
                 res.raise_for_status()
         except requests.RequestException as e:
@@ -104,9 +110,8 @@ class OllamaModel:
         except json.JSONDecodeError as e:
             raise ModelException(f"Bad response from model: {e}") from e
 
-        # TODO: Tools
-        # if names and not reply.tool_calls and (calls := self.__text_calls(reply.content, names)):
-        #     reply.content, reply.tool_calls = "", calls
+        if names and not reply.tool_calls and (calls := self.__text_calls(reply.content, names)):
+            reply.content, reply.tool_calls = "", calls
         if on_text is not None and shown < len(reply.content):
             on_text(reply.content[shown:])
         return reply
@@ -117,26 +122,26 @@ class OllamaModel:
         start: str = content.lstrip()
         return start.startswith("{") or TOOL_CALL_OPEN.startswith(start[:len(TOOL_CALL_OPEN)])
 
-    # @staticmethod
-    # def __text_calls(content: str, names: set[str]) -> list[ToolCall]:
-    #     """ Get the tool calls written as text, if the whole reply is made of calls to known tools """
-    #     decoder: json.JSONDecoder = json.JSONDecoder()
-    #     calls  : list[ToolCall] = []
-    #     text   : str = content.strip()
-    #     while text:
-    #         text = text.removeprefix(TOOL_CALL_OPEN).lstrip()
-    #         try:
-    #             data, end = decoder.raw_decode(text)
-    #         except json.JSONDecodeError:
-    #             return []
-    #         name = data.get("name") if isinstance(data, dict) else None
-    #         # Unknown names are left as text: the model made the tool up
-    #         if not isinstance(name, str) or name not in names:
-    #             return []
-    #         # llama3.2 says "parameters" where the others say "arguments"
-    #         arguments = data.get("arguments", data.get("parameters")) or {}
-    #         if not isinstance(arguments, dict):
-    #             return []
-    #         calls.append(ToolCall(name, arguments))
-    #         text = text[end:].lstrip().removeprefix(TOOL_CALL_CLOSE).lstrip()
-    #     return calls
+    @staticmethod
+    def __text_calls(content: str, names: set[str]) -> list[ToolCall]:
+        """ Get the tool calls written as text, if the whole reply is made of calls to known tools """
+        decoder: json.JSONDecoder = json.JSONDecoder()
+        calls  : list[ToolCall] = []
+        text   : str = content.strip()
+        while text:
+            text = text.removeprefix(TOOL_CALL_OPEN).lstrip()
+            try:
+                data, end = decoder.raw_decode(text)
+            except json.JSONDecodeError:
+                return []
+            name = data.get("name") if isinstance(data, dict) else None
+            # Unknown names are left as text: the model made the tool up
+            if not isinstance(name, str) or name not in names:
+                return []
+            # llama3.2 says "parameters" where the others say "arguments"
+            arguments = data.get("arguments", data.get("parameters")) or {}
+            if not isinstance(arguments, dict):
+                return []
+            calls.append(ToolCall(name, arguments))
+            text = text[end:].lstrip().removeprefix(TOOL_CALL_CLOSE).lstrip()
+        return calls

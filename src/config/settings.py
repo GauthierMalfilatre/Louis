@@ -12,6 +12,7 @@ settings: dict[str] = {
     "chat.timeout.response": 600.0,
     "chat.model.name"      : "qwen3",
     "chat.model.parameters": "8b",
-    "chat.uri"             : "http://localhost:11434"
+    "chat.uri"             : "http://localhost:11434",
+    "chat.tools.maxdepth"  : 8,
 
 }
