@@ -14,7 +14,12 @@ class Interface(ABC):
 
     @abstractmethod
     def getUserInput(self) -> str:
-        """ Get the user input """
+        """ Get the user input, raise EOFError when there is no more of it """
+        ...
+
+    @abstractmethod
+    def ask(self, question: str) -> str:
+        """ Ask the user a question, and get the answer """
         ...
 
     @abstractmethod
