@@ -37,6 +37,10 @@ def setup_logger(directory: str | None = None, level: int = logging.DEBUG) -> lo
     handler.setFormatter(_Formatter(LOG_FORMAT))
     log.addHandler(handler)
     log.setLevel(level)
+    # The warnings of the libraries (requests, ddgs...) go to the log too: printed on stderr, they would
+    # land in the middle of the curses window
+    logging.getLogger().addHandler(handler)
+    logging.captureWarnings(True)
     return log
 
 def log_event(event) -> None:

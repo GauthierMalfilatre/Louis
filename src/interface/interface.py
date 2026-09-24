@@ -15,6 +15,14 @@ class Interface(ABC):
         """ Init the class Interface """
         ...
 
+    def __enter__(self) -> "Interface":
+        """ Open the interface (a window, a server...): nothing to do by default """
+        return self
+
+    def __exit__(self, *exception) -> None:
+        """ Close it, even when Louis crashes: the terminal must be left as it was found """
+        return None
+
     @abstractmethod
     def bind(self, bus) -> "Interface":
         """

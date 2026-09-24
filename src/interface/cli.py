@@ -59,10 +59,10 @@ class CLI(Interface):
         bus.subscribe(lambda event: self.out("\n", end=""), CHAT_TURN_STARTED)
         bus.subscribe(lambda event: self.out(event.data["text"], end="", flush=True), CHAT_TEXT)
         # What comes next (a tool call, another reply) starts on its own line
-        bus.subscribe(lambda event: event.data["content"] and self.__newline(), CHAT_REPLY)
+        bus.subscribe(lambda event: event.data["content"] and self._newline(), CHAT_REPLY)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
-        bus.subscribe(self.__on_tool_started, TOOL_CALL_STARTED)
-        bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
+        bus.subscribe(self._on_tool_started, TOOL_CALL_STARTED)
+        bus.subscribe(self._on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(lambda event: self.debug("\nUser has closed the session...\n"), APP_STOPPED)
         bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
@@ -76,7 +76,7 @@ class CLI(Interface):
 
     def __on_turn_ended(self, event: Event) -> None:
         """ A blank line after the reply, or why it stopped """
-        self.__newline()
+        self._newline()
         match event.data["reason"]:
             case "done":
                 self.out("")
@@ -87,19 +87,23 @@ class CLI(Interface):
             case _:
                 self.out(f"{event.data['message']}\n")
 
-    def __on_tool_started(self, event: Event) -> None:
+    def _tool_line(self, event: Event) -> str:
         """   | cat_file path=version.py """
-        self.__newline()
         mark: str = MARKS.get(event.data["producer"], MARKS["system"])
-        self.out(f"{mark}{event.data['name']} {arguments(event.data['arguments'])}".rstrip(), flush=True)
+        return f"{mark}{event.data['name']} {arguments(event.data['arguments'])}".rstrip()
 
-    def __on_tool_ended(self, event: Event) -> None:
+    def _on_tool_started(self, event: Event) -> None:
+        """ The tool call, on its own line """
+        self._newline()
+        self.out(self._tool_line(event), flush=True)
+
+    def _on_tool_ended(self, event: Event) -> None:
         """ Only a tool that could not run is worth a line: unknown, or crashed """
         if not event.data["ok"]:
             mark: str = MARKS.get(event.data["producer"], MARKS["system"])
             self.out(f"{mark}  -> {event.data['result'].splitlines()[0]}")
 
-    def __newline(self) -> None:
+    def _newline(self) -> None:
         """ Go to the next line, unless the last text written ended one """
         if not self.__at_line_start:
             self.out("")
@@ -165,8 +169,7 @@ class CLI(Interface):
 
     def getUserInput(self):
         """ Get the user input from stdin """
-        self.out(self.promp, end="", flush=True)
-        uin: str = sys.stdin.readline()
+        uin: str = self._read_line(self.promp)
         if not isinstance(uin, str):
             raise TypeError("User input doesnt seems to be an str")
         # readline() gives "" only at the end of the input (Ctrl+D): an empty line is "\n"
@@ -178,22 +181,30 @@ class CLI(Interface):
 
     def ask(self, question: str) -> str:
         """ Ask the user a question on stdin, the answer is empty at the end of the input """
-        self.out(question, end="", flush=True)
-        answer: str = sys.stdin.readline()
+        answer: str = self._read_line(question)
         self.__at_line_start = True
         return answer
 
-    def out(self, content, *, end="\n", flush=False):
-        """ Print somthing on the stdout """
+    def out(self, content, *, end="\n", flush=False, dim=False):
+        """ Print somthing, dim for what is less important (it goes to stderr in a plain terminal) """
         text: str = content + end
-        sys.stdout.write(text)
+        self._write(text, dim=dim)
         if text:
             self.__at_line_start = text.endswith("\n")
-        if flush:
-            sys.stdout.flush()
         return self
 
     def debug(self, content):
         """ Print smth on stderr """
-        sys.stderr.write(content)
+        self._write(content, dim=True)
         return self
+
+    def _write(self, text: str, *, dim: bool = False) -> None:
+        """ The one way the CLI draws: a plain terminal writes on stdout, or stderr for dim text """
+        stream = sys.stderr if dim else sys.stdout
+        stream.write(text)
+        stream.flush()
+
+    def _read_line(self, prompt: str) -> str:
+        """ The one way the CLI reads: a line typed after prompt, "" at the end of the input """
+        self._write(prompt)
+        return sys.stdin.readline()

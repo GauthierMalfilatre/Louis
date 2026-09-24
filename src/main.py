@@ -6,7 +6,9 @@
 ##
 import sys
 import os
+from interface.interface import Interface
 from interface.cli import CLI
+from interface.cli_curses import CursesCLI
 from app.app import App
 from config.settings import settings
 from config.prompt import SYSTEM_PROMPT
@@ -20,10 +22,11 @@ def parse() -> argparse.Namespace:
 
     parser.add_argument("--prompt", type=str, default=SYSTEM_PROMPT, help="system prompt")
     parser.add_argument("--user", type=str, default=ANONYMOUS, help=f"user name, whose sessions are saved (not {ANONYMOUS}'s)")
+    parser.add_argument("--plain", action="store_true", help="plain terminal output, without the curses window")
 
     return parser.parse_args()
 
-def run(system_prompt: str, username: str) -> int:
+def run(system_prompt: str, username: str, plain: bool = False) -> int:
     """ Run the main programm by creating the Application and running it """
 
     db: Database | None = None
@@ -35,10 +38,15 @@ def run(system_prompt: str, username: str) -> int:
         else:
             user = User.anonymous()
 
-        # The interface is chosen here: the app only talks to it through its event bus
-        app: App = App(settings, system_prompt, user, CLI("> "))
+        # The interface is chosen here: the app only talks to it through its event bus.
+        # A curses window needs a real terminal: piped or redirected, Louis writes plain text
+        terminal: bool = sys.stdin.isatty() and sys.stdout.isatty()
+        interface: Interface = CursesCLI("> ") if terminal and not plain else CLI("> ")
 
-        res = app.run()
+        # Opened and closed around the whole run, even when it crashes
+        with interface:
+            app: App = App(settings, system_prompt, user, interface)
+            res = app.run()
     except Exception:
         log.exception("[app] crashed")
         raise
@@ -55,6 +63,6 @@ if __name__ == "__main__":
     log.info(f"===== louis started in {os.getcwd()} =====")
     log.debug(f"[app] settings: {settings}")
 
-    exitcode = run(args.prompt, args.user)
+    exitcode = run(args.prompt, args.user, args.plain)
 
     sys.exit(exitcode)
