@@ -6,26 +6,16 @@
 ##
 import sys
 from interface.cli import CLI
+from app.app import App
+from config.settings import settings
 
 def run() -> int:
     """ Run the main programm by creating the Application and running it """
-    cli: CLI = CLI()
 
-    while True:
-        try:
-            # Getting the user input
-            u = cli.getUserInput()
+    app: App = App(settings)
 
-            # Logging out the user input (stdout)
-            cli.out(u)
-
-            # Logging out the user input (stderr (as debug))
-            cli.debug(f"User typing {u}")
-        except KeyboardInterrupt:
-            cli.debug("User has closed the session...\n")
-            break
-
-    return 0
+    res = app.run()
+    return res
 
 if __name__ == "__main__":
     exitcode = run()

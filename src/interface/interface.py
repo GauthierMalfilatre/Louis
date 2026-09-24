@@ -18,7 +18,7 @@ class Interface(ABC):
         ...
 
     @abstractmethod
-    def out(self, content: str) -> "Interface":
+    def out(self, content: str, *, end="\n", flush=False) -> "Interface":
         """ Print out on the interface """
         ...
 
