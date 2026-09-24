@@ -12,6 +12,7 @@ from model.reply import Reply
 from tool.tool_manager import ToolManager
 from tool.tool import Tool
 from tool.impl.file.tool_tree import TreeTool
+from tool.impl.file.tool_cat import CatTool
 
 class App:
     """ App Class """
@@ -21,6 +22,7 @@ class App:
 
         self.__toolManager: ToolManager = ToolManager()\
             .register(TreeTool())\
+            .register(CatTool())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
