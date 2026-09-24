@@ -53,7 +53,7 @@ class TreeTool(Tool):
         if not os.path.isdir(full):
             return f"Erreur : '{path}' n'est pas un dossier."
 
-        app.stream.debug(f"\n>>> tree: {full} (depth={depth})\n")
+        # app.stream.debug(f"\n>>> tree: {full} (depth={depth})\n")
 
         root = display_path(full)
         lines = [root if root.endswith("/") else root + "/"]
@@ -69,7 +69,7 @@ class TreeTool(Tool):
                         "augmente depth ou appelle tree sur un sous-dossier.)")
 
         res = "\n".join(lines)
-        app.stream.debug(f"---\n{res}\n---\n")
+        # app.stream.debug(f"---\n{res}\n---\n")
         return res
 
     def _walk(self, dir_path, prefix, level, depth, lines, stats):
