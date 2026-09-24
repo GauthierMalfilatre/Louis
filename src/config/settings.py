@@ -13,6 +13,6 @@ settings: dict[str] = {
     "chat.model.name"      : "qwen3",
     "chat.model.parameters": "8b",
     "chat.uri"             : "http://localhost:11434",
-    "chat.tools.maxdepth"  : 8,
+    "chat.tools.maxdepth"  : 128,
 
 }

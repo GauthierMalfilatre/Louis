@@ -8,12 +8,13 @@ import sys
 from interface.cli import CLI
 from app.app import App
 from config.settings import settings
+from config.prompt import SYSTEM_PROMPT
 import argparse
 
 def parse() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Louis")
 
-    parser.add_argument("--prompt", type=str, default="You are Louis, a helpfull AI assistant that always give short and clear responses.", help="system prompt")
+    parser.add_argument("--prompt", type=str, default=SYSTEM_PROMPT, help="system prompt")
 
     return parser.parse_args()
 
