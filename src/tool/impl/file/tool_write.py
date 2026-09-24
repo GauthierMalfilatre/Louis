@@ -8,6 +8,7 @@ from tool.tool import Tool
 import os
 from utils.path import resolve_path, display_path
 from utils.diff import diff_preview
+from utils.syntax import check_python, syntax_warning, syntax_note
 
 class WriteTool(Tool):
     def __init__(self):
@@ -64,7 +65,8 @@ class WriteTool(Tool):
                     before = f.read()
             except (OSError, UnicodeDecodeError):
                 pass
-        summary = f"{'Remplacement' if existed else 'Création'} de {display_path(full)} :"
+        content, repaired, error = check_python(full, content)
+        summary = f"{'Remplacement' if existed else 'Création'} de {display_path(full)}{syntax_warning(error)} :"
         if not app.permissions.request(self.name, summary, diff_preview(before, content)):
             return (f"Refusé : l'utilisateur n'a pas autorisé l'écriture de '{path}'. "
                     "Ne la retente pas : demande-lui ce qu'il veut à la place.")
@@ -78,4 +80,5 @@ class WriteTool(Tool):
 
         lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         action = "remplacé" if existed else "créé"
-        return f"OK : {display_path(full)} {action} ({lines} lignes, {len(content)} caractères)."
+        return (f"OK : {display_path(full)} {action} ({lines} lignes, {len(content)} caractères)."
+                f"{syntax_note(repaired, error)}")

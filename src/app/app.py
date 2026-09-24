@@ -15,12 +15,20 @@ from tool.impl.file.tool_tree import TreeTool
 from tool.impl.file.tool_cat import CatTool
 from tool.impl.file.tool_edit import EditTool
 from tool.impl.file.tool_write import WriteTool
+from tool.impl.file.tool_search import SearchTool
 from tool.permission import PermissionManager
 from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
+from config.prompt import NUDGE_PROMPT
 import json
+import re
 import time
+
+# A reply that says what the model is about to do, in French or English
+ANNOUNCE: re.Pattern = re.compile(
+    r"\b(je vais|je m'apprête à|laisse-moi|i will|i'll|let me|i am going to|i'm going to)\b", re.IGNORECASE
+)
 
 class App:
     """ App Class """
@@ -40,6 +48,7 @@ class App:
             .register(CatTool())\
             .register(EditTool())\
             .register(WriteTool())\
+            .register(SearchTool())\
 
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
@@ -80,6 +89,7 @@ class App:
 
                 self.stream.out("\n", end="")
 
+                nudged: bool = False
                 for _ in range(self.__settings.get("chat.tools.maxdepth", 8)):
                     reply: Reply = self.__model.chat(
                         self.__history,
@@ -96,7 +106,14 @@ class App:
                     )
 
                     if not reply.tool_calls:
-                        break
+                        # Once per message, so a wrong guess costs one round and never loops
+                        if nudged or not ANNOUNCE.search(reply.content):
+                            break
+                        nudged = True
+                        log.info("[app] the model announced an action without calling a tool: nudging it")
+                        self.stream.debug("\n(Louis a annoncé une action sans la faire : relance)\n")
+                        self.__history.append({"role": "user", "content": NUDGE_PROMPT})
+                        continue
 
                     self.__bus.dispatch(TOOL_USAGE_STARTED)
                     for call in reply.tool_calls:

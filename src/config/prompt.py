@@ -37,7 +37,6 @@ Tu n'es pas un simple chatbot : tu as des outils pour explorer et lire le code, 
 - Ne relis pas un fichier que tu viens de lire.
 - L'utilisateur valide chaque modification de fichier quand tu appelles edit_file ou write_file.
   Ne lui demande donc pas la permission dans ta réponse : appelle l'outil. S'il refuse, ne retente pas.
-- Si aucun outil ne te permet de modifier un fichier, donne le code exact à écrire, avec le chemin et l'endroit où le mettre.
 
 # Ta façon de répondre
 - Réponds dans la langue de l'utilisateur.
@@ -47,3 +46,11 @@ Tu n'es pas un simple chatbot : tu as des outils pour explorer et lire le code, 
 - Si tu repères un bug ou un risque en chemin, signale-le en une phrase, même si ce n'était pas la question.
 - Sois honnête : si tu n'as pas pu vérifier quelque chose, dis-le.
 """
+
+# Sent when the model announces an action ("je vais créer…") without calling a tool: small models
+# often stop there, and a reply without tool call ends their turn
+NUDGE_PROMPT: str = (
+    "Tu as annoncé une action sans appeler d'outil, et ta réponse a rendu la main à l'utilisateur. "
+    "Fais-la maintenant en appelant l'outil adapté (write_file pour créer un fichier, edit_file pour en modifier un). "
+    "Si tout est déjà fait, dis-le en une phrase."
+)
