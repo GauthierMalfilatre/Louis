@@ -13,7 +13,7 @@ import argparse
 def parse() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Louis")
 
-    parser.add_argument("prompt", nargs="?", default="You are Louis, a helpfull AI assistant that always give short and clear responses.", help="system prompt")
+    parser.add_argument("--prompt", type=str, default="You are Louis, a helpfull AI assistant that always give short and clear responses.", help="system prompt")
 
     return parser.parse_args()
 
