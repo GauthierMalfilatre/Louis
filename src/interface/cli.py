@@ -8,7 +8,7 @@ from interface.interface import Interface
 from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, COMMAND_UNKNOWN, COMMAND_ERROR
-from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
+from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 import os
 import sys
 
@@ -46,7 +46,18 @@ class CLI(Interface):
         bus.subscribe(self.__on_session_resumed, SESSION_RESUMED)
         bus.subscribe(self.__on_command_unknown, COMMAND_UNKNOWN)
         bus.subscribe(self.__on_command_error, COMMAND_ERROR)
+        bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
+        bus.subscribe(self.__on_thinking_disabled, THINKING_DISABLED)
         return self
+
+    def __on_thinking_enabled(self, event: Event) -> None:
+        """ The thinking is not shown: say the replies will be slower, and where to read it """
+        self.out("\nRéflexion activée : Louis réfléchit avant chaque réponse, c'est plus long "
+                 "(sa réflexion est dans louis.log). /think pour la couper.\n")
+
+    def __on_thinking_disabled(self, event: Event) -> None:
+        """ Back to direct replies """
+        self.out("\nRéflexion désactivée : Louis répond directement.\n")
 
     def __on_permission(self, event: Event) -> None:
         """ Show what a tool wants to do and its diff, then grant it if the user agrees """

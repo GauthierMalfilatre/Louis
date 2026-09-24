@@ -27,6 +27,7 @@ from session.user import User
 from session.session import Session
 from command.command import CommandTree
 from command.impl.command_clear import ClearCommand
+from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
 import json
@@ -72,6 +73,7 @@ class App:
             .register(ClearCommand())\
             .register(SessionsCommand())\
             .register(ResumeCommand())\
+            .register(ToggleThinkCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -102,6 +104,22 @@ class App:
     def session(self) -> Session:
         """ Get the current session of the user, where the conversation is kept """
         return self.__user.current_session
+
+    @property
+    def model(self) -> OllamaModel:
+        """ Returns the current model """
+        return self.__model
+
+    @property
+    def think(self) -> bool:
+        """ Returns if thinking is activate """
+        return self.__settings["chat.think"] and self.model.thinking
+
+    @think.setter
+    def think(self, state: bool) -> None:
+        """ Set the current thinking mode, for the next requests: the model reads the same settings """
+        if self.model.thinking:
+            self.__settings["chat.think"] = state
 
     def new_session(self, system_prompt: str | None = None) -> Session:
         """ Start a new session of the user, on the given system prompt or on the one Louis started with """

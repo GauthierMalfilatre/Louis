@@ -4,6 +4,10 @@
 ## File description:
 ## Event list
 ##
+# The thinking mode of the model, switched by /think: it thinks before every reply from then on
+THINKING_ENABLED  = "chat.thinking.enabled"    # data: none
+THINKING_DISABLED = "chat.thinking.disabled"   # data: none
+
 TOOL_USAGE_STARTED = "tool.usage.started"
 TOOL_USAGE_ENDED   = "tool.usage.ended"
 
