@@ -63,7 +63,7 @@ class EditTool(Tool):
         if os.path.isdir(full):
             return f"Erreur : '{path}' est un dossier."
 
-        manager.stream.debug(f"\n>>> edit_file: {full}\n")
+        # manager.stream.debug(f"\n>>> edit_file: {full}\n")
 
         try:
             # newline="" : on garde les fins de ligne du fichier telles quelles
@@ -112,5 +112,5 @@ class EditTool(Tool):
 
         what = f"{count} occurrences remplacées" if replace_all else "1 occurrence remplacée"
         res = f"OK : {what} dans {display_path(full)}.\n{snippet}"
-        manager.stream.debug(f"---\n{res}\n---\n")
+        # manager.stream.debug(f"---\n{res}\n---\n")
         return res

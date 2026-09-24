@@ -11,6 +11,7 @@ from .reply import Reply
 from config.settings import settings
 import json
 from tool.tool_call import ToolCall
+from logger.logger import log
 
 CHAT_TIMEOUT: tuple[float, float] = (
     settings.get("chat.timeout.connect", 5.0),
@@ -27,6 +28,8 @@ class OllamaModel:
         self.__uri    = uri
         self.__model  = model
         self.__skills = OllamaModel.__probe(uri, model)
+        self.__requests: int = 0
+        log.info(f"[model] {model} at {uri}, capabilities: {', '.join(sorted(self.__skills))}")
 
     @property
     def model(self) -> str:
@@ -90,6 +93,11 @@ class OllamaModel:
 
         reply: Reply = Reply()
 
+        self.__requests += 1
+        log.debug(f"[model] request #{self.__requests}: {len(messages)} messages, last one from {messages[-1]['role'] if messages else None}")
+        thinking: str = ""
+        stats: dict = {}
+
         shown: int = 0
         try:
             with requests.post(
@@ -102,6 +110,9 @@ class OllamaModel:
                     if "error" in chunk:
                         raise ModelException(f"Model error: {chunk['error']}")
                     message: dict = chunk.get("message") or {}
+                    if chunk.get("done"):
+                        stats = chunk
+                    thinking += message.get("thinking") or ""
                     if text := message.get("content"):
                         reply.content += text
                         if on_text is not None and not (names and self.__maybe_call(reply.content)):
@@ -119,10 +130,34 @@ class OllamaModel:
             raise ModelException(f"Bad response from model: {e}") from e
 
         if names and not reply.tool_calls and (calls := self.__text_calls(reply.content, names)):
+            log.debug(f"[model] tool calls written as text, parsed from:\n{reply.content}")
             reply.content, reply.tool_calls = "", calls
         if on_text is not None and shown < len(reply.content):
             on_text(reply.content[shown:])
+
+        OllamaModel.__log_reply(reply, thinking, stats)
         return reply
+
+    @staticmethod
+    def __log_reply(reply: Reply, thinking: str, stats: dict) -> None:
+        """ Log what the model thought and answered, and how long Ollama took """
+        if thinking:
+            log.debug(f"[model] thinking:\n{thinking}")
+        if reply.content:
+            log.info(f"[model] reply:\n{reply.content}")
+        for call in reply.tool_calls:
+            log.info(f"[model] tool call {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
+
+        def seconds(key: str) -> float:
+            return stats.get(key, 0) / 1e9
+        generated: int = stats.get("eval_count", 0)
+        speed: float = generated / seconds("eval_duration") if stats.get("eval_duration") else 0.0
+        log.debug(
+            f"[model] prompt {stats.get('prompt_eval_count', 0)} tokens in {seconds('prompt_eval_duration'):.2f}s, "
+            f"generated {generated} tokens in {seconds('eval_duration'):.2f}s ({speed:.1f} tok/s), "
+            f"load {seconds('load_duration'):.2f}s, total {seconds('total_duration'):.2f}s, "
+            f"done: {stats.get('done_reason')}"
+        )
 
     @staticmethod
     def __maybe_call(content: str) -> bool:

@@ -1,6 +1,7 @@
 from tool.tool import Tool
 import os
 from utils.path import resolve_path, display_path
+from utils.diff import diff_preview
 
 CONTEXT_LINES = 3
 
@@ -90,6 +91,10 @@ class EditTool(Tool):
 
         first = text.find(old_str)
         new_text = text.replace(old_str, new_str) if replace_all else text.replace(old_str, new_str, 1)
+
+        if not manager.permissions.request(self.name, f"Modification de {display_path(full)} :", diff_preview(text, new_text)):
+            return (f"Refusé : l'utilisateur n'a pas autorisé la modification de '{path}'. "
+                    "Ne la retente pas : demande-lui ce qu'il veut à la place.")
 
         try:
             with open(full, "w", encoding="utf-8", newline="") as f:

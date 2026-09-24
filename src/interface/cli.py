@@ -25,7 +25,15 @@ class CLI(Interface):
         uin: str = sys.stdin.readline()
         if not isinstance(uin, str):
             raise TypeError("User input doesnt seems to be an str")
+        # readline() gives "" only at the end of the input (Ctrl+D): an empty line is "\n"
+        if not uin:
+            raise EOFError
         return uin
+
+    def ask(self, question: str) -> str:
+        """ Ask the user a question on stdin, the answer is empty at the end of the input """
+        self.out(question, end="", flush=True)
+        return sys.stdin.readline()
 
     def out(self, content, *, end="\n", flush=False):
         """ Print somthing on the stdout """

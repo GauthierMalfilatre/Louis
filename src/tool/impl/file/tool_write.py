@@ -7,6 +7,7 @@
 from tool.tool import Tool
 import os
 from utils.path import resolve_path, display_path
+from utils.diff import diff_preview
 
 class WriteTool(Tool):
     def __init__(self):
@@ -55,6 +56,18 @@ class WriteTool(Tool):
         if existed and not overwrite:
             return (f"Erreur : '{path}' existe déjà. Utilise edit_file pour le modifier, "
                     "ou overwrite=true pour remplacer tout son contenu.")
+
+        before = ""
+        if existed:
+            try:
+                with open(full, "r", encoding="utf-8", newline="") as f:
+                    before = f.read()
+            except (OSError, UnicodeDecodeError):
+                pass
+        summary = f"{'Remplacement' if existed else 'Création'} de {display_path(full)} :"
+        if not app.permissions.request(self.name, summary, diff_preview(before, content)):
+            return (f"Refusé : l'utilisateur n'a pas autorisé l'écriture de '{path}'. "
+                    "Ne la retente pas : demande-lui ce qu'il veut à la place.")
 
         try:
             os.makedirs(os.path.dirname(full), exist_ok=True)
