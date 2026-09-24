@@ -45,6 +45,15 @@ class Session:
         rows = self.db.fetchall("SELECT * FROM messages WHERE session_id = ? ORDER BY id", (self.id,))
         return [Message.from_row(row) for row in rows]
 
+    def first_user_message(self) -> str | None:
+        """ Get the first message of the user, without loading the whole session """
+        if self.db is None or "messages" in self.__dict__:
+            return next((message.content for message in self.messages if message.role == "user"), None)
+        row = self.db.fetchone(
+            "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id LIMIT 1", (self.id,)
+        )
+        return row["content"] if row else None
+
     @property
     def history(self) -> list[dict]:
         """ Get the messages in the format of the model API """

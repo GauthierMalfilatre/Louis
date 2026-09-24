@@ -55,3 +55,7 @@ class User:
         if "sessions" in self.__dict__:
             self.sessions.append(self.current_session)
         return self.current_session
+
+    def get_session(self, session_id: int) -> Session | None:
+        """ Get one of the sessions of the user by its id, None if it has no such session """
+        return next((session for session in self.sessions if session.id == session_id), None)

@@ -25,14 +25,21 @@ from logger.logger import log, log_event
 from config.prompt import NUDGE_PROMPT
 from session.user import User
 from session.session import Session
+from command.command import CommandTree
+from command.impl.command_clear import ClearCommand
+from command.impl.command_sessions import SessionsCommand
+from command.impl.command_resume import ResumeCommand
 import json
 import os
 import re
 import time
 
-# A reply that says what the model is about to do, in French or English
+# A reply that says what the model is about to do, in French or English. In French, "je vais" must lead to
+# a verb ("je vais créer", "je vais d'abord lire"): "je vais bien" is only small talk
 ANNOUNCE: re.Pattern = re.compile(
-    r"\b(je vais|je m'apprête à|laisse-moi|i will|i'll|let me|i am going to|i'm going to)\b", re.IGNORECASE
+    r"\b(?:je vais (?:[\w']+ ){0,2}?[\w']+(?:er|ir|re|oir)|je m'apprête à|laisse-moi"
+    r"|i will|i'll|let me|i am going to|i'm going to)\b",
+    re.IGNORECASE
 )
 
 class App:
@@ -41,6 +48,7 @@ class App:
         """ Init the Application class, on a new session of the user """
         self.__settings: dict[str] = settings
         self.__user: User = user
+        self.__system_prompt: str = system_prompt
 
         self.__bus: EventBus = EventBus()
         # Subscribed first: an event is logged before any other handler reacts to it
@@ -60,15 +68,18 @@ class App:
 
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
+        self.__commands: CommandTree = CommandTree()\
+            .register(ClearCommand())\
+            .register(SessionsCommand())\
+            .register(ResumeCommand())\
+
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
 
         self.__stream: Interface   = CLI("> ")
 
         # Started once the model answers: a failed start leaves no empty session behind
-        user.new_session(os.getcwd()).add("system", system_prompt)
-        log.info(f"[session] {'new session' if user.is_anonymous else f'#{self.session.id}'} of {user.name}"
-                 f"{' (not saved)' if user.is_anonymous else ''}")
+        self.new_session()
 
     @property
     def stream(self) -> Interface:
@@ -85,6 +96,14 @@ class App:
         """ Get the current session of the user, where the conversation is kept """
         return self.__user.current_session
 
+    def new_session(self, system_prompt: str | None = None) -> Session:
+        """ Start a new session of the user, on the given system prompt or on the one Louis started with """
+        session: Session = self.__user.new_session(os.getcwd())
+        session.add("system", system_prompt or self.__system_prompt)
+        log.info(f"[session] {'new session' if self.__user.is_anonymous else f'#{session.id}'} of {self.__user.name}"
+                 f"{' (not saved)' if self.__user.is_anonymous else ''}")
+        return session
+
     @property
     def permissions(self) -> PermissionManager:
         """ Get the permission manager, for the tools to ask before acting """
@@ -96,7 +115,11 @@ class App:
         while True:
             try:
                 u = self.stream.getUserInput()
+                if not u.strip():
+                    continue
                 log.info(f"[user] {u.strip()}")
+                if self.__commands.fetch(u, self):
+                    continue
 
                 self.session.add("user", u)
 
