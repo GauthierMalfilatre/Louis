@@ -23,7 +23,10 @@ from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
 from config.prompt import NUDGE_PROMPT
+from session.user import User
+from session.session import Session
 import json
+import os
 import re
 import time
 
@@ -34,9 +37,10 @@ ANNOUNCE: re.Pattern = re.compile(
 
 class App:
     """ App Class """
-    def __init__(self, settings: dict[str], system_prompt: str):
-        """ Init the Application class """
+    def __init__(self, settings: dict[str], system_prompt: str, user: User):
+        """ Init the Application class, on a new session of the user """
         self.__settings: dict[str] = settings
+        self.__user: User = user
 
         self.__bus: EventBus = EventBus()
         # Subscribed first: an event is logged before any other handler reacts to it
@@ -61,15 +65,25 @@ class App:
 
         self.__stream: Interface   = CLI("> ")
 
-        self.__history: list[dict] = [{
-            "role": "system",
-            "content": system_prompt
-        }]
+        # Started once the model answers: a failed start leaves no empty session behind
+        user.new_session(os.getcwd()).add("system", system_prompt)
+        log.info(f"[session] {'new session' if user.is_anonymous else f'#{self.session.id}'} of {user.name}"
+                 f"{' (not saved)' if user.is_anonymous else ''}")
 
     @property
     def stream(self) -> Interface:
         """ Get the current stream (interface) """
         return self.__stream
+
+    @property
+    def user(self) -> User:
+        """ Get the user talking to Louis """
+        return self.__user
+
+    @property
+    def session(self) -> Session:
+        """ Get the current session of the user, where the conversation is kept """
+        return self.__user.current_session
 
     @property
     def permissions(self) -> PermissionManager:
@@ -84,30 +98,19 @@ class App:
                 u = self.stream.getUserInput()
                 log.info(f"[user] {u.strip()}")
 
-                self.__history.append(
-                    {
-                        "role": "user",
-                        "content": u
-                    }
-                )
+                self.session.add("user", u)
 
                 self.stream.out("\n", end="")
 
                 nudged: bool = False
                 for _ in range(self.__settings.get("chat.tools.maxdepth", 8)):
                     reply: Reply = self.__model.chat(
-                        self.__history,
+                        self.session.history,
                         self.__toolManager.all(),
                         on_text=self.__print_chunck
                     )
 
-                    self.__history.append(
-                        {
-                            "role": "assistant",
-                            "content": reply.content,
-                            "tool_calls": [call.to_dict() for call in reply.tool_calls] if reply.tool_calls else None
-                        }
-                    )
+                    self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
 
                     if not reply.tool_calls:
                         # Once per message, so a wrong guess costs one round and never loops
@@ -116,7 +119,7 @@ class App:
                         nudged = True
                         log.info("[app] the model announced an action without calling a tool: nudging it")
                         self.stream.debug("\n(Louis a annoncé une action sans la faire : relance)\n")
-                        self.__history.append({"role": "user", "content": NUDGE_PROMPT})
+                        self.session.add("user", NUDGE_PROMPT)
                         continue
 
                     self.__bus.dispatch(TOOL_USAGE_STARTED)
@@ -128,13 +131,7 @@ class App:
                         resp = tool.handle(self, **call.arguments)
                         log.info(f"[tool] {call.name} done in {time.perf_counter() - start:.2f}s:\n{resp}")
 
-                        self.__history.append(
-                            {
-                                "role": "tool",
-                                "content": resp,
-                                "tool_name": call.name
-                            }
-                        )
+                        self.session.add("tool", resp, tool_name=call.name)
                     self.__bus.dispatch(TOOL_USAGE_ENDED)
 
                 else:

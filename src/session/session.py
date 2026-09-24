@@ -1,0 +1,76 @@
+##
+## EPITECH PROJECT, 2026
+## SENSAI
+## File description:
+## Session class
+##
+from dataclasses import dataclass, field
+from functools import cached_property
+from tool.tool_call import ToolCall
+from .database import Database, now
+from .message import Message
+import sqlite3
+
+@dataclass
+class Session:
+    """ A conversation with Louis, saved message by message, unless it has no database (anonymous user) """
+    cwd       : str
+    user_id   : int | None      = None
+    id        : int | None      = None
+    created_at: str | None      = None
+    db        : Database | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def from_row(cls, db: Database, row: sqlite3.Row) -> "Session":
+        """ Rebuild a session saved in the database, without its messages """
+        return cls(row["cwd"], row["user_id"], row["id"], row["created_at"], db)
+
+    @classmethod
+    def create(cls, db: Database | None, user_id: int | None, cwd: str) -> "Session":
+        """ Start a session in the working directory cwd, saved in db when there is one """
+        session: Session = cls(cwd, user_id, None, now(), db)
+        if db is not None:
+            session.id = db.execute(
+                "INSERT INTO sessions (user_id, cwd, created_at) VALUES (?, ?, ?)", (user_id, cwd, session.created_at)
+            ).lastrowid
+        # A brand new session has nothing to load
+        session.__dict__["messages"] = []
+        return session
+
+    @cached_property
+    def messages(self) -> list[Message]:
+        """ Get the messages, read from the database on first access only """
+        if self.db is None:
+            return []
+        rows = self.db.fetchall("SELECT * FROM messages WHERE session_id = ? ORDER BY id", (self.id,))
+        return [Message.from_row(row) for row in rows]
+
+    @property
+    def history(self) -> list[dict]:
+        """ Get the messages in the format of the model API """
+        return [message.to_dict() for message in self.messages]
+
+    def add(
+            self,
+            role: str,
+            content: str,
+            *,
+            tool_calls: list[ToolCall] | None = None,
+            tool_name: str | None = None
+        ) -> Message:
+        """ Add a message at the end of the session, saved at once """
+        message: Message = Message(
+            role, content if isinstance(content, str) else str(content or ""), tool_calls or None, tool_name,
+            created_at=now()
+        )
+        if self.db is not None:
+            cursor = self.db.execute(
+                "INSERT INTO messages (session_id, role, content, tool_calls, tool_name, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (self.id, message.role, message.content, message.calls_json(), message.tool_name, message.created_at)
+            )
+            message.id = cursor.lastrowid
+        # Not loaded yet: the first access reads it from the database, with the others
+        if "messages" in self.__dict__:
+            self.messages.append(message)
+        return message
