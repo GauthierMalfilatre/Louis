@@ -5,6 +5,7 @@
 ## Command and CommandTree classes: the /commands typed by the user
 ##
 from logger.logger import log
+from events.event_list import COMMAND_UNKNOWN, COMMAND_ERROR
 import re
 
 # Only a plain word can name a command: "/src/main.py, que fait ce fichier ?" is a message
@@ -43,8 +44,16 @@ class Command:
         """ Whether the command is named keyword """
         return keyword == self.__name or keyword in self.__alias
 
+    def describe(self) -> dict:
+        """ Get what an interface needs to present the command """
+        return {"name": self.__name, "usage": self.__usage, "description": self.__description}
+
+    def error(self, app, reason: str, message: str, **details) -> None:
+        """ Tell the interfaces the command failed: reason is a short code, message one plain sentence """
+        app.events.dispatch(COMMAND_ERROR, command=self.__name, reason=reason, message=message, **details)
+
     def handle(self, app, arguments: str) -> None:
-        """ Run the command, with everything typed after its name """
+        """ Run the command, with everything typed after its name: what it has to show goes through events """
         raise NotImplementedError
 
 class CommandTree:
@@ -67,13 +76,6 @@ class CommandTree:
         self.__commands.append(command)
         return self
 
-    def help(self) -> str:
-        """ Get the list of the commands, with their arguments and what they do """
-        return "\n".join(
-            f"  {f'{self.__prefix}{command.name} {command.usage}'.strip():18} {command.description}"
-            for command in self.__commands
-        )
-
     def fetch(self, content: str, app) -> bool:
         """ Run the command a message starts with, and tell whether it was one """
         words: list[str] = content.strip().split(maxsplit=1)
@@ -87,7 +89,7 @@ class CommandTree:
 
         command: Command | None = next((command for command in self.__commands if command.match(keyword)), None)
         if command is None:
-            app.stream.out(f"\nCommande inconnue : {self.__prefix}{keyword}. Les commandes sont :\n{self.help()}\n")
+            app.events.dispatch(COMMAND_UNKNOWN, name=keyword, commands=[known.describe() for known in self.__commands])
             return True
         log.info(f"[command] {self.__prefix}{keyword} {arguments}".rstrip())
         command.handle(app, arguments)

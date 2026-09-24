@@ -54,8 +54,8 @@ class App:
         # Subscribed first: an event is logged before any other handler reacts to it
         self.__bus.subscribe(log_event)
 
+        # The interface asks the user (TOOL_BEGFOR_PERMISSION) and answers (TOOL_GRANT_PERMISSION)
         self.__permissions: PermissionManager = PermissionManager(self.__bus)
-        self.__bus.subscribe(self.__ask_permission, TOOL_BEGFOR_PERMISSION)
 
         self.__toolManager: ToolManager = ToolManager()\
             .register(TreeTool())\
@@ -77,6 +77,8 @@ class App:
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
 
         self.__stream: Interface   = CLI("> ")
+        # The interface shows what happens (sessions, command results...) by listening to the bus
+        self.__stream.bind(self.__bus)
 
         # Started once the model answers: a failed start leaves no empty session behind
         self.new_session()
@@ -85,6 +87,11 @@ class App:
     def stream(self) -> Interface:
         """ Get the current stream (interface) """
         return self.__stream
+
+    @property
+    def events(self) -> EventBus:
+        """ Get the event bus: dispatch there what the user must know, the interfaces show it """
+        return self.__bus
 
     @property
     def user(self) -> User:
@@ -100,8 +107,12 @@ class App:
         """ Start a new session of the user, on the given system prompt or on the one Louis started with """
         session: Session = self.__user.new_session(os.getcwd())
         session.add("system", system_prompt or self.__system_prompt)
-        log.info(f"[session] {'new session' if self.__user.is_anonymous else f'#{session.id}'} of {self.__user.name}"
-                 f"{' (not saved)' if self.__user.is_anonymous else ''}")
+        self.__bus.dispatch(
+            SESSION_CREATED,
+            user=self.__user.name,
+            persistent=not self.__user.is_anonymous,
+            custom_prompt=bool(system_prompt)
+        )
         return session
 
     @property
@@ -168,18 +179,6 @@ class App:
                 self.stream.debug("\nUser has closed the session...\n")
                 break
         return 0
-
-    def __ask_permission(self, event: Event) -> None:
-        """ Show the user what a tool wants to do, and grant it if they agree """
-        self.stream.out(f"\n{event.data['summary']}")
-        if event.data.get("preview"):
-            self.stream.out(event.data["preview"])
-        answer: str = self.stream.ask("Autoriser ? [y/n] ")
-        self.__bus.dispatch(
-            TOOL_GRANT_PERMISSION,
-            id=event.data["id"],
-            granted=answer.strip().lower() in ("o", "oui", "y", "yes")
-        )
 
     def __print_chunck(self, text) -> None:
         """ Print a chunck """

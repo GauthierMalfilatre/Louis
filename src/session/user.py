@@ -46,7 +46,11 @@ class User:
     def sessions(self) -> list[Session]:
         """ Get the sessions, oldest first, read from the database on first access only (not their messages) """
         rows = self.db.fetchall("SELECT * FROM sessions WHERE user_id = ? ORDER BY id", (self.id,))
-        return [Session.from_row(self.db, row) for row in rows]
+        sessions: list[Session] = [Session.from_row(self.db, row) for row in rows]
+        # Not in the database until the user writes in it, but it will be: kept in the list meanwhile
+        if self.current_session is not None and not self.current_session.saved:
+            sessions.append(self.current_session)
+        return sessions
 
     def new_session(self, cwd: str) -> Session:
         """ Start a new session in the working directory cwd, which becomes the current one """

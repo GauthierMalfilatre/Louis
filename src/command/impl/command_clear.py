@@ -16,7 +16,5 @@ class ClearCommand(Command):
 
     def handle(self, app, arguments: str) -> None:
         """ Start a new session, on the system prompt given or on the one Louis started with """
-        prompt: str = arguments.strip()
-        session = app.new_session(prompt or None)
-        number: str = f" #{session.id}" if session.id is not None else ""
-        app.stream.out(f"\nNouvelle session{number}{' avec ton prompt système' if prompt else ''}.\n")
+        # The app tells the interfaces with SESSION_CREATED, as for every new session
+        app.new_session(arguments.strip() or None)

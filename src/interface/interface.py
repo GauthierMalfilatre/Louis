@@ -12,6 +12,13 @@ class Interface(ABC):
         """ Init the class Interface """
         ...
 
+    def bind(self, bus) -> "Interface":
+        """
+            Subscribe to the events of the bus this interface shows, laid out its own way:
+            SESSION_LIST as text for the CLI, as a table for a web page... None by default
+        """
+        return self
+
     @abstractmethod
     def getUserInput(self) -> str:
         """ Get the user input, raise EOFError when there is no more of it """

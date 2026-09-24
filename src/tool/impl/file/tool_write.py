@@ -90,7 +90,7 @@ class WriteTool(Tool):
             except (OSError, UnicodeDecodeError):
                 pass
         fixed = fix_newlines(full, content)
-        summary = f"{'Remplacement' if existed else 'Création'} de {display_path(full)} :"
+        summary = f"{'Remplacement' if existed else 'Création'} de {display_path(full)}"
         if not app.permissions.request(self.name, summary, diff_preview(before, fixed)):
             return (f"Refusé : l'utilisateur n'a pas autorisé l'écriture de '{path}'. "
                     "Ne la retente pas : demande-lui ce qu'il veut à la place.")
