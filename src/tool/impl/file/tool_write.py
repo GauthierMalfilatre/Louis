@@ -5,10 +5,34 @@
 ## Write tool: create a file, or replace its whole content
 ##
 from tool.tool import Tool
+import ast
 import os
 from utils.path import resolve_path, display_path
 from utils.diff import diff_preview
-from utils.syntax import check_python, syntax_warning, syntax_note
+
+NEWLINES_NOTE = ("\nNote : des retours à la ligne qui coupaient une chaîne ont été reformatés en \\n. "
+                 "Relis le fichier avant de le modifier à nouveau.")
+
+def fix_newlines(path: str, code: str) -> str:
+    """
+        Small models often write the newline escape of a Python string as a real newline in the JSON
+        of a tool call, which cuts the string in two. Reformat these newlines as \\n, line after line.
+        The code comes back untouched unless it becomes valid, and so do valid code and other files.
+    """
+    if not path.endswith(".py"):
+        return code
+    lines = code.split("\n")
+    for _ in range(100):
+        try:
+            ast.parse("\n".join(lines))
+            return "\n".join(lines)
+        except SyntaxError as e:
+            # Only a string cut at the end of a line: a triple-quoted string may hold newlines
+            if not e.msg.startswith("unterminated") or "triple-quoted" in e.msg \
+                    or not e.lineno or e.lineno >= len(lines):
+                return code
+            lines[e.lineno - 1:e.lineno + 1] = [lines[e.lineno - 1] + "\\n" + lines[e.lineno]]
+    return code
 
 class WriteTool(Tool):
     def __init__(self):
@@ -65,20 +89,20 @@ class WriteTool(Tool):
                     before = f.read()
             except (OSError, UnicodeDecodeError):
                 pass
-        content, repaired, error = check_python(full, content)
-        summary = f"{'Remplacement' if existed else 'Création'} de {display_path(full)}{syntax_warning(error)} :"
-        if not app.permissions.request(self.name, summary, diff_preview(before, content)):
+        fixed = fix_newlines(full, content)
+        summary = f"{'Remplacement' if existed else 'Création'} de {display_path(full)} :"
+        if not app.permissions.request(self.name, summary, diff_preview(before, fixed)):
             return (f"Refusé : l'utilisateur n'a pas autorisé l'écriture de '{path}'. "
                     "Ne la retente pas : demande-lui ce qu'il veut à la place.")
 
         try:
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w", encoding="utf-8", newline="") as f:
-                f.write(content)
+                f.write(fixed)
         except OSError as e:
             return f"Erreur lors de l'écriture de '{path}' : {e.strerror or e}"
 
-        lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        lines = fixed.count("\n") + (1 if fixed and not fixed.endswith("\n") else 0)
         action = "remplacé" if existed else "créé"
-        return (f"OK : {display_path(full)} {action} ({lines} lignes, {len(content)} caractères)."
-                f"{syntax_note(repaired, error)}")
+        return (f"OK : {display_path(full)} {action} ({lines} lignes, {len(fixed)} caractères)."
+                f"{NEWLINES_NOTE if fixed != content else ''}")

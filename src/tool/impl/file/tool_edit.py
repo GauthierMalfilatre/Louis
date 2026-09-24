@@ -2,7 +2,7 @@ from tool.tool import Tool
 import os
 from utils.path import resolve_path, display_path
 from utils.diff import diff_preview
-from utils.syntax import check_python, syntax_warning, syntax_note
+from tool.impl.file.tool_write import fix_newlines, NEWLINES_NOTE
 
 CONTEXT_LINES = 3
 
@@ -92,27 +92,26 @@ class EditTool(Tool):
 
         first = text.find(old_str)
         new_text = text.replace(old_str, new_str) if replace_all else text.replace(old_str, new_str, 1)
-        new_text, repaired, error = check_python(full, new_text)
+        fixed = fix_newlines(full, new_text)
 
-        summary = f"Modification de {display_path(full)}{syntax_warning(error)} :"
-        if not manager.permissions.request(self.name, summary, diff_preview(text, new_text)):
+        if not manager.permissions.request(self.name, f"Modification de {display_path(full)} :", diff_preview(text, fixed)):
             return (f"Refusé : l'utilisateur n'a pas autorisé la modification de '{path}'. "
                     "Ne la retente pas : demande-lui ce qu'il veut à la place.")
 
         try:
             with open(full, "w", encoding="utf-8", newline="") as f:
-                f.write(new_text)
+                f.write(fixed)
         except OSError as e:
             return f"Erreur lors de l'écriture de '{path}' : {e}"
 
-        all_lines = new_text.splitlines()
-        start_line = line_of(new_text, first)
+        all_lines = fixed.splitlines()
+        start_line = line_of(fixed, first)
         end_line = start_line + new_str.count("\n")
         lo = max(1, start_line - CONTEXT_LINES)
         hi = min(len(all_lines), end_line + CONTEXT_LINES)
         snippet = "\n".join(f"{n:>5} | {all_lines[n - 1]}" for n in range(lo, hi + 1))
 
         what = f"{count} occurrences remplacées" if replace_all else "1 occurrence remplacée"
-        res = f"OK : {what} dans {display_path(full)}.\n{snippet}{syntax_note(repaired, error)}"
+        res = f"OK : {what} dans {display_path(full)}.\n{snippet}{NEWLINES_NOTE if fixed != new_text else ''}"
         manager.stream.debug(f"---\n{res}\n---\n")
         return res
