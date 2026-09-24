@@ -16,6 +16,7 @@ from tool.impl.file.tool_cat import CatTool
 from tool.impl.file.tool_edit import EditTool
 from tool.impl.file.tool_write import WriteTool
 from tool.impl.file.tool_search import SearchTool
+from tool.impl.file.tool_mkdir import MkdirTool
 from tool.permission import PermissionManager
 from events.event_bus import EventBus, Event
 from events.event_list import *
@@ -49,6 +50,7 @@ class App:
             .register(EditTool())\
             .register(WriteTool())\
             .register(SearchTool())\
+            .register(MkdirTool())\
 
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
