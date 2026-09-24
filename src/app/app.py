@@ -8,6 +8,7 @@
 from interface.interface import Interface
 from interface.cli import CLI
 from model.model import OllamaModel
+from model.reply import Reply
 
 class App:
     """ App Class """
@@ -18,7 +19,7 @@ class App:
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
 
-        self.__stream: Interface   = CLI()
+        self.__stream: Interface   = CLI("> ")
 
     @property
     def stream(self) -> Interface:
@@ -27,13 +28,37 @@ class App:
 
     def run(self):
         """ Run the application """
+        history: list[dict] = []
+
         while True:
             try:
                 u = self.stream.getUserInput()
 
-                self.stream.out(f"\n<- {u}")
+                history.append(
+                    {
+                        "role": "user",
+                        "content": u
+                    }
+                )
+
+                self.stream.out("\n", end="")
+
+                reply: Reply = self.__model.chat(history, on_text=self.__print_chunck)
+
+                self.stream.out("\n")
+
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": reply.content
+                    }
+                )
 
             except KeyboardInterrupt:
                 self.stream.debug("User has closed the session...\n")
                 break
         return 0
+
+    def __print_chunck(self, text) -> None:
+        """ Print a chunck """
+        self.stream.out(text, end="", flush=True)
