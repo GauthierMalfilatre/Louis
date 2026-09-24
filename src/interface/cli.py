@@ -9,12 +9,24 @@ from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
-from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_NUDGED
+from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED
 import os
 import sys
 
 PREVIEW_LENGTH = 70
+ARGUMENT_LENGTH = 40
+
+# How a tool call starts its line, by who wanted it: set apart from the reply of the model
+MARKS: dict[str, str] = {"model": "  | ", "user": "  > ", "system": "  · "}
+
+def arguments(values: dict) -> str:
+    """ The arguments of a tool call on one line, each one cut if it is too long """
+    parts: list[str] = []
+    for key, value in values.items():
+        text: str = " ".join(str(value).split())
+        parts.append(f"{key}={text if len(text) <= ARGUMENT_LENGTH else text[:ARGUMENT_LENGTH - 1] + '…'}")
+    return " ".join(parts)
 
 def preview(text: str) -> str:
     """ A message on one line, cut if it is too long """
@@ -31,6 +43,8 @@ class CLI(Interface):
     def __init__(self, prompt: str = "> "):
         """ Init the CLI class """
         self.__prompt: str = prompt
+        # Whether the last text written ended a line: the tool calls always start their own
+        self.__at_line_start: bool = True
         super().__init__()
 
     @property
@@ -44,9 +58,10 @@ class CLI(Interface):
         self.__bus: EventBus = bus
         bus.subscribe(lambda event: self.out("\n", end=""), CHAT_TURN_STARTED)
         bus.subscribe(lambda event: self.out(event.data["text"], end="", flush=True), CHAT_TEXT)
+        # What comes next (a tool call, another reply) starts on its own line
+        bus.subscribe(lambda event: event.data["content"] and self.__newline(), CHAT_REPLY)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
-        bus.subscribe(lambda event: self.debug("\n(Louis a annoncé une action sans la faire : relance)\n"), CHAT_NUDGED)
-        bus.subscribe(lambda event: self.debug(f"Calling tool {event.data['name']}\n"), TOOL_CALL_STARTED)
+        bus.subscribe(self.__on_tool_started, TOOL_CALL_STARTED)
         bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(lambda event: self.debug("\nUser has closed the session...\n"), APP_STOPPED)
         bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
@@ -61,20 +76,33 @@ class CLI(Interface):
 
     def __on_turn_ended(self, event: Event) -> None:
         """ A blank line after the reply, or why it stopped """
+        self.__newline()
         match event.data["reason"]:
             case "done":
-                self.out("\n")
+                self.out("")
             case "cancelled":
-                self.out("\n(Réponse interrompue.)\n")
+                self.out("(Réponse interrompue.)\n")
             case "error":
-                self.out(f"\nErreur : {event.data['message']}\n")
+                self.out(f"Erreur : {event.data['message']}\n")
             case _:
-                self.out(f"\n{event.data['message']}\n")
+                self.out(f"{event.data['message']}\n")
+
+    def __on_tool_started(self, event: Event) -> None:
+        """   | cat_file path=version.py """
+        self.__newline()
+        mark: str = MARKS.get(event.data["producer"], MARKS["system"])
+        self.out(f"{mark}{event.data['name']} {arguments(event.data['arguments'])}".rstrip(), flush=True)
 
     def __on_tool_ended(self, event: Event) -> None:
         """ Only a tool that could not run is worth a line: unknown, or crashed """
         if not event.data["ok"]:
-            self.debug(f"  -> {event.data['result'].splitlines()[0]}\n")
+            mark: str = MARKS.get(event.data["producer"], MARKS["system"])
+            self.out(f"{mark}  -> {event.data['result'].splitlines()[0]}")
+
+    def __newline(self) -> None:
+        """ Go to the next line, unless the last text written ended one """
+        if not self.__at_line_start:
+            self.out("")
 
     def __on_thinking_enabled(self, event: Event) -> None:
         """ The thinking is not shown: say the replies will be slower, and where to read it """
@@ -144,16 +172,23 @@ class CLI(Interface):
         # readline() gives "" only at the end of the input (Ctrl+D): an empty line is "\n"
         if not uin:
             raise EOFError
+        # The user pressed Enter: in a terminal, the cursor is back at the start of a line
+        self.__at_line_start = True
         return uin
 
     def ask(self, question: str) -> str:
         """ Ask the user a question on stdin, the answer is empty at the end of the input """
         self.out(question, end="", flush=True)
-        return sys.stdin.readline()
+        answer: str = sys.stdin.readline()
+        self.__at_line_start = True
+        return answer
 
     def out(self, content, *, end="\n", flush=False):
         """ Print somthing on the stdout """
-        sys.stdout.write(content + end)
+        text: str = content + end
+        sys.stdout.write(text)
+        if text:
+            self.__at_line_start = text.endswith("\n")
         if flush:
             sys.stdout.flush()
         return self

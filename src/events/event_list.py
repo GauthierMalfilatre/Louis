@@ -15,8 +15,9 @@ CHAT_TEXT         = "chat.text"           # data: text (a piece of the reply, as
 CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" if it only calls tools), tools (their names)
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
 
-TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments
-TOOL_CALL_ENDED   = "tool.call.ended"     # data: name, ok (False if it is unknown or crashed), result, duration (seconds)
+# producer: who wanted the call, "model" (the model asked for it), "user" (a command) or "system" (Louis itself)
+TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments, producer
+TOOL_CALL_ENDED   = "tool.call.ended"     # data: name, producer, ok (False if it is unknown or crashed), result, duration (seconds)
 
 APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
 

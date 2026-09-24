@@ -220,9 +220,12 @@ class App:
         log.warning(f"[app] stopped after {rounds} rounds of tool calls")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} tours d'appels d'outils.")
 
-    def __call(self, call: ToolCall) -> str:
-        """ Run a tool the model asked for: whatever goes wrong comes back as text, for the model to react """
-        self.__bus.dispatch(TOOL_CALL_STARTED, name=call.name, arguments=call.arguments)
+    def __call(self, call: ToolCall, producer: str = "model") -> str:
+        """
+            Run a tool, asked for by producer ("model", "user" or "system"): whatever goes wrong comes back
+            as text, for the model to react
+        """
+        self.__bus.dispatch(TOOL_CALL_STARTED, name=call.name, arguments=call.arguments, producer=producer)
         log.info(f"[tool] {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
         start: float = time.perf_counter()
         ok: bool = False
@@ -241,5 +244,7 @@ class App:
         result = result if isinstance(result, str) else str(result)
         duration: float = time.perf_counter() - start
         log.info(f"[tool] {call.name} done in {duration:.2f}s:\n{result}")
-        self.__bus.dispatch(TOOL_CALL_ENDED, name=call.name, ok=ok, result=result, duration=round(duration, 3))
+        self.__bus.dispatch(
+            TOOL_CALL_ENDED, name=call.name, producer=producer, ok=ok, result=result, duration=round(duration, 3)
+        )
         return result
