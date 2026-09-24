@@ -12,9 +12,10 @@ class PermissionManager:
     """ Ask through the bus: TOOL_BEGFOR_PERMISSION asks, TOOL_GRANT_PERMISSION answers with the same id """
     def __init__(self, bus: EventBus):
         """ Init the permission manager """
-        self.__bus    : EventBus        = bus
-        self.__answers: dict[int, bool] = {}
-        self.__last   : int             = 0
+        self.__bus    : EventBus    = bus
+        self.__answer : bool | None = None
+        self.__pending: int | None  = None
+        self.__last   : int         = 0
         bus.subscribe(self.__on_grant, TOOL_GRANT_PERMISSION)
 
     def request(self, tool: str, summary: str, preview: str = "") -> bool:
@@ -22,12 +23,17 @@ class PermissionManager:
             Beg for the permission to run a tool.
             The bus is synchronous: whoever handles the request answers before dispatch returns.
             A request nobody answers is refused, so a missing or broken handler never lets a tool act.
+            With several interfaces, the first answer counts: a later one can not overturn it.
         """
         self.__last += 1
-        request_id: int = self.__last
-        self.__bus.dispatch(TOOL_BEGFOR_PERMISSION, id=request_id, tool=tool, summary=summary, preview=preview)
-        return self.__answers.pop(request_id, False)
+        self.__pending, self.__answer = self.__last, None
+        try:
+            self.__bus.dispatch(TOOL_BEGFOR_PERMISSION, id=self.__last, tool=tool, summary=summary, preview=preview)
+        finally:
+            self.__pending = None
+        return self.__answer is True
 
     def __on_grant(self, event: Event) -> None:
-        """ Keep the answer given to a request """
-        self.__answers[event.data.get("id")] = event.data.get("granted") is True
+        """ Keep the first answer given to the request being asked, the others are ignored """
+        if event.data.get("id") == self.__pending and self.__answer is None:
+            self.__answer = event.data.get("granted") is True

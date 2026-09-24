@@ -35,7 +35,8 @@ def run(system_prompt: str, username: str) -> int:
         else:
             user = User.anonymous()
 
-        app: App = App(settings, system_prompt, user)
+        # The interface is chosen here: the app only talks to it through its event bus
+        app: App = App(settings, system_prompt, user, CLI("> "))
 
         res = app.run()
     except Exception:

@@ -6,11 +6,12 @@
 ##
 
 from interface.interface import Interface
-from interface.cli import CLI
 from model.model import OllamaModel
+from model.model_exception import ModelException
 from model.reply import Reply
 from tool.tool_manager import ToolManager
 from tool.tool import Tool
+from tool.tool_call import ToolCall
 from tool.impl.file.tool_tree import TreeTool
 from tool.impl.file.tool_cat import CatTool
 from tool.impl.file.tool_edit import EditTool
@@ -43,17 +44,23 @@ ANNOUNCE: re.Pattern = re.compile(
     re.IGNORECASE
 )
 
+# Logged whole elsewhere (the reply by the model, the tool calls by __call): not once more per event
+UNLOGGED: frozenset[str] = frozenset({CHAT_TEXT, CHAT_REPLY, TOOL_CALL_STARTED, TOOL_CALL_ENDED})
+
+CANCELLED_TOOL: str = "Annulé : l'utilisateur a interrompu Louis avant la fin de cet outil."
+
 class App:
-    """ App Class """
-    def __init__(self, settings: dict[str], system_prompt: str, user: User):
-        """ Init the Application class, on a new session of the user """
+    """ App Class: runs the conversation, and tells everything through the bus, never printing itself """
+    def __init__(self, settings: dict[str], system_prompt: str, user: User, stream: Interface):
+        """ Init the Application class, on a new session of the user, shown by the interface stream """
         self.__settings: dict[str] = settings
         self.__user: User = user
         self.__system_prompt: str = system_prompt
+        self.__think: bool = bool(settings.get("chat.think", False))
 
         self.__bus: EventBus = EventBus()
         # Subscribed first: an event is logged before any other handler reacts to it
-        self.__bus.subscribe(log_event)
+        self.__bus.subscribe(lambda event: event.name in UNLOGGED or log_event(event))
 
         # The interface asks the user (TOOL_BEGFOR_PERMISSION) and answers (TOOL_GRANT_PERMISSION)
         self.__permissions: PermissionManager = PermissionManager(self.__bus)
@@ -78,8 +85,8 @@ class App:
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
 
-        self.__stream: Interface   = CLI("> ")
-        # The interface shows what happens (sessions, command results...) by listening to the bus
+        self.__stream: Interface = stream
+        # The interface shows what happens (the conversation, the commands...) by listening to the bus
         self.__stream.bind(self.__bus)
 
         # Started once the model answers: a failed start leaves no empty session behind
@@ -113,13 +120,13 @@ class App:
     @property
     def think(self) -> bool:
         """ Returns if thinking is activate """
-        return self.__settings["chat.think"] and self.model.thinking
+        return self.__think and self.model.thinking
 
     @think.setter
     def think(self, state: bool) -> None:
-        """ Set the current thinking mode, for the next requests: the model reads the same settings """
+        """ Set the current thinking mode, for the next requests """
         if self.model.thinking:
-            self.__settings["chat.think"] = state
+            self.__think = state
 
     def new_session(self, system_prompt: str | None = None) -> Session:
         """ Start a new session of the user, on the given system prompt or on the one Louis started with """
@@ -138,66 +145,101 @@ class App:
         """ Get the permission manager, for the tools to ask before acting """
         return self.__permissions
 
-    def run(self):
-        """ Run the application """
-
+    def run(self) -> int:
+        """ Run the application: answer the messages of the user, until the input ends or Ctrl+C there """
         while True:
             try:
                 u = self.stream.getUserInput()
-                if not u.strip():
-                    continue
-                log.info(f"[user] {u.strip()}")
-                if self.__commands.fetch(u, self):
-                    continue
-
-                self.session.add("user", u)
-
-                self.stream.out("\n", end="")
-
-                nudged: bool = False
-                for _ in range(self.__settings.get("chat.tools.maxdepth", 8)):
-                    reply: Reply = self.__model.chat(
-                        self.session.history,
-                        self.__toolManager.all(),
-                        on_text=self.__print_chunck
-                    )
-
-                    self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
-
-                    if not reply.tool_calls:
-                        # Once per message, so a wrong guess costs one round and never loops
-                        if nudged or not ANNOUNCE.search(reply.content):
-                            break
-                        nudged = True
-                        log.info("[app] the model announced an action without calling a tool: nudging it")
-                        self.stream.debug("\n(Louis a annoncé une action sans la faire : relance)\n")
-                        self.session.add("user", NUDGE_PROMPT)
-                        continue
-
-                    self.__bus.dispatch(TOOL_USAGE_STARTED)
-                    for call in reply.tool_calls:
-                        tool: Tool = self.__toolManager.get(call.name)
-                        self.stream.debug(f"Calling tool {call.name}\n")
-                        log.info(f"[tool] {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
-                        start: float = time.perf_counter()
-                        resp = tool.handle(self, **call.arguments)
-                        log.info(f"[tool] {call.name} done in {time.perf_counter() - start:.2f}s:\n{resp}")
-
-                        self.session.add("tool", resp, tool_name=call.name)
-                    self.__bus.dispatch(TOOL_USAGE_ENDED)
-
-                else:
-                    log.warning(f"[app] stopped after {self.__settings.get("chat.tools.maxdepth", 8)} rounds of tool calls")
-                    self.stream.debug(f"Stopped after {self.__settings.get("chat.tools.maxdepth", 8)} round of tool calls\n")
-
-                self.stream.out("\n")
-
             except (KeyboardInterrupt, EOFError) as e:
-                log.info(f"[app] session closed by the user ({type(e).__name__})")
-                self.stream.debug("\nUser has closed the session...\n")
-                break
-        return 0
+                log.info(f"[app] closed by the user ({type(e).__name__})")
+                self.__bus.dispatch(APP_STOPPED, reason="interrupt" if isinstance(e, KeyboardInterrupt) else "eof")
+                return 0
+            if not u.strip():
+                continue
+            log.info(f"[user] {u.strip()}")
+            try:
+                if not self.__commands.fetch(u, self):
+                    self.__answer(u)
+            except KeyboardInterrupt:
+                # Ctrl+C in a command: back to the input, the answers handle it themselves
+                log.info("[app] command interrupted by the user")
 
-    def __print_chunck(self, text) -> None:
-        """ Print a chunck """
-        self.stream.out(text, end="", flush=True)
+    def __answer(self, text: str) -> None:
+        """ Answer a message of the user: the model replies, calling tools, until a reply calls none """
+        saved: bool = self.session.saved
+        self.session.add("user", text)
+        if not saved and self.session.saved:
+            self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+
+        self.__bus.dispatch(CHAT_TURN_STARTED)
+        rounds: int = self.__settings.get("chat.tools.maxdepth", 8)
+        # The calls of the last reply not answered yet: each of them must get an answer, even if cancelled
+        pending: list[ToolCall] = []
+        nudged: bool = False
+        try:
+            for _ in range(rounds):
+                reply: Reply = self.__model.chat(
+                    self.session.history,
+                    self.__toolManager.all(),
+                    think=self.think,
+                    on_text=lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk)
+                )
+                self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
+                self.__bus.dispatch(CHAT_REPLY, content=reply.content, tools=[call.name for call in reply.tool_calls])
+
+                if not reply.tool_calls:
+                    # Once per message, so a wrong guess costs one round and never loops
+                    if nudged or not ANNOUNCE.search(reply.content):
+                        self.__bus.dispatch(CHAT_TURN_ENDED, reason="done", message=None)
+                        return
+                    nudged = True
+                    log.info("[app] the model announced an action without calling a tool: nudging it")
+                    self.__bus.dispatch(CHAT_NUDGED)
+                    self.session.add("user", NUDGE_PROMPT)
+                    continue
+
+                pending = list(reply.tool_calls)
+                while pending:
+                    self.session.add("tool", self.__call(pending[0]), tool_name=pending[0].name)
+                    pending.pop(0)
+        except KeyboardInterrupt:
+            for call in pending:
+                self.session.add("tool", CANCELLED_TOOL, tool_name=call.name)
+            log.info("[app] turn cancelled by the user")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="cancelled", message=None)
+            return
+        except ModelException as e:
+            log.error(f"[app] the model failed: {e.message}")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="error", message=e.message)
+            return
+        except Exception as e:
+            log.exception("[app] the turn failed")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="error", message=f"Erreur interne : {type(e).__name__}: {e}")
+            return
+
+        log.warning(f"[app] stopped after {rounds} rounds of tool calls")
+        self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} tours d'appels d'outils.")
+
+    def __call(self, call: ToolCall) -> str:
+        """ Run a tool the model asked for: whatever goes wrong comes back as text, for the model to react """
+        self.__bus.dispatch(TOOL_CALL_STARTED, name=call.name, arguments=call.arguments)
+        log.info(f"[tool] {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
+        start: float = time.perf_counter()
+        ok: bool = False
+        tool: Tool | None = self.__toolManager.get(call.name)
+        if tool is None:
+            names: str = ", ".join(schema["function"]["name"] for schema in self.__toolManager.all())
+            result = f"Erreur : l'outil '{call.name}' n'existe pas. Les outils disponibles sont : {names}."
+        else:
+            try:
+                result = tool.handle(self, **call.arguments)
+                ok = True
+            except Exception as e:
+                log.exception(f"[tool] {call.name} failed")
+                result = (f"Erreur : l'outil '{call.name}' a échoué ({type(e).__name__} : {e}). "
+                          "Vérifie tes arguments, ou fais autrement.")
+        result = result if isinstance(result, str) else str(result)
+        duration: float = time.perf_counter() - start
+        log.info(f"[tool] {call.name} done in {duration:.2f}s:\n{result}")
+        self.__bus.dispatch(TOOL_CALL_ENDED, name=call.name, ok=ok, result=result, duration=round(duration, 3))
+        return result

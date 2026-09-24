@@ -9,6 +9,8 @@ from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
+from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_NUDGED
+from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED
 import os
 import sys
 
@@ -37,9 +39,16 @@ class CLI(Interface):
         return self.__prompt
 
     def bind(self, bus: EventBus) -> "CLI":
-        """ Show the sessions and the results of the commands as text, and ask the permissions """
+        """ Show the conversation, the sessions and the results of the commands as text, and ask the permissions """
         # Kept to answer: a permission is granted by dispatching TOOL_GRANT_PERMISSION
         self.__bus: EventBus = bus
+        bus.subscribe(lambda event: self.out("\n", end=""), CHAT_TURN_STARTED)
+        bus.subscribe(lambda event: self.out(event.data["text"], end="", flush=True), CHAT_TEXT)
+        bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
+        bus.subscribe(lambda event: self.debug("\n(Louis a annoncé une action sans la faire : relance)\n"), CHAT_NUDGED)
+        bus.subscribe(lambda event: self.debug(f"Calling tool {event.data['name']}\n"), TOOL_CALL_STARTED)
+        bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
+        bus.subscribe(lambda event: self.debug("\nUser has closed the session...\n"), APP_STOPPED)
         bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
         bus.subscribe(self.__on_session_list, SESSION_LIST)
@@ -49,6 +58,23 @@ class CLI(Interface):
         bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
         bus.subscribe(self.__on_thinking_disabled, THINKING_DISABLED)
         return self
+
+    def __on_turn_ended(self, event: Event) -> None:
+        """ A blank line after the reply, or why it stopped """
+        match event.data["reason"]:
+            case "done":
+                self.out("\n")
+            case "cancelled":
+                self.out("\n(Réponse interrompue.)\n")
+            case "error":
+                self.out(f"\nErreur : {event.data['message']}\n")
+            case _:
+                self.out(f"\n{event.data['message']}\n")
+
+    def __on_tool_ended(self, event: Event) -> None:
+        """ Only a tool that could not run is worth a line: unknown, or crashed """
+        if not event.data["ok"]:
+            self.debug(f"  -> {event.data['result'].splitlines()[0]}\n")
 
     def __on_thinking_enabled(self, event: Event) -> None:
         """ The thinking is not shown: say the replies will be slower, and where to read it """

@@ -69,6 +69,7 @@ class OllamaModel:
             tools: list[dict] = [],
             images: list[str] = [],
             *,
+            think: bool = False,
             on_text: Callable | None = None
         ) -> Reply:
         """ Send a conversation to the model, and returning its reply. Images are a list of path """
@@ -84,7 +85,7 @@ class OllamaModel:
 
         # The thinking is not shown: left on, it is a silent wait before every reply and tool call
         if self.thinking:
-            payload["think"] = settings.get("chat.think", False)
+            payload["think"] = think
 
         if tools and self.tools:
             payload["tools"] = tools

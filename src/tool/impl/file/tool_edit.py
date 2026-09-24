@@ -63,8 +63,6 @@ class EditTool(Tool):
         if os.path.isdir(full):
             return f"Erreur : '{path}' est un dossier."
 
-        manager.stream.debug(f"\n>>> edit_file: {full}\n")
-
         try:
             with open(full, "r", encoding="utf-8", newline="") as f:
                 text = f.read()
@@ -112,6 +110,4 @@ class EditTool(Tool):
         snippet = "\n".join(f"{n:>5} | {all_lines[n - 1]}" for n in range(lo, hi + 1))
 
         what = f"{count} occurrences remplacées" if replace_all else "1 occurrence remplacée"
-        res = f"OK : {what} dans {display_path(full)}.\n{snippet}{NEWLINES_NOTE if fixed != new_text else ''}"
-        manager.stream.debug(f"---\n{res}\n---\n")
-        return res
+        return f"OK : {what} dans {display_path(full)}.\n{snippet}{NEWLINES_NOTE if fixed != new_text else ''}"

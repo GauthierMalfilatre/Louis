@@ -92,5 +92,10 @@ class CommandTree:
             app.events.dispatch(COMMAND_UNKNOWN, name=keyword, commands=[known.describe() for known in self.__commands])
             return True
         log.info(f"[command] {self.__prefix}{keyword} {arguments}".rstrip())
-        command.handle(app, arguments)
+        # A broken command must not stop Louis: the user is told, the traceback goes to the log
+        try:
+            command.handle(app, arguments)
+        except Exception as e:
+            log.exception(f"[command] {self.__prefix}{keyword} failed")
+            command.error(app, "failed", f"La commande {self.__prefix}{keyword} a échoué : {e}")
         return True
