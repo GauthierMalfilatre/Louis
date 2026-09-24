@@ -9,12 +9,18 @@ from interface.interface import Interface
 from interface.cli import CLI
 from model.model import OllamaModel
 from model.reply import Reply
+from tool.tool_manager import ToolManager
+from tool.tool import Tool
+from tool.impl.file.tool_tree import TreeTool
 
 class App:
     """ App Class """
     def __init__(self, settings: dict[str], system_prompt: str):
         """ Init the Application class """
         self.__settings: dict[str] = settings
+
+        self.__toolManager: ToolManager = ToolManager()\
+            .register(TreeTool())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -47,7 +53,11 @@ class App:
 
                 self.stream.out("\n", end="")
 
-                reply: Reply = self.__model.chat(self.__history, on_text=self.__print_chunck)
+                reply: Reply = self.__model.chat(
+                    self.__history,
+                    self.__toolManager.all(),
+                    on_text=self.__print_chunck
+                )
 
                 self.stream.out("\n")
 

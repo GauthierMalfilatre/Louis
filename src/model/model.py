@@ -16,6 +16,9 @@ CHAT_TIMEOUT: tuple[float, float] = (
     settings.get("chat.timeout.response", 600.0)
 )
 
+TOOL_CALL_OPEN : str = "<tool_call>"
+TOOL_CALL_CLOSE: str = "</tool_call>"
+
 class OllamaModel:
     """ Model Class, to chat with ollama API """
     def __init__(self, uri: str, model: str) -> "OllamaModel":
@@ -107,3 +110,33 @@ class OllamaModel:
         if on_text is not None and shown < len(reply.content):
             on_text(reply.content[shown:])
         return reply
+
+    @staticmethod
+    def __maybe_call(content: str) -> bool:
+        """ Tell whether a reply being streamed may still turn out to be a tool call written as text """
+        start: str = content.lstrip()
+        return start.startswith("{") or TOOL_CALL_OPEN.startswith(start[:len(TOOL_CALL_OPEN)])
+
+    # @staticmethod
+    # def __text_calls(content: str, names: set[str]) -> list[ToolCall]:
+    #     """ Get the tool calls written as text, if the whole reply is made of calls to known tools """
+    #     decoder: json.JSONDecoder = json.JSONDecoder()
+    #     calls  : list[ToolCall] = []
+    #     text   : str = content.strip()
+    #     while text:
+    #         text = text.removeprefix(TOOL_CALL_OPEN).lstrip()
+    #         try:
+    #             data, end = decoder.raw_decode(text)
+    #         except json.JSONDecodeError:
+    #             return []
+    #         name = data.get("name") if isinstance(data, dict) else None
+    #         # Unknown names are left as text: the model made the tool up
+    #         if not isinstance(name, str) or name not in names:
+    #             return []
+    #         # llama3.2 says "parameters" where the others say "arguments"
+    #         arguments = data.get("arguments", data.get("parameters")) or {}
+    #         if not isinstance(arguments, dict):
+    #             return []
+    #         calls.append(ToolCall(name, arguments))
+    #         text = text[end:].lstrip().removeprefix(TOOL_CALL_CLOSE).lstrip()
+    #     return calls

@@ -15,6 +15,7 @@ class ToolManager:
     def register(self, tool: Tool) -> "ToolManager":
         """ Register a tool to the manager """
         self.__tools[tool.name] = tool
+        return self
 
     def has(self, name: str) -> bool:
         """ Wether the manager has the tool """
@@ -23,3 +24,7 @@ class ToolManager:
     def get(self, name: str) -> bool | None:
         """ Get the tool requested """
         return self.__tools.get(name)
+
+    def all(self) -> list[dict]:
+        """ Get all the tools """
+        return [self.__tools[t].schema for t in self.__tools.keys()]
