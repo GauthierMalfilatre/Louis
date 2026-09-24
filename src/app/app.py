@@ -12,7 +12,7 @@ from model.reply import Reply
 
 class App:
     """ App Class """
-    def __init__(self, settings: dict[str]):
+    def __init__(self, settings: dict[str], system_prompt: str):
         """ Init the Application class """
         self.__settings: dict[str] = settings
 
@@ -21,6 +21,11 @@ class App:
 
         self.__stream: Interface   = CLI("> ")
 
+        self.__history: list[dict] = [{
+            "role": "system",
+            "content": system_prompt
+        }]
+
     @property
     def stream(self) -> Interface:
         """ Get the current stream (interface) """
@@ -28,13 +33,12 @@ class App:
 
     def run(self):
         """ Run the application """
-        history: list[dict] = []
 
         while True:
             try:
                 u = self.stream.getUserInput()
 
-                history.append(
+                self.__history.append(
                     {
                         "role": "user",
                         "content": u
@@ -43,11 +47,11 @@ class App:
 
                 self.stream.out("\n", end="")
 
-                reply: Reply = self.__model.chat(history, on_text=self.__print_chunck)
+                reply: Reply = self.__model.chat(self.__history, on_text=self.__print_chunck)
 
                 self.stream.out("\n")
 
-                history.append(
+                self.__history.append(
                     {
                         "role": "assistant",
                         "content": reply.content
