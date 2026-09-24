@@ -19,5 +19,8 @@ settings: dict[str] = {
     # Tokens the model sees at once. 12288 keeps qwen3:8b at ~92% GPU on 8 GB of VRAM:
     # above that it spills onto the CPU, and gets much slower
     "chat.context"         : 12288,
+    # Database of the sessions, in the working directory, unless LOUIS_DB gives another path:
+    # the launcher of install.sh points it at the global one
+    "db.file"              : "louis.db",
 
 }

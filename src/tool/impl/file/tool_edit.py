@@ -94,7 +94,7 @@ class EditTool(Tool):
         new_text = text.replace(old_str, new_str) if replace_all else text.replace(old_str, new_str, 1)
         fixed = fix_newlines(full, new_text)
 
-        if not manager.permissions.request(self.name, f"Modification de {display_path(full)} :", diff_preview(text, fixed)):
+        if not manager.permissions.request(self.name, f"Modification de {display_path(full)}", diff_preview(text, fixed)):
             return (f"Refusé : l'utilisateur n'a pas autorisé la modification de '{path}'. "
                     "Ne la retente pas : demande-lui ce qu'il veut à la place.")
 

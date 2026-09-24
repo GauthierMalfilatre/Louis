@@ -23,27 +23,40 @@ from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
 from config.prompt import NUDGE_PROMPT
+from session.user import User
+from session.session import Session
+from command.command import CommandTree
+from command.impl.command_clear import ClearCommand
+from command.impl.command_think import ToggleThinkCommand
+from command.impl.command_sessions import SessionsCommand
+from command.impl.command_resume import ResumeCommand
 import json
+import os
 import re
 import time
 
-# A reply that says what the model is about to do, in French or English
+# A reply that says what the model is about to do, in French or English. In French, "je vais" must lead to
+# a verb ("je vais créer", "je vais d'abord lire"): "je vais bien" is only small talk
 ANNOUNCE: re.Pattern = re.compile(
-    r"\b(je vais|je m'apprête à|laisse-moi|i will|i'll|let me|i am going to|i'm going to)\b", re.IGNORECASE
+    r"\b(?:je vais (?:[\w']+ ){0,2}?[\w']+(?:er|ir|re|oir)|je m'apprête à|laisse-moi"
+    r"|i will|i'll|let me|i am going to|i'm going to)\b",
+    re.IGNORECASE
 )
 
 class App:
     """ App Class """
-    def __init__(self, settings: dict[str], system_prompt: str):
-        """ Init the Application class """
+    def __init__(self, settings: dict[str], system_prompt: str, user: User):
+        """ Init the Application class, on a new session of the user """
         self.__settings: dict[str] = settings
+        self.__user: User = user
+        self.__system_prompt: str = system_prompt
 
         self.__bus: EventBus = EventBus()
         # Subscribed first: an event is logged before any other handler reacts to it
         self.__bus.subscribe(log_event)
 
+        # The interface asks the user (TOOL_BEGFOR_PERMISSION) and answers (TOOL_GRANT_PERMISSION)
         self.__permissions: PermissionManager = PermissionManager(self.__bus)
-        self.__bus.subscribe(self.__ask_permission, TOOL_BEGFOR_PERMISSION)
 
         self.__toolManager: ToolManager = ToolManager()\
             .register(TreeTool())\
@@ -56,20 +69,69 @@ class App:
 
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
+        self.__commands: CommandTree = CommandTree()\
+            .register(ClearCommand())\
+            .register(SessionsCommand())\
+            .register(ResumeCommand())\
+            .register(ToggleThinkCommand())\
+
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
 
         self.__stream: Interface   = CLI("> ")
+        # The interface shows what happens (sessions, command results...) by listening to the bus
+        self.__stream.bind(self.__bus)
 
-        self.__history: list[dict] = [{
-            "role": "system",
-            "content": system_prompt
-        }]
+        # Started once the model answers: a failed start leaves no empty session behind
+        self.new_session()
 
     @property
     def stream(self) -> Interface:
         """ Get the current stream (interface) """
         return self.__stream
+
+    @property
+    def events(self) -> EventBus:
+        """ Get the event bus: dispatch there what the user must know, the interfaces show it """
+        return self.__bus
+
+    @property
+    def user(self) -> User:
+        """ Get the user talking to Louis """
+        return self.__user
+
+    @property
+    def session(self) -> Session:
+        """ Get the current session of the user, where the conversation is kept """
+        return self.__user.current_session
+
+    @property
+    def model(self) -> OllamaModel:
+        """ Returns the current model """
+        return self.__model
+
+    @property
+    def think(self) -> bool:
+        """ Returns if thinking is activate """
+        return self.__settings["chat.think"] and self.model.thinking
+
+    @think.setter
+    def think(self, state: bool) -> None:
+        """ Set the current thinking mode, for the next requests: the model reads the same settings """
+        if self.model.thinking:
+            self.__settings["chat.think"] = state
+
+    def new_session(self, system_prompt: str | None = None) -> Session:
+        """ Start a new session of the user, on the given system prompt or on the one Louis started with """
+        session: Session = self.__user.new_session(os.getcwd())
+        session.add("system", system_prompt or self.__system_prompt)
+        self.__bus.dispatch(
+            SESSION_CREATED,
+            user=self.__user.name,
+            persistent=not self.__user.is_anonymous,
+            custom_prompt=bool(system_prompt)
+        )
+        return session
 
     @property
     def permissions(self) -> PermissionManager:
@@ -82,32 +144,25 @@ class App:
         while True:
             try:
                 u = self.stream.getUserInput()
+                if not u.strip():
+                    continue
                 log.info(f"[user] {u.strip()}")
+                if self.__commands.fetch(u, self):
+                    continue
 
-                self.__history.append(
-                    {
-                        "role": "user",
-                        "content": u
-                    }
-                )
+                self.session.add("user", u)
 
                 self.stream.out("\n", end="")
 
                 nudged: bool = False
                 for _ in range(self.__settings.get("chat.tools.maxdepth", 8)):
                     reply: Reply = self.__model.chat(
-                        self.__history,
+                        self.session.history,
                         self.__toolManager.all(),
                         on_text=self.__print_chunck
                     )
 
-                    self.__history.append(
-                        {
-                            "role": "assistant",
-                            "content": reply.content,
-                            "tool_calls": [call.to_dict() for call in reply.tool_calls] if reply.tool_calls else None
-                        }
-                    )
+                    self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
 
                     if not reply.tool_calls:
                         # Once per message, so a wrong guess costs one round and never loops
@@ -116,7 +171,7 @@ class App:
                         nudged = True
                         log.info("[app] the model announced an action without calling a tool: nudging it")
                         self.stream.debug("\n(Louis a annoncé une action sans la faire : relance)\n")
-                        self.__history.append({"role": "user", "content": NUDGE_PROMPT})
+                        self.session.add("user", NUDGE_PROMPT)
                         continue
 
                     self.__bus.dispatch(TOOL_USAGE_STARTED)
@@ -128,13 +183,7 @@ class App:
                         resp = tool.handle(self, **call.arguments)
                         log.info(f"[tool] {call.name} done in {time.perf_counter() - start:.2f}s:\n{resp}")
 
-                        self.__history.append(
-                            {
-                                "role": "tool",
-                                "content": resp,
-                                "tool_name": call.name
-                            }
-                        )
+                        self.session.add("tool", resp, tool_name=call.name)
                     self.__bus.dispatch(TOOL_USAGE_ENDED)
 
                 else:
@@ -148,18 +197,6 @@ class App:
                 self.stream.debug("\nUser has closed the session...\n")
                 break
         return 0
-
-    def __ask_permission(self, event: Event) -> None:
-        """ Show the user what a tool wants to do, and grant it if they agree """
-        self.stream.out(f"\n{event.data['summary']}")
-        if event.data.get("preview"):
-            self.stream.out(event.data["preview"])
-        answer: str = self.stream.ask("Autoriser ? [y/n] ")
-        self.__bus.dispatch(
-            TOOL_GRANT_PERMISSION,
-            id=event.data["id"],
-            granted=answer.strip().lower() in ("o", "oui", "y", "yes")
-        )
 
     def __print_chunck(self, text) -> None:
         """ Print a chunck """

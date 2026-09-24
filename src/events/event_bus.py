@@ -6,6 +6,7 @@
 ##
 from .event import Event
 from collections.abc import Callable
+from logger.logger import log
 
 class EventBus:
     """ Event bus class """
@@ -27,7 +28,8 @@ class EventBus:
         for handler, names in self.__handlers:
             if names and name not in names:
                 continue
+            # A broken handler must not break the others, nor the turn: it is only logged
             try:
                 handler(event)
             except Exception:
-                pass
+                log.exception(f"[event] a handler of {name} failed")
