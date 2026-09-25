@@ -66,7 +66,11 @@ class CatTool(Tool):
 
         lines = content.splitlines()
         total = len(lines)
+        seen = getattr(app, "seen_files", None)
         if total == 0:
+            # Seen, even empty: edit_file may fill it
+            if seen is not None:
+                seen.mark(full)
             return f"{display_path(full)} (fichier vide)"
 
         try:
@@ -99,5 +103,8 @@ class CatTool(Tool):
             footer = (f"\n… fichier tronqué. Suite avec start_line={end + 1}.")
 
         res = header + "\n" + "\n".join(out) + footer
+        # Seen, even in part: edit_file may change it now
+        if seen is not None:
+            seen.mark(full)
         # app.stream.debug(f"---\n{res}\n---\n")
         return res

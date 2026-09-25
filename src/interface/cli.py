@@ -9,7 +9,7 @@ from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
-from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY
+from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_COMPACTED
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED
 import json
 import os
@@ -117,6 +117,7 @@ class CLI(Interface):
         bus.subscribe(self._on_text, CHAT_TEXT)
         bus.subscribe(self._on_reply, CHAT_REPLY)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
+        bus.subscribe(self.__on_compacted, CHAT_COMPACTED)
         bus.subscribe(self._on_tool_started, TOOL_CALL_STARTED)
         bus.subscribe(self._on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(lambda event: self.debug("\nUser has closed the session...\n"), APP_STOPPED)
@@ -142,6 +143,16 @@ class CLI(Interface):
                 self.out(f"Erreur : {event.data['message']}\n")
             case _:
                 self.out(f"{event.data['message']}\n")
+
+    def __on_compacted(self, event: Event) -> None:
+        """   ○ Contexte allégé : the model sees less of the conversation, the user knows why it may read again """
+        parts: list[str] = []
+        if event.data["results"]:
+            parts.append(f"{event.data['results']} anciens résultats d'outils réduits à leurs premières lignes")
+        if event.data["dropped"]:
+            parts.append(f"{event.data['dropped']} anciens messages mis de côté")
+        self._newline()
+        self.out(f"  {BULLETS['system']} Contexte allégé : {', '.join(parts)}.", dim=True)
 
     def _on_text(self, event: Event) -> None:
         """ A piece of the reply, as the model writes it """

@@ -17,6 +17,17 @@ MAX_RESULTS = 200
 MAX_FILE_SIZE = 1_000_000
 MAX_LINE_LEN = 300
 
+def glob_matches(relative: str, glob: str) -> bool:
+    """
+        Whether a file matches a glob: by its name ("*.py"), or by its path from the folder searched ("src/*.py").
+        "**/" may stand for no folder at all, as in most tools: "**/*.py" matches main.py too
+    """
+    if "/" not in glob:
+        return fnmatch.fnmatch(relative.rsplit("/", 1)[-1], glob)
+    glob = glob.removeprefix("./")
+    return fnmatch.fnmatch(relative, glob) or fnmatch.fnmatch(relative, re.sub(r"(^|/)\*\*/", r"\1", glob))
+
+
 class SearchTool(Tool):
     def __init__(self):
         super().__init__(
@@ -114,7 +125,7 @@ class SearchTool(Tool):
                 file = os.path.join(root, name)
                 if (os.path.islink(file) or not os.path.isfile(file)
                         or os.path.splitext(name)[1] in IGNORED_EXT or name == LOG_FILE
-                        or (glob and not fnmatch.fnmatch(name, glob))
+                        or (glob and not glob_matches(os.path.relpath(file, full).replace(os.sep, "/"), glob))
                         or os.path.getsize(file) > MAX_FILE_SIZE):
                     continue
                 yield file

@@ -81,7 +81,7 @@ class OllamaModel:
             # Without it, Ollama unloads the model after 5 minutes idle, and reloads it on the next message
             "keep_alive": settings.get("chat.keepalive", "30m"),
             # Must stay the same on every request: a different num_ctx makes Ollama reload the model
-            "options": {"num_ctx": settings.get("chat.context", 12288)}
+            "options": {"num_ctx": settings.get("chat.context", 12288), "num_predict": settings.get("chat.predict", -1)}
         }
 
         # The thinking is not shown: left on, it is a silent wait before every reply and tool call
@@ -134,6 +134,11 @@ class OllamaModel:
         except json.JSONDecodeError as e:
             raise ModelException(f"Bad response from model: {e}") from e
 
+        reply.cut = stats.get("done_reason") == "length"
+        if reply.cut and names and not reply.tool_calls and self.__maybe_call(reply.content):
+            # A tool call cut before its end: its arguments are lost, and its text is no reply
+            log.warning(f"[model] reply cut in the middle of a tool call, dropped:\n{reply.content[:500]}")
+            reply.content = ""
         if names and not reply.tool_calls and (calls := self.__text_calls(reply.content, names)):
             log.debug(f"[model] tool calls written as text, parsed from:\n{reply.content}")
             reply.content, reply.tool_calls = "", calls

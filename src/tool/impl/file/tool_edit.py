@@ -1,7 +1,9 @@
 from tool.tool import Tool
+import ast
 import difflib
 import os
 import re
+import warnings
 from utils.path import resolve_path, display_path
 from utils.diff import diff_preview
 from tool.impl.file.tool_write import fix_newlines, NEWLINES_NOTE
@@ -53,6 +55,30 @@ def closest(text: str, needle: str) -> tuple[int, list[str]] | None:
         return None
     first, last = max(0, where - 1), min(len(lines), where + size + 1)
     return first + 1, lines[first:last]
+
+def broken_syntax(path: str, before: str, after: str) -> str | None:
+    """
+        Why a Python file valid before an edit would not be after it ("ligne 18 : unterminated string literal"). None
+        if it still is, if it was not already (the edit may be fixing it), or if it is not Python
+    """
+    if not path.endswith(".py"):
+        return None
+    # The warnings of the code parsed (an invalid escape...) are none of Louis's business
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            ast.parse(before)
+        except (SyntaxError, ValueError):
+            return None
+        try:
+            ast.parse(after)
+        except SyntaxError as e:
+            lines: list[str] = after.splitlines()
+            code: str = lines[e.lineno - 1].strip()[:120] if e.lineno and e.lineno <= len(lines) else ""
+            return f"ligne {e.lineno} : {e.msg}" + (f", dans « {code} »" if code else "")
+        except ValueError as e:
+            return str(e)
+    return None
 
 def not_found(path: str, text: str, old_str: str) -> str:
     """ Why old_str is not in the file, with the passage the model surely meant, to copy it exactly """
@@ -135,6 +161,16 @@ class EditTool(Tool):
         except (OSError, UnicodeDecodeError) as e:
             return f"Erreur lors de la lecture de '{path}' : {e}"
 
+        # old_str must be copied from the file as it is: not remembered, guessed, or pieced from search results
+        seen = getattr(manager, "seen_files", None)
+        state = seen.state(full) if seen is not None else "seen"
+        if state == "unseen":
+            return (f"Erreur : lis d'abord '{path}' avec cat_file. old_str doit être copié de son contenu exact, "
+                    "pas écrit de mémoire ni recollé depuis des résultats de search.")
+        if state == "changed":
+            return (f"Erreur : '{path}' a changé depuis ta dernière lecture. "
+                    "Relis-le avec cat_file avant de le modifier.")
+
         if "\r\n" in text and "\r\n" not in old_str:
             old_str = old_str.replace("\n", "\r\n")
             new_str = new_str.replace("\n", "\r\n")
@@ -160,6 +196,10 @@ class EditTool(Tool):
         first = text.find(old_str)
         new_text = text.replace(old_str, new_str) if replace_all else text.replace(old_str, new_str, 1)
         fixed = fix_newlines(full, new_text)
+        # Checked before asking the user: a broken edit is never shown to them
+        if broken := broken_syntax(full, text, fixed):
+            return (f"Erreur : cette modification casserait la syntaxe de '{path}' ({broken}). Rien n'a été "
+                    "modifié : corrige new_str (guillemets, parenthèses, indentation), puis rappelle edit_file.")
 
         if not manager.permissions.request(self.name, f"Modification de {display_path(full)}", diff_preview(text, fixed)):
             return (f"Refusé : l'utilisateur n'a pas autorisé la modification de '{path}'. "
@@ -170,6 +210,9 @@ class EditTool(Tool):
                 f.write(fixed)
         except OSError as e:
             return f"Erreur lors de l'écriture de '{path}' : {e}"
+        # The model knows the file as it wrote it: it can edit it again without reading it
+        if seen is not None:
+            seen.mark(full)
 
         all_lines = fixed.splitlines()
         start_line = line_of(fixed, first)

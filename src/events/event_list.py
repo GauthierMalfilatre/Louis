@@ -10,13 +10,16 @@ THINKING_DISABLED = "chat.thinking.disabled"   # data: none
 
 # The conversation, as it goes: the app never prints, the interfaces show these their own way
 CHAT_TURN_STARTED = "chat.turn.started"   # data: none (the model starts answering a message of the user)
-CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds"), message (None when done or cancelled)
+CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length"), message (None when done or cancelled)
 CHAT_TEXT         = "chat.text"           # data: text (a piece of the reply, as the model writes it)
 CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" if it only calls tools), tools (their names)
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
 # How full the context of the model is: measured by Ollama after each reply, estimated when the session changes
 CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
 CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the model thinks before replying, with /think)
+# The context filled up: the old tool results were cut down to their first lines (the model may ask for them again),
+# and at last the oldest exchanges left out. What is saved of the session stays whole
+CHAT_COMPACTED    = "chat.compacted"      # data: results (cut down this time), dropped (messages left out this time), used, size (tokens)
 
 # producer: who wanted the call, "model" (the model asked for it), "user" (a command) or "system" (Louis itself)
 TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments, producer
