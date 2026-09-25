@@ -70,7 +70,8 @@ class OllamaModel:
             images: list[str] = [],
             *,
             think: bool = False,
-            on_text: Callable | None = None
+            on_text: Callable | None = None,
+            on_thinking: Callable | None = None
         ) -> Reply:
         """ Send a conversation to the model, and returning its reply. Images are a list of path """
         payload: dict[str] = {
@@ -113,7 +114,10 @@ class OllamaModel:
                     message: dict = chunk.get("message") or {}
                     if chunk.get("done"):
                         stats = chunk
-                    thinking += message.get("thinking") or ""
+                    if thought := message.get("thinking"):
+                        thinking += thought
+                        if on_thinking is not None:
+                            on_thinking(thought)
                     if text := message.get("content"):
                         reply.content += text
                         if on_text is not None and not (names and self.__maybe_call(reply.content)):

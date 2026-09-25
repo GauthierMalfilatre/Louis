@@ -16,11 +16,13 @@ CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" i
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
 # How full the context of the model is: measured by Ollama after each reply, estimated when the session changes
 CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
+CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the model thinks before replying, with /think)
 
 # producer: who wanted the call, "model" (the model asked for it), "user" (a command) or "system" (Louis itself)
 TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments, producer
 TOOL_CALL_ENDED   = "tool.call.ended"     # data: name, producer, ok (False if it did not do it: unknown, crashed, failed or refused), result, duration (seconds)
 
+APP_STARTED       = "app.started"         # data: model (its name), think (True if /think is on), commands: [{name, usage, description}]
 APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
 
 # A tool asks before acting: the interface shows the request, and answers with the same id.

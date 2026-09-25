@@ -5,17 +5,36 @@
 ## CLI in a curses window: the conversation above, the line being edited below
 ##
 from interface.cli import CLI
+from interface.markdown import Markdown
 from events.event_bus import EventBus
 from events.event import Event
-from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, SESSION_CREATED, CHAT_CONTEXT
+from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_CONTEXT, CHAT_THINKING, APP_STARTED
+from events.event_list import SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, THINKING_ENABLED, THINKING_DISABLED
 import curses
 import locale
 import os
+import re
+import sys
+import threading
+import time
 
-PAD_LINES: int = 3000   # Lines of conversation kept: the oldest ones scroll away
-BUSY     : str = "Gamberging"
-BELOW    : int = 2      # The lines below the conversation: the one being edited, and the status bar
-FULL     : float = 0.8  # From this share of the context used on, its percentage is a warning
+PAD_LINES  : int   = 3000   # Lines of conversation kept: the oldest ones scroll away
+BUSY       : str   = "Gamberging"
+SPINNER    : str   = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+BELOW      : int   = 2      # The lines below the conversation: the one being edited, and the status bar
+FULL       : float = 0.8    # From this share of the context used on, its percentage is a warning
+FOLD_LINES : int   = 15     # A diff, or a thinking, longer than this is folded
+FOLD_KEEP  : int   = 12     # The lines of a folded diff still shown
+WHEEL_LINES: int   = 3      # Lines scrolled by a notch of the mouse wheel
+
+# Words and spaces of a text, to cut its lines between the words
+TOKENS: re.Pattern = re.compile(r"\n|[^\S\n]+|\S+")
+
+# The keys of the editor that are not keys of curses: a paste starting, Alt+Enter
+PASTE    : int = -100
+NEWLINE  : int = -101
+WHEEL_UP  : int = curses.BUTTON4_PRESSED
+WHEEL_DOWN: int = getattr(curses, "BUTTON5_PRESSED", 0)
 
 # The colors of the web interface of the prototype, its dark theme (terminals mostly are): the closest
 # ones of 256 colors, or of the 8 basic ones. name: (text, background), -1 is the one of the terminal
@@ -24,12 +43,19 @@ COLORS_256: dict[str, tuple[int, int]] = {
     "accent": (141, -1),   # --accent #bb8dff
     "ok"    : (78, -1),    # --ok #3ccf7a
     "danger": (211, -1),   # --danger #ff7aa2
+    # The lines of a diff, as bands in Claude Code: dark green (#005f00) added, dark red (#5f0000) removed
+    "added"  : (-1, 22),
+    "removed": (-1, 52),
+    "code"   : (-1, 236),  # --code-bg #221d2b, as a dark grey
 }
 COLORS_8: dict[str, tuple[int, int]] = {
     "user"  : (curses.COLOR_WHITE, curses.COLOR_MAGENTA),
     "accent": (curses.COLOR_MAGENTA, -1),
     "ok"    : (curses.COLOR_GREEN, -1),
     "danger": (curses.COLOR_RED, -1),
+    "added"  : (curses.COLOR_BLACK, curses.COLOR_GREEN),
+    "removed": (curses.COLOR_WHITE, curses.COLOR_RED),
+    "code"   : (curses.COLOR_CYAN, -1),
 }
 
 # The keys some terminals send as escape sequences curses does not know (after the \x1b)
@@ -39,30 +65,54 @@ SEQUENCES: dict[str, int] = {
     "[H": curses.KEY_HOME, "[F": curses.KEY_END, "OH": curses.KEY_HOME, "OF": curses.KEY_END,
     "[1~": curses.KEY_HOME, "[4~": curses.KEY_END, "[3~": curses.KEY_DC,
     "[5~": curses.KEY_PPAGE, "[6~": curses.KEY_NPAGE,
+    # Bracketed paste: the terminal marks what is pasted, so that its newlines do not send it
+    "[200~": PASTE,
+    "\r": NEWLINE, "\n": NEWLINE,
 }
 
 class CursesCLI(CLI):
     """
-        The CLI, drawn in a curses window: the conversation scrolls above (PageUp, PageDown), the line is
-        edited below. Everything it shows comes from the CLI: only the drawing, the reading, and the tool
-        calls (completed in place when they end) are its own
+        The CLI, drawn in a curses window: the conversation scrolls above (PageUp, PageDown, the mouse wheel),
+        the line is edited below, above a status bar. Everything it says comes from the CLI: the drawing, the
+        reading, the Markdown and the thinking of the replies, the tool calls (completed in place when they
+        end) and the folding of what is long are its own.
+        The spinner below runs in a thread while Louis works: every drawing holds the lock
     """
     def __init__(self, prompt: str = "> "):
         """ Init the curses CLI, its window is opened by with """
         super().__init__(prompt)
-        # What the conversation holds, to draw it again at another size
-        self.__transcript: list[tuple[str, int]]      = []
+        # What the conversation holds, to draw it again at another size: text, attribute, and whether its
+        # background goes on to the end of the line (the bands of a diff, the blocks of code)
+        self.__transcript: list[tuple[str, int, bool]] = []
         self.__history   : list[str]                  = []
         # First line shown, None to follow the end of the conversation
         self.__top       : int | None                 = None
         self.__busy      : bool                       = False
-        # The tool call running: its row, its line, and its place in the transcript
-        self.__tool      : tuple[int, str, int] | None = None
+        self.__asking    : bool                       = False
+        self.__started   : float                      = 0.0
+        # The tool call running: its row, the places of its bullet and of its end in the transcript, its bullet
+        self.__tool      : tuple[int, int, int, str] | None = None
         # The attributes of the colors, by name: none when the terminal has no colors
         self.__colors    : dict[str, int]             = {}
-        # What the status bar shows: the user (a saved one or not), and the context used (tokens, size, estimated)
+        # The word written last (its row, its column, its text, its attribute), moved whole if it grows too long
+        self.__word      : tuple[int, int, str, int] | None = None
+        self.__full_line : bool                       = False
+        self.__markdown  : Markdown                   = Markdown()
+        # The thinking being shown (its place in the transcript, its row, its text), and the lines of a
+        # folded diff (the place and the row of their notice, the lines)
+        self.__thinking  : tuple[int, int, list[str]] | None = None
+        self.__folded    : tuple[int, int, list[str]] | None = None
+        # What the status bar shows: the user (a saved one or not), the session, the model, the thinking,
+        # the context used (tokens, size, estimated), and a hint for a while (the commands Tab could complete)
         self.__user      : tuple[str, bool] | None    = None
+        self.__session   : int | None                 = None
+        self.__model     : str                        = ""
+        self.__think     : bool                       = False
         self.__context   : tuple[int, int, bool] | None = None
+        self.__hint      : str                        = ""
+        self.__commands  : list[str]                  = []
+        self.__lock      : threading.RLock            = threading.RLock()
+        self.__stop      : threading.Event            = threading.Event()
 
     def __enter__(self) -> "CursesCLI":
         """ Open the window """
@@ -75,50 +125,158 @@ class CursesCLI(CLI):
         # Ctrl+C must not throw away what curses just drew: the screen would no longer be what it believes
         curses.noqiflush()
         self.__colors = CursesCLI.__palette()
+        # The wheel scrolls the conversation (to select text with the mouse, hold Shift)
+        curses.mousemask(WHEEL_UP | WHEEL_DOWN)
+        curses.mouseinterval(0)
+        sys.stdout.write("\x1b[?2004h")
+        sys.stdout.flush()
         self.__layout()
+        threading.Thread(target=self.__spin, daemon=True).start()
         return self
 
     def __exit__(self, *exception) -> None:
         """ Close the window: the terminal is as it was """
-        curses.nocbreak()
-        curses.echo()
-        curses.endwin()
+        self.__stop.set()
+        with self.__lock:
+            sys.stdout.write("\x1b[?2004l")
+            sys.stdout.flush()
+            curses.nocbreak()
+            curses.echo()
+            curses.endwin()
 
     def bind(self, bus: EventBus) -> "CursesCLI":
-        """ Everything the CLI shows, the line below telling when Louis works, and the status bar """
+        """ Everything the CLI shows, the thinking of the model, the spinner below, and the status bar """
         super().bind(bus)
-        bus.subscribe(lambda event: self.__status(True), CHAT_TURN_STARTED)
-        bus.subscribe(lambda event: self.__status(False), CHAT_TURN_ENDED)
+        bus.subscribe(self.__on_turn_started, CHAT_TURN_STARTED)
+        bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
+        bus.subscribe(self.__on_thinking, CHAT_THINKING)
+        bus.subscribe(self.__on_started, APP_STARTED)
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
+        bus.subscribe(lambda event: self.__set(session=event.data["id"]), SESSION_SAVED)
+        bus.subscribe(lambda event: self.__set(session=event.data["id"]), SESSION_RESUMED)
+        bus.subscribe(lambda event: self.__set(think=True), THINKING_ENABLED)
+        bus.subscribe(lambda event: self.__set(think=False), THINKING_DISABLED)
         bus.subscribe(self.__on_context, CHAT_CONTEXT)
         return self
 
-    def __on_session_created(self, event: Event) -> None:
-        """ The user, in the status bar: saved or not """
-        self.__user = (event.data["user"], event.data["persistent"])
-        self.__bar()
-
-    def __on_context(self, event: Event) -> None:
-        """ How full the context is, in the status bar """
-        self.__context = (event.data["used"], event.data["size"], event.data["estimated"])
-        self.__bar()
+    # --- What the CLI shows ---------------------------------------------------------------------------
 
     def _write(self, text: str, *, dim: bool = False) -> None:
         """ Add text to the conversation, and show its end """
-        self.__add(text, curses.A_DIM if dim else curses.A_NORMAL)
-        self.__top = None
-        self.__refresh()
+        with self.__lock:
+            self.__add(text, curses.A_DIM if dim else curses.A_NORMAL)
+            self.__follow()
+
+    def _newline(self) -> None:
+        """ Go to the next line, unless the conversation is at the start of one """
+        with self.__lock:
+            if self.__pad.getyx()[1] > 0:
+                self.__add("\n", curses.A_NORMAL)
+
+    def _on_text(self, event: Event) -> None:
+        """ A piece of the reply, styled from its Markdown """
+        with self.__lock:
+            self.__end_thinking()
+            self.__styled(self.__markdown.feed(event.data["text"]))
+            self.__follow()
+
+    def _on_reply(self, event: Event) -> None:
+        """ The end of a reply: its last marks, the thinking folded if it was long, then a new line """
+        with self.__lock:
+            self.__styled(self.__markdown.flush())
+            self.__end_thinking()
+            super()._on_reply(event)
+            self.__follow()
+
+    def _on_tool_started(self, event: Event) -> None:
+        """   ⠹ Lecture version.py : its bullet turns until the call ends """
+        with self.__lock:
+            self.__end_thinking()
+            self._newline()
+            bullet, label, detail = self._call_parts(event)
+            detail = detail[:max(0, curses.COLS - 6 - len(label))]
+            self.__add("  ", curses.A_NORMAL)
+            bullet_index: int = len(self.__transcript)
+            self.__add(bullet, self.__colors.get("accent", curses.A_BOLD))
+            self.__add(f" {label}", curses.A_BOLD)
+            if detail:
+                self.__add(f" {detail}", curses.A_DIM)
+            self.__add("\n", curses.A_NORMAL)
+            # Read after writing: if the conversation scrolled, the line went up with it
+            self.__tool = (self.__pad.getyx()[0] - 1, bullet_index, len(self.__transcript) - 1, bullet)
+            self.__follow()
+
+    def _on_tool_ended(self, event: Event) -> None:
+        """
+            The bullet green, or red if it could not be done, and what the call gave right below it:
+              ● Lecture version.py
+                ⎿ 1 ligne lue
+        """
+        with self.__lock:
+            tool, self.__tool = self.__tool, None
+            ok: bool = event.data["ok"]
+            line_attr: int = curses.A_DIM if ok else self.__colors.get("danger", curses.A_BOLD)
+            result: list[tuple[str, int, bool]] = [
+                ("    ⎿ ", curses.A_DIM, False),
+                (self._result_line(event)[:max(0, curses.COLS - 7)] + "\n", line_attr, False),
+            ]
+            # Drawn again at another size, or a conversation so long that it scrolled: the row is lost
+            if tool is None or self.__pad.getyx()[0] >= PAD_LINES - 2:
+                self._newline()
+                for text, attr, fill in result:
+                    self.__add(text, attr, fill=fill)
+                self.__follow()
+                return
+            row, bullet_index, end_index, bullet = tool
+            color: int = self.__colors.get("ok" if ok else "danger", curses.A_BOLD)
+            self.__transcript[bullet_index] = (bullet, color, False)
+            y, x = self.__pad.getyx()
+            self.__pad.addstr(row, 2, bullet, color)
+            if end_index == len(self.__transcript) - 1:
+                # Nothing written since the call: what it gave goes on below it
+                self.__pad.move(y, x)
+                for text, attr, fill in result:
+                    self.__add(text, attr, fill=fill)
+            else:
+                # A permission was asked below the call: what it gave is slipped in right under it
+                self.__transcript[end_index + 1:end_index + 1] = result
+                self.__pad.move(row + 1, 0)
+                self.__pad.insertln()
+                for text, attr, _ in result:
+                    self.__pad.addstr(text.rstrip("\n"), attr)
+                self.__pad.move(y + 1, x)
+                self.__word = None
+            self.__follow()
+
+    def _show_diff(self, preview: str) -> None:
+        """ The diff, as in Claude Code: bands of green for the lines added, of red for the removed. Folded if long """
+        with self.__lock:
+            self._newline()
+            lines: list[str] = preview.splitlines()
+            folded: bool = len(lines) > FOLD_LINES
+            for text, attr, fill in self.__diff(lines[:FOLD_KEEP] if folded else lines):
+                self.__add(text, attr, fill=fill)
+            if folded:
+                self.__folded = (len(self.__transcript), self.__pad.getyx()[0], lines[FOLD_KEEP:])
+                self.__add(f"  … {len(lines) - FOLD_KEEP} lignes de plus : v pour tout voir\n", curses.A_DIM)
+            self.__follow()
+
+    # --- What the user types --------------------------------------------------------------------------
 
     def _read_line(self, prompt: str) -> str:
         """
             Edit a line below: arrows, Home and End (Ctrl+A, Ctrl+E), Backspace and Delete, Ctrl+U to clear it,
-            Up and Down for the history, PageUp and PageDown to scroll the conversation. "" on Ctrl+D
+            Up and Down for the history, Tab to complete a /command, Alt+Enter for a new line (a paste keeps its
+            own), PageUp, PageDown and the wheel to scroll the conversation. "" on Ctrl+D
         """
         text, pos, index = "", 0, len(self.__history)
-        self.__cursor(True)
         while True:
-            self.__draw(prompt, text, pos)
+            with self.__lock:
+                self.__cursor(True)
+                self.__draw(prompt, text, pos)
             key = self.__key()
+            if self.__hint:
+                self.__set(hint="")
             if key in ("\n", "\r", curses.KEY_ENTER):
                 break
             if key == "\x04":
@@ -145,80 +303,119 @@ class CursesCLI(CLI):
                 index = max(0, index - 1) if key == curses.KEY_UP else min(len(self.__history), index + 1)
                 text = self.__history[index] if index < len(self.__history) else ""
                 pos = len(text)
+            elif key in (PASTE, NEWLINE):
+                added: str = self.__paste() if key == PASTE else "\n"
+                text, pos = text[:pos] + added + text[pos:], pos + len(added)
+            elif key == "\t" and prompt == self.promp:
+                text, pos = self.__complete(text, pos)
             elif key in (curses.KEY_PPAGE, curses.KEY_NPAGE):
                 self.__scroll(-1 if key == curses.KEY_PPAGE else 1)
+            elif key == curses.KEY_MOUSE:
+                self.__wheel()
             elif key == curses.KEY_RESIZE:
-                self.__layout()
+                with self.__lock:
+                    self.__layout()
             elif isinstance(key, str) and key.isprintable():
                 text, pos = text[:pos] + key + text[pos:], pos + 1
-        self.__cursor(False)
-        if prompt == self.promp and text.strip():
-            self.__history.append(text)
-        # What the user typed stays in the conversation, as in a terminal: a message on the purple of the web page
-        if prompt == self.promp:
-            self.__add(f" {prompt}{text} ", self.__colors.get("user", curses.A_NORMAL) | curses.A_BOLD)
-            self.__add("\n", curses.A_NORMAL)
-        else:
-            self.__add(prompt + text + "\n", curses.A_BOLD)
-        self.__top = None
-        self.__refresh()
-        self.__status(self.__busy)
+        with self.__lock:
+            self.__cursor(False)
+            if prompt == self.promp and text.strip():
+                self.__history.append(text)
+            # What the user typed stays in the conversation, as in a terminal: a message on the purple of the web
+            if prompt == self.promp:
+                bubble: int = self.__colors.get("user", curses.A_NORMAL) | curses.A_BOLD
+                for n, line in enumerate(text.split("\n")):
+                    self.__add(f" {prompt if n == 0 else ' ' * len(prompt)}{line} ", bubble)
+                    self.__add("\n", curses.A_NORMAL)
+            else:
+                self.__add(prompt + text + "\n", curses.A_BOLD)
+            self.__follow()
+            self.__status()
         return text + "\n"
 
-    def _on_tool_started(self, event: Event) -> None:
-        """ The tool call, marked as running (…) until it ends """
-        self._newline()
-        line: str = self._tool_line(event)[:max(10, curses.COLS - 16)]
-        self.out(f"{line} …", dim=True)
-        # Read after writing: if the conversation scrolled, the line went up with it
-        self.__tool = (self.__pad.getyx()[0] - 1, line, len(self.__transcript) - 1)
-
-    def _on_tool_ended(self, event: Event) -> None:
-        """ ✓ and the time it took, or ✗ and why: in place of the …, even if a permission was asked below it """
-        tool, self.__tool = self.__tool, None
-        # Drawn again at another size, or a conversation so long that it scrolled: the row is lost
-        if tool is None or self.__pad.getyx()[0] >= PAD_LINES - 1:
-            super()._on_tool_ended(event)
-            return
-        row, line, index = tool
-        ok: bool = event.data["ok"]
-        status: str = f"✓ {event.data['duration']:.2f}s" if ok else f"✗ {event.data['result'].splitlines()[0]}"
-        status = status[:max(0, curses.COLS - 3 - len(line))]
-        color: int = self.__colors.get("ok" if ok else "danger", curses.A_DIM)
-        # The line of the call dim, its status in color: kept in pieces, to be drawn again the same way
-        self.__transcript[index:index + 1] = [(f"{line}  ", curses.A_DIM), (status, color), ("\n", curses.A_NORMAL)]
-        # Written over the line of the call, then back where the conversation goes on
-        y, x = self.__pad.getyx()
-        self.__pad.move(row, 0)
-        self.__pad.clrtoeol()
-        self.__pad.addstr(row, 0, f"{line}  ", curses.A_DIM)
-        self.__pad.addstr(status, color)
-        self.__pad.move(y, x)
-        self.__refresh()
-
-    def __key(self) -> str | int | None:
-        """ The next key: curses reads most of them, the escape sequences it does not know are read here """
-        key = self.__input.get_wch()
-        if key != "\x1b":
-            return key
-        sequence: str = ""
-        self.__input.nodelay(True)
+    def _choose(self, question: str, choices: str) -> str:
+        """ A single key among choices (o for y, Enter for n), and v to unfold the diff above """
+        labels: dict[str, str] = {"y": "oui", "n": "non", "a": "toujours"}
+        self.__asking = True
         try:
-            # Up to "[1;5D" (Ctrl+Left): read whole, so that no piece of it is typed as text
-            while len(sequence) < 6:
-                try:
-                    char = self.__input.get_wch()
-                except curses.error:
+            while True:
+                shown: str = question + ("[v] tout voir  " if self.__folded else "")
+                with self.__lock:
+                    self.__cursor(True)
+                    self.__input.erase()
+                    self.__input.addnstr(0, 0, shown, curses.COLS - 1, curses.A_BOLD)
+                    self.__input.refresh()
+                key = self.__key()
+                if isinstance(key, str):
+                    key = "y" if key.lower() == "o" else key.lower()
+                if key in ("\n", "\r", "\x04", curses.KEY_ENTER):
+                    choice: str = "n"
                     break
-                if not isinstance(char, str):
-                    break
-                sequence += char
-                if char == "~" or (char.isalpha() and len(sequence) > 1):
+                if key == "v" and self.__folded:
+                    with self.__lock:
+                        self.__unfold()
+                elif key in (curses.KEY_PPAGE, curses.KEY_NPAGE):
+                    self.__scroll(-1 if key == curses.KEY_PPAGE else 1)
+                elif key == curses.KEY_MOUSE:
+                    self.__wheel()
+                elif key == curses.KEY_RESIZE:
+                    with self.__lock:
+                        self.__layout()
+                elif isinstance(key, str) and key in choices:
+                    choice = key
                     break
         finally:
-            self.__input.nodelay(False)
-        # A lone Escape, or a sequence of an unknown key: nothing
-        return SEQUENCES.get(sequence)
+            self.__asking = False
+            self.__folded = None
+        with self.__lock:
+            self.__cursor(False)
+            self.__add(f"{question.split('[')[0]}{labels.get(choice, choice)}\n", curses.A_BOLD)
+            self.__follow()
+            self.__status()
+        return choice
+
+    # --- The events of the curses CLI -----------------------------------------------------------------
+
+    def __on_turn_started(self, event: Event) -> None:
+        """ Louis works: the spinner below, and the Markdown of a new reply """
+        with self.__lock:
+            self.__markdown = Markdown()
+            self.__started = time.monotonic()
+            self.__busy = True
+            self.__status()
+
+    def __on_turn_ended(self, event: Event) -> None:
+        """ Louis waits for a message again """
+        with self.__lock:
+            self.__end_thinking()
+            self.__busy = False
+            self.__status()
+
+    def __on_thinking(self, event: Event) -> None:
+        """ What the model thinks, dim, as it thinks it: folded once it replies if it was long """
+        with self.__lock:
+            if self.__thinking is None:
+                self._newline()
+                self.__thinking = (len(self.__transcript), self.__pad.getyx()[0], [])
+                self.__add("✻ ", self.__colors.get("accent", curses.A_DIM))
+            self.__thinking[2].append(event.data["text"])
+            self.__add(event.data["text"], curses.A_DIM | getattr(curses, "A_ITALIC", 0))
+            self.__follow()
+
+    def __on_started(self, event: Event) -> None:
+        """ The model and the commands, for the status bar and for Tab """
+        self.__commands = [command["name"] for command in event.data["commands"]]
+        self.__set(model=event.data["model"], think=event.data["think"])
+
+    def __on_session_created(self, event: Event) -> None:
+        """ The user, in the status bar: saved or not. The new session has no number before its first message """
+        self.__set(user=(event.data["user"], event.data["persistent"]), session=None)
+
+    def __on_context(self, event: Event) -> None:
+        """ How full the context is, in the status bar """
+        self.__set(context=(event.data["used"], event.data["size"], event.data["estimated"]))
+
+    # --- Drawing --------------------------------------------------------------------------------------
 
     def __layout(self) -> None:
         """ Make the windows at the size of the terminal, and draw the conversation again in them """
@@ -228,23 +425,134 @@ class CursesCLI(CLI):
         self.__input = curses.newwin(1, curses.COLS, curses.LINES - BELOW, 0)
         self.__input.keypad(True)
         self.__status_bar = curses.newwin(1, curses.COLS, curses.LINES - 1, 0)
-        # Its row changed with the width: the running tool will get its status below
-        self.__tool = None
-        for text, attr in self.__transcript:
-            self.__add(text, attr, remember=False)
+        # Their rows changed with the width: the running tool gets its status below, nothing is folded again
+        self.__tool, self.__thinking, self.__folded, self.__word = None, None, None, None
+        for text, attr, fill in self.__transcript:
+            self.__add(text, attr, remember=False, fill=fill)
         self.__refresh()
-        self.__status(self.__busy)
+        self.__status()
         self.__bar()
 
-    def __add(self, text: str, attr: int, *, remember: bool = True) -> None:
-        """ Write in the conversation, without showing it yet """
+    def __add(self, text: str, attr: int, *, remember: bool = True, fill: bool = False) -> None:
+        """
+            Write in the conversation, without showing it yet, its lines cut between the words. With fill, the
+            background of its lines goes up to the end: curses clears the end of a line on a newline, with the
+            background of the pad
+        """
         if remember:
-            self.__transcript.append((text, attr))
+            self.__transcript.append((text, attr, fill))
         try:
-            self.__pad.addstr(text, attr)
+            if fill:
+                # Filled when drawn, not with spaces kept: the band fits the window at any size
+                self.__pad.bkgdset(" ", attr)
+            for token in TOKENS.findall(text):
+                if token != "\n" and token.isspace() and self.__word is None and self.__pad.getyx()[1] == 0 \
+                        and self.__full_line:
+                    # A word filled the line above to its very end: the space after it would start this one
+                    self.__full_line = False
+                    continue
+                self.__full_line = False
+                if token == "\n" or token.isspace():
+                    self.__word = None
+                    self.__pad.addstr(token, attr)
+                else:
+                    self.__put_word(token, attr)
         except curses.error:
             # Raised on the very last cell: the text is written all the same
             pass
+        finally:
+            if fill:
+                self.__pad.bkgdset(" ", curses.A_NORMAL)
+
+    def __put_word(self, piece: str, attr: int) -> None:
+        """ Write a word, or the next piece of the one written last: moved whole to the next line if it no longer fits """
+        y, x = self.__pad.getyx()
+        word: str = piece
+        start_y, start_x = y, x
+        if self.__word is not None:
+            last_y, last_x, last, last_attr = self.__word
+            # Right after the word written last, in the same style: the same word going on
+            if last_attr == attr and (last_y, last_x + len(last)) == (y, x) and last_x + len(last) < curses.COLS:
+                start_y, start_x, word = last_y, last_x, last + piece
+        if start_x > 0 and start_x + len(word) > curses.COLS:
+            self.__pad.move(start_y, start_x)
+            self.__pad.clrtoeol()
+            self.__pad.addstr("\n")
+            start_y, start_x = self.__pad.getyx()
+            self.__pad.addstr(word, attr)
+        else:
+            self.__pad.addstr(piece, attr)
+        self.__word = (start_y, start_x, word, attr) if start_x + len(word) < curses.COLS else None
+        self.__full_line = start_x + len(word) == curses.COLS
+
+    def __styled(self, pieces: list[tuple[str, str]]) -> None:
+        """ Write pieces of a reply with the attributes of their Markdown style """
+        styles: dict[str, int] = {
+            "text" : curses.A_NORMAL,
+            "bold" : curses.A_BOLD,
+            "code" : self.__colors.get("code", curses.A_REVERSE),
+            "block": self.__colors.get("code", curses.A_REVERSE),
+            "title": self.__colors.get("accent", curses.A_NORMAL) | curses.A_BOLD,
+        }
+        for text, style in pieces:
+            self.__add(text, styles[style], fill=style == "block")
+
+    def __diff(self, lines: list[str]) -> list[tuple[str, int, bool]]:
+        """ The lines of a diff with their attributes: added and removed ones filled as bands """
+        pieces: list[tuple[str, int, bool]] = []
+        for line in lines:
+            if line.startswith("+"):
+                pieces.append((line + "\n", self.__colors.get("added", curses.A_BOLD), True))
+            elif line.startswith("-"):
+                pieces.append((line + "\n", self.__colors.get("removed", curses.A_DIM), True))
+            elif line.startswith("@@"):
+                pieces.append((line + "\n", self.__colors.get("accent", curses.A_DIM), False))
+            else:
+                pieces.append((line + "\n", curses.A_NORMAL, False))
+        return pieces
+
+    def __replace_tail(self, index: int, row: int, pieces: list[tuple[str, int, bool]]) -> None:
+        """ Draw pieces instead of the end of the conversation, from its place index in the transcript, at row """
+        # So long that it scrolled: the row is lost, the end stays as it is
+        if self.__pad.getyx()[0] >= PAD_LINES - 1:
+            return
+        self.__pad.move(row, 0)
+        self.__pad.clrtobot()
+        del self.__transcript[index:]
+        self.__word = None
+        for text, attr, fill in pieces:
+            self.__add(text, attr, fill=fill)
+        self.__follow()
+
+    def __unfold(self) -> None:
+        """ The whole diff, in place of the notice of its folded lines """
+        index, row, lines = self.__folded
+        self.__folded = None
+        self.__replace_tail(index, row, self.__diff(lines))
+
+    def __end_thinking(self) -> None:
+        """ The model replies: its thinking ends, folded to its beginning if it was long """
+        if self.__thinking is None:
+            return
+        index, row, pieces = self.__thinking
+        self.__thinking = None
+        if self.__pad.getyx()[0] - row < FOLD_LINES:
+            # Short, it stays: a blank line sets it apart from what follows
+            self._newline()
+            self.__add("\n", curses.A_NORMAL)
+            return
+        text: str = " ".join("".join(pieces).split())
+        kept: str = text[:3 * curses.COLS].rsplit(" ", 1)[0]
+        self.__replace_tail(index, row, [
+            ("✻ ", self.__colors.get("accent", curses.A_DIM), False),
+            (f"{kept} …\n", curses.A_DIM | getattr(curses, "A_ITALIC", 0), False),
+            ("  (la suite de la réflexion est dans louis.log)\n", curses.A_DIM, False),
+        ])
+
+    def __follow(self) -> None:
+        """ Show the end of the conversation, where it goes on """
+        self.__top = None
+        self.__refresh()
 
     def __refresh(self) -> None:
         """ Show the conversation: its end, or the part scrolled to """
@@ -253,18 +561,20 @@ class CursesCLI(CLI):
         top: int = bottom if self.__top is None else min(self.__top, bottom)
         self.__pad.refresh(top, 0, 0, 0, height - 1, curses.COLS - 1)
 
-    def __scroll(self, direction: int) -> None:
-        """ Half a screen up (-1) or down (1): back at the end, the conversation is followed again """
-        height: int = curses.LINES - BELOW
-        bottom: int = max(0, self.__pad.getyx()[0] - height + 1)
-        top: int = max(0, min(bottom, (bottom if self.__top is None else self.__top) + direction * (height // 2)))
-        self.__top = None if top >= bottom else top
-        self.__refresh()
+    def __scroll(self, direction: int, lines: int | None = None) -> None:
+        """ Up (-1) or down (1), half a screen or some lines: back at the end, the conversation is followed again """
+        with self.__lock:
+            height: int = curses.LINES - BELOW
+            bottom: int = max(0, self.__pad.getyx()[0] - height + 1)
+            step: int = lines if lines is not None else height // 2
+            top: int = max(0, min(bottom, (bottom if self.__top is None else self.__top) + direction * step))
+            self.__top = None if top >= bottom else top
+            self.__refresh()
 
     def __draw(self, prompt: str, text: str, pos: int) -> None:
-        """ The line being edited, moved sideways so that the cursor stays in sight """
+        """ The line being edited, moved sideways so that the cursor stays in sight: ↵ for its new lines """
         width: int = curses.COLS - 1
-        line: str = prompt + text
+        line: str = (prompt + text).replace("\n", "↵").replace("\t", " ")
         cursor: int = len(prompt) + pos
         start: int = max(0, cursor - width + 1)
         self.__input.erase()
@@ -272,29 +582,134 @@ class CursesCLI(CLI):
         self.__input.move(0, cursor - start)
         self.__input.refresh()
 
-    def __status(self, busy: bool) -> None:
-        """ The line below tells when Louis works: there is nothing to type there then """
-        self.__busy = busy
+    def __status(self, frame: int = 0) -> None:
+        """ The line below tells when Louis works, and for how long: there is nothing to type there then """
         self.__input.erase()
-        if busy:
-            self.__input.addnstr(0, 0, BUSY, curses.COLS - 1, self.__colors.get("accent", curses.A_DIM))
+        if self.__busy:
+            spent: int = int(time.monotonic() - self.__started)
+            text: str = f"{BUSY} {SPINNER[frame % len(SPINNER)]} {spent}s"
+            self.__input.addnstr(0, 0, text, curses.COLS - 1, self.__colors.get("accent", curses.A_DIM))
         self.__input.refresh()
 
+    def __spin(self) -> None:
+        """
+            The thread of the spinner: a frame every tenth of a second while Louis works, below and on the bullet
+            of the tool call running. Not while he asks: the cursor must stay where the user types
+        """
+        frame: int = 0
+        while not self.__stop.wait(0.1):
+            with self.__lock:
+                if self.__busy and not self.__asking and not self.__stop.is_set():
+                    frame += 1
+                    if self.__tool is not None:
+                        y, x = self.__pad.getyx()
+                        self.__pad.addstr(self.__tool[0], 2, SPINNER[frame % len(SPINNER)],
+                                          self.__colors.get("accent", curses.A_BOLD))
+                        self.__pad.move(y, x)
+                        self.__refresh()
+                    self.__status(frame)
+
+    def __set(self, **values) -> None:
+        """ Change what the status bar shows, and draw it again """
+        with self.__lock:
+            for name, value in values.items():
+                setattr(self, f"_CursesCLI__{name}", value)
+            self.__bar()
+
     def __bar(self) -> None:
-        """ ● eratz, green for a saved user and red for the anonymous one, and on the right: contexte 23% """
+        """ ● eratz · #12 · qwen3:8b · ✻ réflexion, green for a saved user and red otherwise, and on the right: contexte 23% """
         self.__status_bar.erase()
         width: int = curses.COLS - 1
-        if self.__user is not None:
-            name, saved = self.__user
-            self.__status_bar.addnstr(0, 1, "●", width - 1, self.__colors.get("ok" if saved else "danger", curses.A_BOLD))
-            self.__status_bar.addnstr(0, 3, name, max(0, width - 3), curses.A_DIM)
-        if self.__context is not None:
+        right: str = ""
+        right_attr: int = curses.A_DIM
+        if self.__hint:
+            right = self.__hint
+        elif self.__context is not None:
             used, size, estimated = self.__context
-            text: str = f"contexte {'~' if estimated else ''}{round(100 * used / size)}%"
-            color: int = self.__colors.get("danger", curses.A_BOLD) if used >= FULL * size else curses.A_DIM
-            if len(text) < width - 4:
-                self.__status_bar.addstr(0, width - len(text), text, color)
+            right = f"contexte {'~' if estimated else ''}{round(100 * used / size)}%"
+            if used >= FULL * size:
+                right_attr = self.__colors.get("danger", curses.A_BOLD)
+        room: int = max(0, width - len(right) - 2)
+        x: int = 1
+        if self.__user is not None and room > 3:
+            name, saved = self.__user
+            self.__status_bar.addnstr(0, x, "●", 1, self.__colors.get("ok" if saved else "danger", curses.A_BOLD))
+            details: str = name
+            if saved:
+                details += f" · #{self.__session}" if self.__session is not None else " · nouvelle session"
+            if self.__model:
+                details += f" · {self.__model}"
+            self.__status_bar.addnstr(0, x + 2, details, max(0, room - x - 2), curses.A_DIM)
+            x += 2 + len(details)
+            if self.__think and x + 14 < room:
+                self.__status_bar.addstr(0, x, " · ✻ réflexion", self.__colors.get("accent", curses.A_DIM))
+        if right and len(right) < width - 4:
+            self.__status_bar.addstr(0, width - len(right), right, right_attr)
         self.__status_bar.refresh()
+
+    # --- Reading --------------------------------------------------------------------------------------
+
+    def __key(self) -> str | int | None:
+        """ The next key: curses reads most of them, the escape sequences it does not know are read here """
+        key = self.__input.get_wch()
+        if key != "\x1b":
+            return key
+        # A lone Escape, or a sequence of an unknown key: nothing
+        return SEQUENCES.get(self.__sequence())
+
+    def __sequence(self) -> str:
+        """ The rest of an escape sequence, read without waiting """
+        sequence: str = ""
+        self.__input.nodelay(True)
+        try:
+            # Up to "[1;5D" (Ctrl+Left) or "[200~" (a paste): read whole, so that no piece of it is typed as text
+            while len(sequence) < 6:
+                try:
+                    char = self.__input.get_wch()
+                except curses.error:
+                    break
+                if not isinstance(char, str):
+                    break
+                sequence += char
+                if char == "~" or (char.isalpha() and len(sequence) > 1) or (char in "\r\n" and len(sequence) == 1):
+                    break
+        finally:
+            self.__input.nodelay(False)
+        return sequence
+
+    def __paste(self) -> str:
+        """ What the terminal pastes, up to its end mark: its newlines are kept, not sent """
+        pasted: list[str] = []
+        while True:
+            char = self.__input.get_wch()
+            if char == "\x1b":
+                if self.__sequence() == "[201~":
+                    return "".join(pasted)
+            elif isinstance(char, str):
+                pasted.append("\n" if char == "\r" else char)
+
+    def __complete(self, text: str, pos: int) -> tuple[str, int]:
+        """ Tab: the /command begun, completed up to what its possible ends share, shown below if they are many """
+        if not text.startswith("/") or " " in text[:pos]:
+            return text, pos
+        matches: list[str] = sorted(name for name in self.__commands if name.startswith(text[1:pos]))
+        if not matches:
+            return text, pos
+        common: str = os.path.commonprefix(matches) + (" " if len(matches) == 1 else "")
+        if len(matches) > 1:
+            self.__set(hint="  ".join(f"/{name}" for name in matches))
+        return "/" + common + text[pos:], 1 + len(common)
+
+    def __wheel(self) -> None:
+        """ The mouse wheel: some lines up or down """
+        try:
+            state: int = curses.getmouse()[4]
+        except curses.error:
+            return
+        if state & WHEEL_UP:
+            self.__scroll(-1, WHEEL_LINES)
+        elif WHEEL_DOWN and state & WHEEL_DOWN:
+            self.__scroll(1, WHEEL_LINES)
 
     @staticmethod
     def __palette() -> dict[str, int]:

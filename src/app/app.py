@@ -45,7 +45,7 @@ ANNOUNCE: re.Pattern = re.compile(
 )
 
 # Logged whole elsewhere (the reply by the model, the tool calls by __call): not once more per event
-UNLOGGED: frozenset[str] = frozenset({CHAT_TEXT, CHAT_REPLY, TOOL_CALL_STARTED, TOOL_CALL_ENDED})
+UNLOGGED: frozenset[str] = frozenset({CHAT_TEXT, CHAT_THINKING, CHAT_REPLY, TOOL_CALL_STARTED, TOOL_CALL_ENDED})
 
 CANCELLED_TOOL: str = "Annulé : l'utilisateur a interrompu Louis avant la fin de cet outil."
 
@@ -93,6 +93,12 @@ class App:
         self.__stream: Interface = stream
         # The interface shows what happens (the conversation, the commands...) by listening to the bus
         self.__stream.bind(self.__bus)
+        self.__bus.dispatch(
+            APP_STARTED,
+            model=self.__model.model,
+            think=self.think,
+            commands=[command.describe() for command in self.__commands.commands]
+        )
 
         # Started once the model answers: a failed start leaves no empty session behind
         self.new_session()
@@ -198,7 +204,8 @@ class App:
                     self.session.history,
                     self.__toolManager.all(),
                     think=self.think,
-                    on_text=lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk)
+                    on_text=lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk),
+                    on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk)
                 )
                 self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
                 # Without the counts of Ollama (a reply cut short), the last known value stays

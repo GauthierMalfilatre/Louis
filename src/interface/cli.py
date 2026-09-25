@@ -11,14 +11,69 @@ from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, CO
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED
+import json
 import os
+import re
 import sys
 
 PREVIEW_LENGTH = 70
 ARGUMENT_LENGTH = 40
 
-# How a tool call starts its line, by who wanted it: set apart from the reply of the model
-MARKS: dict[str, str] = {"model": "  | ", "user": "  > ", "system": "  · "}
+# The bullet of a tool call, by who wanted it: the model, the user (a command), or Louis itself
+BULLETS: dict[str, str] = {"model": "●", "user": "▸", "system": "○"}
+
+# What each tool does, said to the user: the others keep their name
+LABELS: dict[str, str] = {
+    "tree"      : "Arborescence",
+    "cat_file"  : "Lecture",
+    "search"    : "Recherche",
+    "edit_file" : "Modification",
+    "write_file": "Écriture",
+    "mkdir"     : "Nouveau dossier",
+    "web_search": "Recherche web",
+}
+
+def shorten(text: str, length: int = ARGUMENT_LENGTH) -> str:
+    """ A text on one line, cut if it is too long """
+    text = " ".join(str(text).split())
+    return text if len(text) <= length else text[:length - 1] + "…"
+
+def call_detail(name: str, values: dict) -> str:
+    """ What a tool call is about, in a few words: its file, what it searches... """
+    path = values.get("path")
+    if name == "search":
+        where: str = f" dans {path}" if path and path not in (".", "/") else ""
+        glob: str = f" ({values['glob']})" if values.get("glob") else ""
+        return f"« {shorten(values.get('pattern', ''))} »{where}{glob}"
+    if name == "web_search":
+        return f"« {shorten(values.get('query', ''))} »"
+    if path:
+        start = values.get("start_line")
+        return shorten(path) + (f", dès la ligne {start}" if str(start).isdigit() and int(start) > 1 else "")
+    return arguments(values)
+
+def result_summary(name: str, result: str, ok: bool) -> str:
+    """ What a tool call gave, in a few words """
+    lines: list[str] = result.strip().splitlines() or [""]
+    if not ok:
+        return "refusé" if lines[0].startswith("Refusé") else shorten(lines[0].removeprefix("Erreur : "), PREVIEW_LENGTH)
+    if name == "cat_file" and (read := re.search(r"\(lignes (\d+)-(\d+) sur \d+\)", lines[0])):
+        count: int = int(read[2]) - int(read[1]) + 1
+        return f"{count} ligne{'s' if count > 1 else ''} lue{'s' if count > 1 else ''}"
+    if name == "tree":
+        count = sum(1 for line in lines[1:] if line.strip() and not line.startswith(("…", "(")))
+        return f"{count} entrée{'s' if count > 1 else ''}"
+    if name == "search" and not lines[0].startswith("Aucun"):
+        more = re.search(r"… (\d+) résultats de plus", result)
+        count = sum(1 for line in lines if re.match(r"/\S*:\d+:", line)) + (int(more[1]) if more else 0)
+        return f"{count} résultat{'s' if count > 1 else ''}"
+    if name == "web_search":
+        try:
+            count = len(json.loads(result))
+            return f"{count} résultat{'s' if count > 1 else ''}"
+        except (ValueError, TypeError):
+            pass
+    return shorten(lines[0].removeprefix("OK : "), PREVIEW_LENGTH)
 
 def arguments(values: dict) -> str:
     """ The arguments of a tool call on one line, each one cut if it is too long """
@@ -45,6 +100,8 @@ class CLI(Interface):
         self.__prompt: str = prompt
         # Whether the last text written ended a line: the tool calls always start their own
         self.__at_line_start: bool = True
+        # "a" to a permission: the tools may act without asking, until the session changes
+        self.__always: bool = False
         super().__init__()
 
     @property
@@ -57,9 +114,8 @@ class CLI(Interface):
         # Kept to answer: a permission is granted by dispatching TOOL_GRANT_PERMISSION
         self.__bus: EventBus = bus
         bus.subscribe(lambda event: self.out("\n", end=""), CHAT_TURN_STARTED)
-        bus.subscribe(lambda event: self.out(event.data["text"], end="", flush=True), CHAT_TEXT)
-        # What comes next (a tool call, another reply) starts on its own line
-        bus.subscribe(lambda event: event.data["content"] and self._newline(), CHAT_REPLY)
+        bus.subscribe(self._on_text, CHAT_TEXT)
+        bus.subscribe(self._on_reply, CHAT_REPLY)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
         bus.subscribe(self._on_tool_started, TOOL_CALL_STARTED)
         bus.subscribe(self._on_tool_ended, TOOL_CALL_ENDED)
@@ -87,21 +143,40 @@ class CLI(Interface):
             case _:
                 self.out(f"{event.data['message']}\n")
 
-    def _tool_line(self, event: Event) -> str:
-        """   | cat_file path=version.py """
-        mark: str = MARKS.get(event.data["producer"], MARKS["system"])
-        return f"{mark}{event.data['name']} {arguments(event.data['arguments'])}".rstrip()
+    def _on_text(self, event: Event) -> None:
+        """ A piece of the reply, as the model writes it """
+        self.out(event.data["text"], end="", flush=True)
+
+    def _on_reply(self, event: Event) -> None:
+        """ The end of a reply: what comes next (a tool call, another reply) starts on its own line """
+        if event.data["content"]:
+            self._newline()
+
+    def _call_parts(self, event: Event) -> tuple[str, str, str]:
+        """ The bullet, the label and the detail of a tool call:  ● Lecture version.py """
+        name: str = event.data["name"]
+        return (BULLETS.get(event.data["producer"], BULLETS["system"]), LABELS.get(name, name),
+                call_detail(name, event.data["arguments"]))
+
+    def _result_line(self, event: Event) -> str:
+        """ What the call gave, and how long it took if it was not at once:  1 ligne lue · 2.4s """
+        duration: float = event.data["duration"]
+        summary: str = result_summary(event.data["name"], event.data["result"], event.data["ok"])
+        return summary + (f" · {duration:.1f}s" if duration >= 0.1 else "")
 
     def _on_tool_started(self, event: Event) -> None:
-        """ The tool call, on its own line """
+        """ The tool call, on its own line:  ● Lecture version.py """
         self._newline()
-        self.out(self._tool_line(event), flush=True)
+        bullet, label, detail = self._call_parts(event)
+        self.out(f"  {bullet} {label} {detail}".rstrip(), flush=True)
 
     def _on_tool_ended(self, event: Event) -> None:
-        """ Only a tool that could not run is worth a line: unknown, or crashed """
-        if not event.data["ok"]:
-            mark: str = MARKS.get(event.data["producer"], MARKS["system"])
-            self.out(f"{mark}  -> {event.data['result'].splitlines()[0]}")
+        """ What it gave, below:  ⎿ 1 ligne lue """
+        self.out(f"    ⎿ {self._result_line(event)}")
+
+    def _show_diff(self, preview: str) -> None:
+        """ The diff a tool asks to apply: as it is in a plain terminal """
+        self.out(preview)
 
     def _newline(self) -> None:
         """ Go to the next line, unless the last text written ended one """
@@ -109,29 +184,37 @@ class CLI(Interface):
             self.out("")
 
     def __on_thinking_enabled(self, event: Event) -> None:
-        """ The thinking is not shown: say the replies will be slower, and where to read it """
-        self.out("\nRéflexion activée : Louis réfléchit avant chaque réponse, c'est plus long "
-                 "(sa réflexion est dans louis.log). /think pour la couper.\n")
+        """ Say the replies will be slower """
+        self.out("\nRéflexion activée : Louis réfléchit avant chaque réponse, c'est plus long. /think pour la couper.\n")
 
     def __on_thinking_disabled(self, event: Event) -> None:
         """ Back to direct replies """
         self.out("\nRéflexion désactivée : Louis répond directement.\n")
 
     def __on_permission(self, event: Event) -> None:
-        """ Show what a tool wants to do and its diff, then grant it if the user agrees """
+        """ Show what a tool wants to do and its diff, then grant it if the user agrees, or always agrees """
         preview: str = event.data.get("preview") or ""
         self.out(f"\n{event.data['summary']}{' :' if preview else ''}")
         if preview:
-            self.out(preview)
-        answer: str = self.ask("Autoriser ? [y/n] ")
-        self.__bus.dispatch(
-            TOOL_GRANT_PERMISSION,
-            id=event.data["id"],
-            granted=answer.strip().lower() in ("o", "oui", "y", "yes")
-        )
+            self._show_diff(preview)
+        if self.__always:
+            self.out("(autorisé : tu as répondu « toujours » dans cette session)", dim=True)
+            granted: bool = True
+        else:
+            choice: str = self._choose("Autoriser ? [y] oui  [n] non  [a] toujours pour cette session  ", "yna")
+            self.__always = choice == "a"
+            granted = choice in "ya"
+        self.__bus.dispatch(TOOL_GRANT_PERMISSION, id=event.data["id"], granted=granted)
+
+    def _choose(self, question: str, choices: str) -> str:
+        """ One of the letters of choices, typed after question: "n" for anything else """
+        answer: str = self.ask(question).strip().lower()
+        letter: str = "y" if answer[:1] == "o" else answer[:1]
+        return letter if letter and letter in choices else "n"
 
     def __on_session_created(self, event: Event) -> None:
         """ Nouvelle session avec ton prompt système. """
+        self.__always = False
         saved: str = "" if event.data["persistent"] else " (non enregistrée)"
         self.out(f"\nNouvelle session{saved}{' avec ton prompt système' if event.data['custom_prompt'] else ''}.\n")
 
@@ -149,6 +232,7 @@ class CLI(Interface):
 
     def __on_session_resumed(self, event: Event) -> None:
         """ The session resumed, with its last question and answer to remember where it was """
+        self.__always = False
         lines: list[str] = [f"\nSession #{event.data['id']} reprise ({event.data['messages']} messages)."]
         if event.data["last_question"]:
             lines.append(f"  Toi   : {preview(event.data['last_question'])}")
