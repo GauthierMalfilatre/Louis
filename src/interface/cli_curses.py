@@ -5,7 +5,7 @@
 ## CLI in a curses window: the conversation above, the line being edited below
 ##
 from interface.cli import CLI
-from interface.markdown import Markdown
+from interface.markdown import Markdown, RETRACT
 from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_CONTEXT, CHAT_THINKING, APP_STARTED
@@ -81,9 +81,9 @@ class CursesCLI(CLI):
     def __init__(self, prompt: str = "> "):
         """ Init the curses CLI, its window is opened by with """
         super().__init__(prompt)
-        # What the conversation holds, to draw it again at another size: text, attribute, and whether its
-        # background goes on to the end of the line (the bands of a diff, the blocks of code)
-        self.__transcript: list[tuple[str, int, bool]] = []
+        # What the conversation holds, to draw it again at another size: text, attribute, and the character
+        # its lines are filled with up to the end ("" none, " " the bands of a diff or a code block, "─" a rule)
+        self.__transcript: list[tuple[str, int, str]] = []
         self.__history   : list[str]                  = []
         # First line shown, None to follow the end of the conversation
         self.__top       : int | None                 = None
@@ -98,6 +98,8 @@ class CursesCLI(CLI):
         self.__word      : tuple[int, int, str, int] | None = None
         self.__full_line : bool                       = False
         self.__markdown  : Markdown                   = Markdown()
+        # The rows where the lines of the reply start, by their place in the transcript: to take one back
+        self.__line_rows : dict[int, int]             = {}
         # The thinking being shown (its place in the transcript, its row, its text), and the lines of a
         # folded diff (the place and the row of their notice, the lines)
         self.__thinking  : tuple[int, int, list[str]] | None = None
@@ -216,9 +218,9 @@ class CursesCLI(CLI):
             tool, self.__tool = self.__tool, None
             ok: bool = event.data["ok"]
             line_attr: int = curses.A_DIM if ok else self.__colors.get("danger", curses.A_BOLD)
-            result: list[tuple[str, int, bool]] = [
-                ("    ⎿ ", curses.A_DIM, False),
-                (self._result_line(event)[:max(0, curses.COLS - 7)] + "\n", line_attr, False),
+            result: list[tuple[str, int, str]] = [
+                ("    ⎿ ", curses.A_DIM, ""),
+                (self._result_line(event)[:max(0, curses.COLS - 7)] + "\n", line_attr, ""),
             ]
             # Drawn again at another size, or a conversation so long that it scrolled: the row is lost
             if tool is None or self.__pad.getyx()[0] >= PAD_LINES - 2:
@@ -229,7 +231,7 @@ class CursesCLI(CLI):
                 return
             row, bullet_index, end_index, bullet = tool
             color: int = self.__colors.get("ok" if ok else "danger", curses.A_BOLD)
-            self.__transcript[bullet_index] = (bullet, color, False)
+            self.__transcript[bullet_index] = (bullet, color, "")
             y, x = self.__pad.getyx()
             self.__pad.addstr(row, 2, bullet, color)
             if end_index == len(self.__transcript) - 1:
@@ -379,7 +381,8 @@ class CursesCLI(CLI):
     def __on_turn_started(self, event: Event) -> None:
         """ Louis works: the spinner below, and the Markdown of a new reply """
         with self.__lock:
-            self.__markdown = Markdown()
+            self.__markdown = Markdown(curses.COLS - 1)
+            self.__line_rows.clear()
             self.__started = time.monotonic()
             self.__busy = True
             self.__status()
@@ -427,24 +430,37 @@ class CursesCLI(CLI):
         self.__status_bar = curses.newwin(1, curses.COLS, curses.LINES - 1, 0)
         # Their rows changed with the width: the running tool gets its status below, nothing is folded again
         self.__tool, self.__thinking, self.__folded, self.__word = None, None, None, None
+        self.__line_rows.clear()
+        # The tables to come fit the new width: the ones drawn stay as they are
+        self.__markdown.width = curses.COLS - 1
         for text, attr, fill in self.__transcript:
             self.__add(text, attr, remember=False, fill=fill)
         self.__refresh()
         self.__status()
         self.__bar()
 
-    def __add(self, text: str, attr: int, *, remember: bool = True, fill: bool = False) -> None:
+    def __add(self, text: str, attr: int, *, remember: bool = True, fill: str = "") -> None:
         """
-            Write in the conversation, without showing it yet, its lines cut between the words. With fill, the
-            background of its lines goes up to the end: curses clears the end of a line on a newline, with the
-            background of the pad
+            Write in the conversation, without showing it yet, its lines cut between the words. With fill, its lines
+            are filled up to their end with that character, in its attribute. Filled when drawn, not kept filled: it
+            fits the window at any size
         """
         if remember:
             self.__transcript.append((text, attr, fill))
         try:
+            if fill and fill != " ":
+                # Drawn up to the end of each line (a rule): curses only fills a background with a byte
+                lines: list[str] = text.split("\n")
+                for n, line in enumerate(lines):
+                    self.__pad.addstr(line, attr)
+                    if n < len(lines) - 1:
+                        self.__pad.addstr(fill * max(0, curses.COLS - 1 - self.__pad.getyx()[1]), attr)
+                        self.__pad.addstr("\n")
+                self.__word, self.__full_line = None, False
+                return
             if fill:
-                # Filled when drawn, not with spaces kept: the band fits the window at any size
-                self.__pad.bkgdset(" ", attr)
+                # curses clears the end of a line on a newline, with the background of the pad: a band
+                self.__pad.bkgdset(fill, attr)
             for token in TOKENS.findall(text):
                 if token != "\n" and token.isspace() and self.__word is None and self.__pad.getyx()[1] == 0 \
                         and self.__full_line:
@@ -461,7 +477,7 @@ class CursesCLI(CLI):
             # Raised on the very last cell: the text is written all the same
             pass
         finally:
-            if fill:
+            if fill == " ":
                 self.__pad.bkgdset(" ", curses.A_NORMAL)
 
     def __put_word(self, piece: str, attr: int) -> None:
@@ -485,33 +501,70 @@ class CursesCLI(CLI):
         self.__word = (start_y, start_x, word, attr) if start_x + len(word) < curses.COLS else None
         self.__full_line = start_x + len(word) == curses.COLS
 
-    def __styled(self, pieces: list[tuple[str, str]]) -> None:
-        """ Write pieces of a reply with the attributes of their Markdown style """
-        styles: dict[str, int] = {
-            "text" : curses.A_NORMAL,
-            "bold" : curses.A_BOLD,
-            "code" : self.__colors.get("code", curses.A_REVERSE),
-            "block": self.__colors.get("code", curses.A_REVERSE),
-            "title": self.__colors.get("accent", curses.A_NORMAL) | curses.A_BOLD,
-        }
+    def __styled(self, pieces: list[tuple[str, frozenset[str]]]) -> None:
+        """
+            Write pieces of a reply with the attributes of their Markdown style, a line after the other: each one
+            starts a place of its own in the transcript, with its row kept, so that it can be taken back
+        """
         for text, style in pieces:
-            self.__add(text, styles[style], fill=style == "block")
+            if style == RETRACT:
+                self.__retract()
+                continue
+            attr, fill = self.__markdown_attr(style)
+            for part in re.split(r"(?<=\n)", text):
+                if not part:
+                    continue
+                if self.__pad.getyx()[1] == 0:
+                    self.__line_rows[len(self.__transcript)] = self.__pad.getyx()[0]
+                self.__add(part, attr, fill=fill)
 
-    def __diff(self, lines: list[str]) -> list[tuple[str, int, bool]]:
+    def __retract(self) -> None:
+        """ Take back the line shown last: it was the header of a table, which is drawn whole now """
+        start: int = len(self.__transcript) - 1
+        if start < 0 or not self.__transcript[start][0].endswith("\n"):
+            return
+        while start > 0 and not self.__transcript[start - 1][0].endswith("\n"):
+            start -= 1
+        # Drawn again at another size since: its row is lost, it stays
+        if start in self.__line_rows and self.__line_rows[start] <= self.__pad.getyx()[0]:
+            self.__replace_tail(start, self.__line_rows[start], [])
+
+    def __markdown_attr(self, style: frozenset[str]) -> tuple[int, str]:
+        """
+            The attribute of a Markdown style, and the character its lines are filled with: the flags add up, but a
+            piece has one color (code first, then the accent of titles, links and list marks)
+        """
+        attr: int = curses.A_NORMAL
+        if style & {"bold", "title", "header"}:
+            attr |= curses.A_BOLD
+        if style & {"italic", "quote"}:
+            attr |= getattr(curses, "A_ITALIC", 0)
+        if style & {"strike", "url", "lang", "border", "rule"}:
+            attr |= curses.A_DIM
+        if "link" in style:
+            attr |= curses.A_UNDERLINE
+        if style & {"code", "block"}:
+            attr |= self.__colors.get("code", curses.A_REVERSE)
+        elif style & {"title", "link", "bullet", "mark"}:
+            attr |= self.__colors.get("accent", curses.A_NORMAL)
+        fill: str = " " if "block" in style else "─" if "rule" in style else ""
+        return attr, fill
+
+    def __diff(self, lines: list[str]) -> list[tuple[str, int, str]]:
         """ The lines of a diff with their attributes: added and removed ones filled as bands """
-        pieces: list[tuple[str, int, bool]] = []
+        pieces: list[tuple[str, int, str]] = []
         for line in lines:
             if line.startswith("+"):
-                pieces.append((line + "\n", self.__colors.get("added", curses.A_BOLD), True))
+                pieces.append((line + "\n", self.__colors.get("added", curses.A_BOLD), " "))
             elif line.startswith("-"):
-                pieces.append((line + "\n", self.__colors.get("removed", curses.A_DIM), True))
+                pieces.append((line + "\n", self.__colors.get("removed", curses.A_DIM), " "))
             elif line.startswith("@@"):
-                pieces.append((line + "\n", self.__colors.get("accent", curses.A_DIM), False))
+                pieces.append((line + "\n", self.__colors.get("accent", curses.A_DIM), ""))
             else:
-                pieces.append((line + "\n", curses.A_NORMAL, False))
+                pieces.append((line + "\n", curses.A_NORMAL, ""))
         return pieces
 
-    def __replace_tail(self, index: int, row: int, pieces: list[tuple[str, int, bool]]) -> None:
+    def __replace_tail(self, index: int, row: int, pieces: list[tuple[str, int, str]]) -> None:
         """ Draw pieces instead of the end of the conversation, from its place index in the transcript, at row """
         # So long that it scrolled: the row is lost, the end stays as it is
         if self.__pad.getyx()[0] >= PAD_LINES - 1:
@@ -519,6 +572,7 @@ class CursesCLI(CLI):
         self.__pad.move(row, 0)
         self.__pad.clrtobot()
         del self.__transcript[index:]
+        self.__line_rows = {place: kept for place, kept in self.__line_rows.items() if place < index}
         self.__word = None
         for text, attr, fill in pieces:
             self.__add(text, attr, fill=fill)
@@ -544,9 +598,9 @@ class CursesCLI(CLI):
         text: str = " ".join("".join(pieces).split())
         kept: str = text[:3 * curses.COLS].rsplit(" ", 1)[0]
         self.__replace_tail(index, row, [
-            ("✻ ", self.__colors.get("accent", curses.A_DIM), False),
-            (f"{kept} …\n", curses.A_DIM | getattr(curses, "A_ITALIC", 0), False),
-            ("  (la suite de la réflexion est dans louis.log)\n", curses.A_DIM, False),
+            ("✻ ", self.__colors.get("accent", curses.A_DIM), ""),
+            (f"{kept} …\n", curses.A_DIM | getattr(curses, "A_ITALIC", 0), ""),
+            ("  (la suite de la réflexion est dans louis.log)\n", curses.A_DIM, ""),
         ])
 
     def __follow(self) -> None:
