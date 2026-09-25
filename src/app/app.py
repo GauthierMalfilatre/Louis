@@ -49,6 +49,9 @@ UNLOGGED: frozenset[str] = frozenset({CHAT_TEXT, CHAT_REPLY, TOOL_CALL_STARTED, 
 
 CANCELLED_TOOL: str = "Annulé : l'utilisateur a interrompu Louis avant la fin de cet outil."
 
+# Characters of the history (as JSON, with the tools) for a token of qwen3: measured on Ollama, 3.91 to 3.93
+CHARS_PER_TOKEN: float = 3.9
+
 class App:
     """ App Class: runs the conversation, and tells everything through the bus, never printing itself """
     def __init__(self, settings: dict[str], system_prompt: str, user: User, stream: Interface):
@@ -61,6 +64,8 @@ class App:
         self.__bus: EventBus = EventBus()
         # Subscribed first: an event is logged before any other handler reacts to it
         self.__bus.subscribe(lambda event: event.name in UNLOGGED or log_event(event))
+        # A resumed session fills the context with its history: told before the model measures it
+        self.__bus.subscribe(lambda event: self.__estimate_context(), SESSION_RESUMED)
 
         # The interface asks the user (TOOL_BEGFOR_PERMISSION) and answers (TOOL_GRANT_PERMISSION)
         self.__permissions: PermissionManager = PermissionManager(self.__bus)
@@ -138,7 +143,18 @@ class App:
             persistent=not self.__user.is_anonymous,
             custom_prompt=bool(system_prompt)
         )
+        self.__estimate_context()
         return session
+
+    def __estimate_context(self) -> None:
+        """ Tell how full the context is with the current session, before the model measures it """
+        characters: int = len(json.dumps([self.session.history, self.__toolManager.all()], ensure_ascii=False))
+        self.__bus.dispatch(
+            CHAT_CONTEXT,
+            used=round(characters / CHARS_PER_TOKEN),
+            size=self.__settings.get("chat.context", 12288),
+            estimated=True
+        )
 
     @property
     def permissions(self) -> PermissionManager:
@@ -185,6 +201,11 @@ class App:
                     on_text=lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk)
                 )
                 self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
+                # Without the counts of Ollama (a reply cut short), the last known value stays
+                if reply.tokens:
+                    self.__bus.dispatch(
+                        CHAT_CONTEXT, used=reply.tokens, size=self.__settings.get("chat.context", 12288), estimated=False
+                    )
                 self.__bus.dispatch(CHAT_REPLY, content=reply.content, tools=[call.name for call in reply.tool_calls])
 
                 if not reply.tool_calls:

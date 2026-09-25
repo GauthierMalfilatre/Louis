@@ -7,13 +7,15 @@
 from interface.cli import CLI
 from events.event_bus import EventBus
 from events.event import Event
-from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED
+from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, SESSION_CREATED, CHAT_CONTEXT
 import curses
 import locale
 import os
 
 PAD_LINES: int = 3000   # Lines of conversation kept: the oldest ones scroll away
 BUSY     : str = "Gamberging"
+BELOW    : int = 2      # The lines below the conversation: the one being edited, and the status bar
+FULL     : float = 0.8  # From this share of the context used on, its percentage is a warning
 
 # The colors of the web interface of the prototype, its dark theme (terminals mostly are): the closest
 # ones of 256 colors, or of the 8 basic ones. name: (text, background), -1 is the one of the terminal
@@ -58,6 +60,9 @@ class CursesCLI(CLI):
         self.__tool      : tuple[int, str, int] | None = None
         # The attributes of the colors, by name: none when the terminal has no colors
         self.__colors    : dict[str, int]             = {}
+        # What the status bar shows: the user (a saved one or not), and the context used (tokens, size, estimated)
+        self.__user      : tuple[str, bool] | None    = None
+        self.__context   : tuple[int, int, bool] | None = None
 
     def __enter__(self) -> "CursesCLI":
         """ Open the window """
@@ -80,11 +85,23 @@ class CursesCLI(CLI):
         curses.endwin()
 
     def bind(self, bus: EventBus) -> "CursesCLI":
-        """ Everything the CLI shows, and the line below telling when Louis works """
+        """ Everything the CLI shows, the line below telling when Louis works, and the status bar """
         super().bind(bus)
         bus.subscribe(lambda event: self.__status(True), CHAT_TURN_STARTED)
         bus.subscribe(lambda event: self.__status(False), CHAT_TURN_ENDED)
+        bus.subscribe(self.__on_session_created, SESSION_CREATED)
+        bus.subscribe(self.__on_context, CHAT_CONTEXT)
         return self
+
+    def __on_session_created(self, event: Event) -> None:
+        """ The user, in the status bar: saved or not """
+        self.__user = (event.data["user"], event.data["persistent"])
+        self.__bar()
+
+    def __on_context(self, event: Event) -> None:
+        """ How full the context is, in the status bar """
+        self.__context = (event.data["used"], event.data["size"], event.data["estimated"])
+        self.__bar()
 
     def _write(self, text: str, *, dim: bool = False) -> None:
         """ Add text to the conversation, and show its end """
@@ -208,14 +225,16 @@ class CursesCLI(CLI):
         curses.update_lines_cols()
         self.__pad = curses.newpad(PAD_LINES, curses.COLS)
         self.__pad.scrollok(True)
-        self.__input = curses.newwin(1, curses.COLS, curses.LINES - 1, 0)
+        self.__input = curses.newwin(1, curses.COLS, curses.LINES - BELOW, 0)
         self.__input.keypad(True)
+        self.__status_bar = curses.newwin(1, curses.COLS, curses.LINES - 1, 0)
         # Its row changed with the width: the running tool will get its status below
         self.__tool = None
         for text, attr in self.__transcript:
             self.__add(text, attr, remember=False)
         self.__refresh()
         self.__status(self.__busy)
+        self.__bar()
 
     def __add(self, text: str, attr: int, *, remember: bool = True) -> None:
         """ Write in the conversation, without showing it yet """
@@ -229,14 +248,14 @@ class CursesCLI(CLI):
 
     def __refresh(self) -> None:
         """ Show the conversation: its end, or the part scrolled to """
-        height: int = curses.LINES - 1
+        height: int = curses.LINES - BELOW
         bottom: int = max(0, self.__pad.getyx()[0] - height + 1)
         top: int = bottom if self.__top is None else min(self.__top, bottom)
         self.__pad.refresh(top, 0, 0, 0, height - 1, curses.COLS - 1)
 
     def __scroll(self, direction: int) -> None:
         """ Half a screen up (-1) or down (1): back at the end, the conversation is followed again """
-        height: int = curses.LINES - 1
+        height: int = curses.LINES - BELOW
         bottom: int = max(0, self.__pad.getyx()[0] - height + 1)
         top: int = max(0, min(bottom, (bottom if self.__top is None else self.__top) + direction * (height // 2)))
         self.__top = None if top >= bottom else top
@@ -260,6 +279,22 @@ class CursesCLI(CLI):
         if busy:
             self.__input.addnstr(0, 0, BUSY, curses.COLS - 1, self.__colors.get("accent", curses.A_DIM))
         self.__input.refresh()
+
+    def __bar(self) -> None:
+        """ ● eratz, green for a saved user and red for the anonymous one, and on the right: contexte 23% """
+        self.__status_bar.erase()
+        width: int = curses.COLS - 1
+        if self.__user is not None:
+            name, saved = self.__user
+            self.__status_bar.addnstr(0, 1, "●", width - 1, self.__colors.get("ok" if saved else "danger", curses.A_BOLD))
+            self.__status_bar.addnstr(0, 3, name, max(0, width - 3), curses.A_DIM)
+        if self.__context is not None:
+            used, size, estimated = self.__context
+            text: str = f"contexte {'~' if estimated else ''}{round(100 * used / size)}%"
+            color: int = self.__colors.get("danger", curses.A_BOLD) if used >= FULL * size else curses.A_DIM
+            if len(text) < width - 4:
+                self.__status_bar.addstr(0, width - len(text), text, color)
+        self.__status_bar.refresh()
 
     @staticmethod
     def __palette() -> dict[str, int]:

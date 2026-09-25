@@ -136,6 +136,7 @@ class OllamaModel:
         if on_text is not None and shown < len(reply.content):
             on_text(reply.content[shown:])
 
+        reply.tokens = stats.get("prompt_eval_count", 0) + stats.get("eval_count", 0)
         OllamaModel.__log_reply(reply, thinking, stats)
         return reply
 
