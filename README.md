@@ -9,6 +9,13 @@ Louis est un assistant basé sur un modèle de langage, qui permet à l'utilisat
 - **Interface** : L'utilisateur peut interagir avec le système via une interface en ligne de commande (CLI), ou via une interface curses pour un affichage plus avancé.
 - **Modèle de langage** : Le système utilise un modèle de langage (comme Ollama) pour générer des réponses.
 
+## Équipe
+
+- **Gauthier Malfilatre** : Développeur
+- **Martin Muller** : Développeur
+- **Victor Zhou** : Développeur
+- **Julian Hemmer** : Développeur
+
 ## Comment le lancer avec Python3 en créant un venv
 
 1. **Créer un venv** :
