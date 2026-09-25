@@ -13,13 +13,16 @@ from events.event_list import SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, T
 import curses
 import locale
 import os
+import random
 import re
 import sys
 import threading
 import time
 
 PAD_LINES  : int   = 3000   # Lines of conversation kept: the oldest ones scroll away
-BUSY       : str   = "Gamberging"
+# The words shown while Louis works, one at a time, another one drawn at random every BUSY_EVERY seconds
+BUSY       : list[str] = ["Gamberging", "Cogitating", "Pondering", "Ruminating", "Mulling"]
+BUSY_EVERY : float = 3.0
 SPINNER    : str   = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 BELOW      : int   = 2      # The lines below the conversation: the one being edited, and the status bar
 FULL       : float = 0.8    # From this share of the context used on, its percentage is a warning
@@ -90,6 +93,9 @@ class CursesCLI(CLI):
         self.__busy      : bool                       = False
         self.__asking    : bool                       = False
         self.__started   : float                      = 0.0
+        # The word of BUSY shown while Louis works, and since when
+        self.__busy_word : str                        = BUSY[0]
+        self.__busy_since: float                      = 0.0
         # The tool call running: its row, the places of its bullet and of its end in the transcript, its bullet
         self.__tool      : tuple[int, int, int, str] | None = None
         # The attributes of the colors, by name: none when the terminal has no colors
@@ -384,6 +390,7 @@ class CursesCLI(CLI):
             self.__markdown = Markdown(curses.COLS - 1)
             self.__line_rows.clear()
             self.__started = time.monotonic()
+            self.__next_word()
             self.__busy = True
             self.__status()
 
@@ -640,10 +647,19 @@ class CursesCLI(CLI):
         """ The line below tells when Louis works, and for how long: there is nothing to type there then """
         self.__input.erase()
         if self.__busy:
-            spent: int = int(time.monotonic() - self.__started)
-            text: str = f"{BUSY} {SPINNER[frame % len(SPINNER)]} {spent}s"
+            now: float = time.monotonic()
+            if now - self.__busy_since >= BUSY_EVERY:
+                self.__next_word()
+            spent: int = int(now - self.__started)
+            text: str = f"{self.__busy_word} {SPINNER[frame % len(SPINNER)]} {spent}s"
             self.__input.addnstr(0, 0, text, curses.COLS - 1, self.__colors.get("accent", curses.A_DIM))
         self.__input.refresh()
+
+    def __next_word(self) -> None:
+        """ Another word of BUSY than the one shown, unless it is the only one """
+        others: list[str] = [word for word in BUSY if word != self.__busy_word] or BUSY
+        self.__busy_word = random.choice(others)
+        self.__busy_since = time.monotonic()
 
     def __spin(self) -> None:
         """
