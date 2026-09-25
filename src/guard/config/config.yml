@@ -1,0 +1,44 @@
+# Rails of Louis, read by NeMo Guardrails (with every .yml, .co and actions.py of this folder).
+# The rules are the flows listed under rails.input and rails.output: remove a line to turn a rule off.
+# Masking flows anonymize the message, the others refuse it. They run in the order below.
+colang_version: "1.0"
+
+models:
+  # The judge of the self checks: the same model as the chat, so Ollama keeps one model loaded
+  - type: main
+    engine: ollama
+    model: qwen3:8b
+    parameters:
+      base_url: http://localhost:11434
+      # Same as chat.context: a different num_ctx makes Ollama reload the model on every check
+      num_ctx: 12288
+      keep_alive: 30m
+      # A judge answers Yes or No: no thinking before, no creativity
+      reasoning: false
+      temperature: 0
+
+rails:
+  config:
+    # Presidio. The pattern-based entities work in any language. PERSON is left out: its English spaCy
+    # model reads French poorly, and on a code assistant it masks names of classes and authors
+    sensitive_data_detection:
+      input:
+        entities: [EMAIL_ADDRESS, CREDIT_CARD, IBAN_CODE]
+      output:
+        entities: [EMAIL_ADDRESS, CREDIT_CARD, IBAN_CODE]
+
+  input:
+    flows:
+      # Anonymize before the model reads it: cheap, deterministic, first
+      - mask french ids on input
+      - mask sensitive data on input
+      # Refuse: the model judges the message against the policy of prompts.yml (one more model call)
+      - self check input
+
+  output:
+    flows:
+      # Refuse: a key or a token read by cat_file must never be shown back
+      - block secrets on output
+      - mask french ids on output
+      - mask sensitive data on output
+      - self check output

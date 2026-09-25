@@ -18,6 +18,9 @@ CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an a
 CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
 CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the model thinks before replying, with /think)
 
+# A rail of the guard changed a message: the user's before the model reads it, or the model's before it is shown
+GUARD_TRIGGERED   = "guard.triggered"     # data: stage ("input", "output"), action ("masked", "refused"), rails (the names of those that refused)
+
 # producer: who wanted the call, "model" (the model asked for it), "user" (a command) or "system" (Louis itself)
 TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments, producer
 TOOL_CALL_ENDED   = "tool.call.ended"     # data: name, producer, ok (False if it did not do it: unknown, crashed, failed or refused), result, duration (seconds)
