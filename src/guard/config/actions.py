@@ -21,12 +21,13 @@ SECRET  : re.Pattern = re.compile(
     r"|\bsk-[A-Za-z0-9_-]{20,}"              # OpenAI, Anthropic... API keys
 )
 
+# async: NeMo runs them in its event loop, and warns about the synchronous ones
 @action(name="mask_french_ids")
-def mask_french_ids(text: str) -> str:
+async def mask_french_ids(text: str) -> str:
     """ The text, its French ids replaced by their kind """
     return PHONE_FR.sub("<PHONE_NUMBER>", NIR.sub("<NIR>", text or ""))
 
 @action(name="contains_secret")
-def contains_secret(text: str) -> bool:
+async def contains_secret(text: str) -> bool:
     """ Check if the text holds a secret """
     return SECRET.search(text or "") is not None

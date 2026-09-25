@@ -20,6 +20,8 @@ from tool.impl.file.tool_search import SearchTool
 from tool.impl.file.tool_mkdir import MkdirTool
 from tool.impl.web.tool_websearch import InternetTool
 from tool.permission import PermissionManager
+from guard.guard import Guard
+from guard.verdict import Verdict
 from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
@@ -31,6 +33,7 @@ from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
+from collections.abc import Callable
 import json
 import os
 import re
@@ -89,6 +92,9 @@ class App:
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
+
+        # NOTE: Raisable. Loaded after the model: a model that does not answer fails before NeMo takes its time to load
+        self.__guard: Guard | None = Guard(self.__bus) if settings.get("guard.enabled", False) else None
 
         self.__stream: Interface = stream
         # The interface shows what happens (the conversation, the commands...) by listening to the bus
@@ -187,26 +193,44 @@ class App:
                 log.info("[app] command interrupted by the user")
 
     def __answer(self, text: str) -> None:
-        """ Answer a message of the user: the model replies, calling tools, until a reply calls none """
-        saved: bool = self.session.saved
-        self.session.add("user", text)
-        if not saved and self.session.saved:
-            self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
-
+        """
+            Answer a message of the user: the model replies, calling tools, until a reply calls none.
+            With the guard, the model only reads what the input rails let through, and the user only
+            reads what the output rails let through. Whatever goes wrong in the guard ends the turn:
+            a guard that cannot check never lets a message go unchecked
+        """
         self.__bus.dispatch(CHAT_TURN_STARTED)
         rounds: int = self.__settings.get("chat.tools.maxdepth", 8)
         # The calls of the last reply not answered yet: each of them must get an answer, even if cancelled
         pending: list[ToolCall] = []
         nudged: bool = False
+        # A reply can only be checked whole: with the guard, it is shown once checked, not as it is written
+        stream: Callable | None = None if self.__guard else lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk)
         try:
+            question: str = text
+            if self.__guard is not None:
+                verdict: Verdict = self.__guard.check_input(text)
+                # Refused: kept out of the session, the model would read it again on the next message
+                if verdict.refused:
+                    self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
+                    return
+                question = verdict.content
+
+            saved: bool = self.session.saved
+            self.session.add("user", question)
+            if not saved and self.session.saved:
+                self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+
             for _ in range(rounds):
                 reply: Reply = self.__model.chat(
                     self.session.history,
                     self.__toolManager.all(),
                     think=self.think,
-                    on_text=lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk),
+                    on_text=stream,
                     on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk)
                 )
+                if self.__guard is not None and reply.content:
+                    self.__screen(question, reply)
                 self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
                 # Without the counts of Ollama (a reply cut short), the last known value stays
                 if reply.tokens:
@@ -247,6 +271,18 @@ class App:
 
         log.warning(f"[app] stopped after {rounds} rounds of tool calls")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} tours d'appels d'outils.")
+
+    def __screen(self, question: str, reply: Reply) -> None:
+        """
+            Put the reply through the output rails, then show it: masked, or replaced by the refusal.
+            Kept in the session as it is shown, so the model never reads again what the user could not.
+            A refused reply calls no tool: what the model meant to do with it is not known
+        """
+        verdict: Verdict = self.__guard.check_output(question, reply.content)
+        reply.content = verdict.content
+        if verdict.refused:
+            reply.tool_calls = []
+        self.__bus.dispatch(CHAT_TEXT, text=reply.content)
 
     def __call(self, call: ToolCall, producer: str = "model") -> str:
         """

@@ -4,12 +4,14 @@
 ## File description:
 ## Guard Class: the rails of NeMo Guardrails, around the messages of the user and the replies of the model
 ##
-## Usage:  guard = Guard()
+## Usage:  guard = Guard(bus)
 ##         verdict = guard.check_input(text)           before the message reaches the model
 ##         verdict = guard.check_output(text, reply)   before the reply reaches the user
 ##
 import os
 from .verdict import Verdict, PASS, MASKED, REFUSED
+from events.event_bus import EventBus
+from events.event_list import GUARD_TRIGGERED
 from logger.logger import log
 
 # The rules: which rails run (config.yml), their flows (rails.co) and the code they call (actions.py)
@@ -18,13 +20,18 @@ CONFIG: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 class Guard:
     """
         Guard Class: NeMo only checks the messages, it never talks to the user for Louis.
-        The model is still called by OllamaModel: its tools, streaming and thinking stay as they are
+        The model is still called by OllamaModel: its tools, streaming and thinking stay as they are.
+        The app asks and gets a verdict back; what the guard did is told on the bus (GUARD_TRIGGERED)
     """
-    def __init__(self, path: str = CONFIG):
+    def __init__(self, bus: EventBus, path: str = CONFIG):
         """ Load the rails of the given folder. NOTE: Raisable (NeMo missing, bad config) """
         # Imported here: with the guard off, Louis never loads NeMo (heavy, and not on Python 3.14)
-        from nemoguardrails import LLMRails, RailsConfig
+        try:
+            from nemoguardrails import LLMRails, RailsConfig
+        except ImportError as e:
+            raise ImportError(f"guard.enabled needs NeMo Guardrails: pip install -r requirements-guard.txt ({e})") from e
 
+        self.__bus  : EventBus = bus
         self.__rails = LLMRails(RailsConfig.from_path(path))
         log.info(f"[guard] rails loaded from {path}")
 
@@ -56,6 +63,7 @@ class Guard:
             verdict = Verdict(MASKED, content)
         else:
             verdict = Verdict(PASS, original)
+        # Only a change is told: the bus logs it, the interfaces show it
         if verdict.action != PASS:
-            log.info(f"[guard] {stage} {verdict.action}{f' by {", ".join(stopped)}' if stopped else ''}")
+            self.__bus.dispatch(GUARD_TRIGGERED, stage=stage, action=verdict.action, rails=verdict.rails, content=verdict.content)
         return verdict

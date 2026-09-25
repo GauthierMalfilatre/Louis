@@ -1,5 +1,6 @@
 # Policies of the self checks: the model reads them to judge a message.
-# NeMo reads the answer as English: "Yes" blocks the message, "No" lets it through
+# NeMo reads the answer as English: "Yes" blocks the message, "No" lets it through.
+# "/no_think" is the switch of qwen3: a judge answers at once, its thoughts would only slow down every message
 prompts:
   - task: self_check_input
     content: |
@@ -16,7 +17,7 @@ prompts:
 
       User message: "{{ user_input }}"
 
-      Question: Should the user message be blocked (Yes or No)?
+      Question: Should the user message be blocked (Yes or No)? /no_think
       Answer:
 
   - task: self_check_output
@@ -33,5 +34,5 @@ prompts:
 
       Bot message: "{{ bot_response }}"
 
-      Question: Should the message be blocked (Yes or No)?
+      Question: Should the message be blocked (Yes or No)? /no_think
       Answer:

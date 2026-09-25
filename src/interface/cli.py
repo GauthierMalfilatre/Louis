@@ -10,7 +10,7 @@ from events.event import Event
 from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY
-from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED
+from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED
 import json
 import os
 import re
@@ -128,6 +128,7 @@ class CLI(Interface):
         bus.subscribe(self.__on_command_error, COMMAND_ERROR)
         bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
         bus.subscribe(self.__on_thinking_disabled, THINKING_DISABLED)
+        bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -190,6 +191,19 @@ class CLI(Interface):
     def __on_thinking_disabled(self, event: Event) -> None:
         """ Back to direct replies """
         self.out("\nRéflexion désactivée : Louis répond directement.\n")
+
+    def __on_guard(self, event: Event) -> None:
+        """ What the guard changed, dim, before the reply or the refusal:  ⛨ Message anonymisé : … """
+        self._newline()
+        before: bool = event.data["stage"] == "input"
+        if event.data["action"] == "refused":
+            what: str = "Message bloqué" if before else "Réponse bloquée"
+            self.out(f"⛨ {what} par le garde-fou ({', '.join(event.data['rails'])})", dim=True)
+        elif before:
+            # The user sees what the model reads in place of the message
+            self.out(f"⛨ Message anonymisé avant le modèle : {preview(event.data['content'])}", dim=True)
+        else:
+            self.out("⛨ Réponse anonymisée par le garde-fou", dim=True)
 
     def __on_permission(self, event: Event) -> None:
         """ Show what a tool wants to do and its diff, then grant it if the user agrees, or always agrees """

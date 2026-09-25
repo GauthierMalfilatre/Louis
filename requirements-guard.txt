@@ -2,4 +2,3 @@
 # Then the model of Presidio:  python -m spacy download en_core_web_lg
 -r requirements.txt
 nemoguardrails[sdd]==0.24.1
-langchain-ollama

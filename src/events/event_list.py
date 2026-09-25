@@ -10,7 +10,7 @@ THINKING_DISABLED = "chat.thinking.disabled"   # data: none
 
 # The conversation, as it goes: the app never prints, the interfaces show these their own way
 CHAT_TURN_STARTED = "chat.turn.started"   # data: none (the model starts answering a message of the user)
-CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds"), message (None when done or cancelled)
+CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "refused"), message (None when done or cancelled)
 CHAT_TEXT         = "chat.text"           # data: text (a piece of the reply, as the model writes it)
 CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" if it only calls tools), tools (their names)
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
@@ -19,7 +19,9 @@ CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
 CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the model thinks before replying, with /think)
 
 # A rail of the guard changed a message: the user's before the model reads it, or the model's before it is shown
-GUARD_TRIGGERED   = "guard.triggered"     # data: stage ("input", "output"), action ("masked", "refused"), rails (the names of those that refused)
+# A refused message never reaches the model: its turn ends with the reason "refused", and the refusal as message.
+# A refused reply is replaced by the refusal, shown and kept in the session in its place
+GUARD_TRIGGERED   = "guard.triggered"     # data: stage ("input", "output"), action ("masked", "refused"), rails (the names of those that refused), content (what goes on instead)
 
 # producer: who wanted the call, "model" (the model asked for it), "user" (a command) or "system" (Louis itself)
 TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments, producer
