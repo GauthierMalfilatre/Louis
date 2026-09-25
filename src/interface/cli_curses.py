@@ -21,7 +21,7 @@ import time
 
 PAD_LINES  : int   = 3000   # Lines of conversation kept: the oldest ones scroll away
 # The words shown while Louis works, one at a time, another one drawn at random every BUSY_EVERY seconds
-BUSY       : list[str] = ["Gamberging", "Cogitating", "Pondering", "Ruminating", "Mulling"]
+BUSY       : list[str] = ["Gamberging", "Gooning", "Phasing", "Zioning", "Larping", "Yapping", "Blablating", "Doomscrolling", "Asking my mom", "Taking coffee"]
 BUSY_EVERY : float = 3.0
 SPINNER    : str   = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 BELOW      : int   = 2      # The lines below the conversation: the one being edited, and the status bar
