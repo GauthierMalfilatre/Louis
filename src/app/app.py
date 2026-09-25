@@ -10,7 +10,7 @@ from model.model import OllamaModel
 from model.model_exception import ModelException
 from model.reply import Reply
 from tool.tool_manager import ToolManager
-from tool.tool import Tool
+from tool.tool import Tool, failed
 from tool.tool_call import ToolCall
 from tool.impl.file.tool_tree import TreeTool
 from tool.impl.file.tool_cat import CatTool
@@ -228,7 +228,6 @@ class App:
         self.__bus.dispatch(TOOL_CALL_STARTED, name=call.name, arguments=call.arguments, producer=producer)
         log.info(f"[tool] {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
         start: float = time.perf_counter()
-        ok: bool = False
         tool: Tool | None = self.__toolManager.get(call.name)
         if tool is None:
             names: str = ", ".join(schema["function"]["name"] for schema in self.__toolManager.all())
@@ -236,12 +235,13 @@ class App:
         else:
             try:
                 result = tool.handle(self, **call.arguments)
-                ok = True
             except Exception as e:
                 log.exception(f"[tool] {call.name} failed")
                 result = (f"Erreur : l'outil '{call.name}' a échoué ({type(e).__name__} : {e}). "
                           "Vérifie tes arguments, ou fais autrement.")
         result = result if isinstance(result, str) else str(result)
+        # Unknown, crashed, or it could not do it (a text not found, a permission refused...): not ok
+        ok: bool = not failed(result)
         duration: float = time.perf_counter() - start
         log.info(f"[tool] {call.name} done in {duration:.2f}s:\n{result}")
         self.__bus.dispatch(

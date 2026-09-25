@@ -6,6 +6,13 @@
 ##
 from abc import abstractmethod
 
+# How the result of a tool starts when it could not do what was asked: it can not, or the user refused
+FAILURES: tuple[str, ...] = ("Erreur", "Refusé")
+
+def failed(result: str) -> bool:
+    """ Whether the result of a tool tells that it could not do what was asked """
+    return result.lstrip().startswith(FAILURES)
+
 class Tool:
     """ Class tool """
     def __init__(self, name: str, desc: str, parameters: dict = {}) -> "Tool":
