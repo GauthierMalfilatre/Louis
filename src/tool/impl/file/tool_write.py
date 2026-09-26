@@ -101,6 +101,10 @@ class WriteTool(Tool):
                 f.write(fixed)
         except OSError as e:
             return f"Erreur lors de l'écriture de '{path}' : {e.strerror or e}"
+        # The model knows the file as it wrote it: edit_file may change it without reading it first
+        seen = getattr(app, "seen_files", None)
+        if seen is not None:
+            seen.mark(full)
 
         lines = fixed.count("\n") + (1 if fixed and not fixed.endswith("\n") else 0)
         action = "remplacé" if existed else "créé"

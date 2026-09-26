@@ -22,6 +22,8 @@ from tool.impl.web.tool_websearch import InternetTool
 from tool.permission import PermissionManager
 from guard.guard import Guard
 from guard.verdict import Verdict
+from tool.seen_files import SeenFiles
+from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND
 from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
@@ -35,17 +37,21 @@ from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
 from collections import Counter
 from collections.abc import Callable
+from datetime import date
 import json
 import os
 import re
 import time
 
 # A reply that says what the model is about to do, in French or English. In French, "je vais" must lead to
-# a verb ("je vais créer", "je vais d'abord lire"): "je vais bien" is only small talk
+# a verb ("je vais créer", "je vais d'abord lire"): "je vais bien" is only small talk, as "let me know" is.
+# "Vérifions game.py" too, but only at the start of a sentence: "ici, nous vérifions que..." explains the code
 ANNOUNCE: re.Pattern = re.compile(
     r"\b(?:je vais (?:[\w']+ ){0,2}?[\w']+(?:er|ir|re|oir)|je m'apprête à|laisse-moi"
-    r"|i will|i'll|let me|i am going to|i'm going to)\b",
-    re.IGNORECASE
+    r"|i will|i'll|let me(?! know)|let's|i am going to|i'm going to)\b"
+    r"|(?:^|(?<=[.!?:] ))(?:vérifi|regard|lis|ajout|corrige|modifi|examin|cherch|cré|consult|voy|commenç"
+    r"|analys|ouvr|test|remplaç|renomm)ons\b",
+    re.IGNORECASE | re.MULTILINE
 )
 
 # Logged whole elsewhere (the reply by the model, the tool calls by __call): not once more per event
@@ -53,8 +59,30 @@ UNLOGGED: frozenset[str] = frozenset({CHAT_TEXT, CHAT_THINKING, CHAT_REPLY, TOOL
 
 CANCELLED_TOOL: str = "Annulé : l'utilisateur a interrompu Louis avant la fin de cet outil."
 
-# Characters of the history (as JSON, with the tools) for a token of qwen3: measured on Ollama, 3.91 to 3.93
-CHARS_PER_TOKEN: float = 3.9
+# The same call (tool and arguments) made this many times already for a message is refused: the model goes round in
+# circles. After MAX_REFUSED refused calls, the turn stops
+SAME_CALLS : int = 2
+MAX_REFUSED: int = 3
+REPEATED_CALL: str = (
+    "Erreur : tu as déjà fait exactement cet appel 2 fois pour cette demande. N'en refais pas un troisième : "
+    "utilise ce que tu sais déjà, lis une autre partie, ou réponds à l'utilisateur."
+)
+# The model sometimes asks for dozens of calls at once, often the same ones again (a list gone wrong): the first
+# MAX_CALLS different ones are kept, the others never made. And the results of a round, never cut by the window, must
+# still have this share of the context for one more call to run
+MAX_CALLS: int   = 6
+MIN_ROOM : float = 0.05
+IGNORED_CALLS: str = (
+    "\n[{} autres appels de ta réponse ont été ignorés (en double, ou trop nombreux à la fois) : "
+    "refais ceux qui manquent dans ta prochaine réponse.]"
+)
+NO_ROOM: str = (
+    "Erreur : les résultats de ta réponse prennent déjà trop de place dans le contexte : cet appel n'a pas été fait. "
+    "Refais-le dans ta prochaine réponse."
+)
+LOOP_MESSAGE: str = (
+    "Louis tournait en rond (les mêmes appels d'outils, encore et encore) : arrêté. Reformule ou découpe la demande."
+)
 
 # Calls of a tool the guard refuses in a turn before the tool is withdrawn until the next message: the model
 # may redo a call without the sensitive data once, but qwen3 can also ask the same one again and again
@@ -72,9 +100,6 @@ class App:
         self.__bus: EventBus = EventBus()
         # Subscribed first: an event is logged before any other handler reacts to it
         self.__bus.subscribe(lambda event: event.name in UNLOGGED or log_event(event))
-        # A resumed session fills the context with its history: told before the model measures it
-        self.__bus.subscribe(lambda event: self.__estimate_context(), SESSION_RESUMED)
-
         # The interface asks the user (TOOL_BEGFOR_PERMISSION) and answers (TOOL_GRANT_PERMISSION)
         self.__permissions: PermissionManager = PermissionManager(self.__bus)
 
@@ -88,6 +113,12 @@ class App:
             .register(InternetTool())\
 
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
+
+        # What the model sees of the session: cut down before it overflows the context, instead of Ollama cutting it
+        self.__window: ContextWindow = ContextWindow(settings.get("chat.context", 12288), self.__toolManager.all())
+        # The files read in another session are not in the history of this one: they must be read again to be edited
+        self.__seen_files: SeenFiles = SeenFiles()
+        self.__bus.subscribe(self.__on_session_changed, SESSION_CREATED, SESSION_RESUMED)
 
         self.__commands: CommandTree = CommandTree()\
             .register(ClearCommand())\
@@ -155,7 +186,7 @@ class App:
     def new_session(self, system_prompt: str | None = None) -> Session:
         """ Start a new session of the user, on the given system prompt or on the one Louis started with """
         session: Session = self.__user.new_session(os.getcwd())
-        session.add("system", system_prompt or self.__system_prompt)
+        session.add("system", (system_prompt or self.__system_prompt).rstrip() + self.__context())
         self.__bus.dispatch(
             SESSION_CREATED,
             user=self.__user.name,
@@ -165,20 +196,48 @@ class App:
         self.__estimate_context()
         return session
 
+    def __context(self) -> str:
+        """
+            What the model can not guess, put after its prompt: the user, and the date (for web_search). Never the
+            folder of the project: the model gives its name to the tools as a path, which they do not find
+        """
+        lines: list[str] = [f"- Date : {date.today().isoformat()}"]
+        if not self.__user.is_anonymous:
+            lines.insert(0, f"- Utilisateur : {self.__user.name}")
+        return "\n\n# Contexte\n" + "\n".join(lines) + "\n"
+
+    def __on_session_changed(self, event: Event) -> None:
+        """ Another session: nothing of it is cut or read yet. A resumed one fills the context with its history """
+        self.__window.reset()
+        self.__seen_files.clear()
+        if event.name == SESSION_RESUMED:
+            self.__estimate_context()
+
     def __estimate_context(self) -> None:
-        """ Tell how full the context is with the current session, before the model measures it """
-        characters: int = len(json.dumps([self.session.history, self.__toolManager.all()], ensure_ascii=False))
-        self.__bus.dispatch(
-            CHAT_CONTEXT,
-            used=round(characters / CHARS_PER_TOKEN),
-            size=self.__settings.get("chat.context", 12288),
-            estimated=True
-        )
+        """ Tell how full the context is with the current session, as it will be sent, before the model measures it """
+        messages, _ = self.__window.view(self.session.history)
+        self.__bus.dispatch(CHAT_CONTEXT, used=self.__window.tokens(messages), size=self.__window.size, estimated=True)
+
+    def __view(self) -> list[dict]:
+        """ The session as the model sees it: its old tool results cut down, and told, once the context fills up """
+        messages, cut = self.__window.view(self.session.history)
+        if cut:
+            used: int = self.__window.tokens(messages)
+            log.info(f"[app] context cut down: {cut['results']} tool results, {cut['dropped']} messages left out, "
+                     f"{used} tokens left of {self.__window.size}")
+            self.__bus.dispatch(CHAT_COMPACTED, **cut, used=used, size=self.__window.size)
+            self.__bus.dispatch(CHAT_CONTEXT, used=used, size=self.__window.size, estimated=True)
+        return messages
 
     @property
     def permissions(self) -> PermissionManager:
         """ Get the permission manager, for the tools to ask before acting """
         return self.__permissions
+
+    @property
+    def seen_files(self) -> SeenFiles:
+        """ Get the files the model has read or written in this session, for edit_file to check """
+        return self.__seen_files
 
     def run(self) -> int:
         """ Run the application: answer the messages of the user, until the input ends or Ctrl+C there """
@@ -246,6 +305,13 @@ class App:
                         CHAT_CONTEXT, used=reply.tokens, size=self.__settings.get("chat.context", 12288), estimated=False
                     )
                 self.__bus.dispatch(CHAT_REPLY, content=reply.content, tools=[call.name for call in reply.tool_calls])
+                if reply.cut and not reply.tool_calls:
+                    log.warning("[app] the reply reached the most tokens it may take: cut")
+                    self.__bus.dispatch(CHAT_TURN_ENDED, reason="length", message=(
+                        f"Réponse coupée : le modèle a dépassé {self.__settings.get('chat.predict')} tokens sans finir "
+                        "(il tournait peut-être en rond). Demande une partie plus petite."
+                    ))
+                    return
 
                 if not reply.tool_calls:
                     # Once per message, so a wrong guess costs one round and never loops
@@ -259,9 +325,29 @@ class App:
                     continue
 
                 pending = list(reply.tool_calls)
+                # The share of the context the results of this round may still take
+                room: float = ROUND
                 while pending:
-                    self.session.add("tool", self.__call(pending[0]), tool_name=pending[0].name)
+                    call: ToolCall = pending[0]
+                    key: str = f"{call.name} {json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)}"
+                    reason: str | None = None
+                    if made[key] >= SAME_CALLS:
+                        reason = REPEATED_CALL
+                        refused += 1
+                    elif room < MIN_ROOM:
+                        reason = NO_ROOM
+                    else:
+                        made[key] += 1
+                    result: str = self.__call(call, refused=reason, most=min(MAX_RESULT, room))
+                    room -= share(result, self.__window.size)
+                    if ignored and len(pending) == 1:
+                        result += IGNORED_CALLS.format(ignored)
+                    self.session.add("tool", result, tool_name=call.name)
                     pending.pop(0)
+                if refused >= MAX_REFUSED:
+                    log.warning(f"[app] {refused} calls refused for being the same again: the model goes round in circles")
+                    self.__bus.dispatch(CHAT_TURN_ENDED, reason="loop", message=LOOP_MESSAGE)
+                    return
         except KeyboardInterrupt:
             for call in pending:
                 self.session.add("tool", CANCELLED_TOOL, tool_name=call.name)
@@ -316,7 +402,8 @@ class App:
     def __call(self, call: ToolCall, producer: str = "model") -> str:
         """
             Run a tool, asked for by producer ("model", "user" or "system"): whatever goes wrong comes back
-            as text, for the model to react
+            as text, for the model to react. A call refused by the app is not run: refused is its result. The result
+            takes at most the share most of the context
         """
         # With the guard, the interfaces show the arguments masked, as the replies are
         shown: dict = self.__guard.hide(call.arguments) if self.__guard is not None else call.arguments
@@ -324,7 +411,9 @@ class App:
         log.info(f"[tool] {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
         start: float = time.perf_counter()
         tool: Tool | None = self.__toolManager.get(call.name)
-        if tool is None:
+        if refused is not None:
+            result = refused
+        elif tool is None:
             names: str = ", ".join(schema["function"]["name"] for schema in self.__toolManager.all())
             result = f"Erreur : l'outil '{call.name}' n'existe pas. Les outils disponibles sont : {names}."
         elif (refusal := self.__screen_call(call, producer)) is not None:
@@ -337,6 +426,9 @@ class App:
                 result = (f"Erreur : l'outil '{call.name}' a échoué ({type(e).__name__} : {e}). "
                           "Vérifie tes arguments, ou fais autrement.")
         result = result if isinstance(result, str) else str(result)
+        # Never more than its share of the context: a whole big file would push the rest of the conversation out
+        if refused is None:
+            result = capped(result, self.__window.size, most)
         # Unknown, crashed, or it could not do it (a text not found, a permission refused...): not ok
         ok: bool = not failed(result)
         duration: float = time.perf_counter() - start

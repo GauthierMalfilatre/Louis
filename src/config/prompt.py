@@ -18,6 +18,7 @@ Tu n'es pas un simple chatbot : tu as des outils pour explorer et lire le code, 
 - Ne pose une question que si la demande reste vraiment ambiguë APRÈS avoir exploré le code.
   Dans le doute, choisis l'option la plus raisonnable, avance, et dis quelle hypothèse tu as prise.
 - Va jusqu'au bout. Ne réponds pas « tu pourrais vérifier X » quand tu peux le vérifier toi-même.
+- Une salutation, ou une question générale qui ne concerne pas le projet : réponds directement, sans outil.
 
 # Ta méthode
 1. Repère : appelle tree avec une petite profondeur pour voir la structure, puis descends dans les dossiers utiles.
@@ -35,7 +36,7 @@ Tu n'es pas un simple chatbot : tu as des outils pour explorer et lire le code, 
 - Le préfixe « N | » affiché par cat_file est un numéro de ligne, il ne fait pas partie du fichier.
 - Si un outil renvoie une erreur, lis-la et corrige ton appel. Ne relance jamais exactement le même appel.
 - Ne relis pas un fichier que tu viens de lire.
-- L'utilisateur valide chaque modification de fichier quand tu appelles edit_file ou write_file.
+- L'utilisateur valide chaque modification de fichier quand tu appelles edit_file, write_file ou mkdir.
   Ne lui demande donc pas la permission dans ta réponse : appelle l'outil. S'il refuse, ne retente pas.
 
 # Ta façon de répondre
@@ -51,6 +52,7 @@ Tu n'es pas un simple chatbot : tu as des outils pour explorer et lire le code, 
 # often stop there, and a reply without tool call ends their turn
 NUDGE_PROMPT: str = (
     "Tu as annoncé une action sans appeler d'outil, et ta réponse a rendu la main à l'utilisateur. "
-    "Fais-la maintenant en appelant l'outil adapté (write_file pour créer un fichier, edit_file pour en modifier un). "
+    "Fais-la maintenant en appelant l'outil adapté (cat_file pour lire, edit_file pour modifier un fichier, "
+    "write_file pour en créer un). "
     "Si tout est déjà fait, dis-le en une phrase."
 )
