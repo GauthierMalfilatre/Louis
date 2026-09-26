@@ -273,6 +273,9 @@ class App:
         # A reply can only be checked whole: with the guard, it is shown once checked, not as it is written
         stream: Callable | None = None if self.__guard else lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk)
         self.__refused.clear()
+        # The calls made for this message, and those refused for being the same again: the model goes round in circles
+        made: Counter = Counter()
+        repeats: int = 0
         try:
             question: str = text
             if self.__guard is not None:
@@ -290,12 +293,20 @@ class App:
 
             for _ in range(rounds):
                 reply: Reply = self.__model.chat(
-                    self.session.history,
+                    self.__view(),
                     [tool for tool in self.__toolManager.all() if self.__refused[tool["function"]["name"]] < REFUSED_CALLS],
                     think=self.think,
                     on_text=stream,
                     on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk)
                 )
+                calls: list[ToolCall] = []
+                for call in reply.tool_calls:
+                    if call not in calls and len(calls) < MAX_CALLS:
+                        calls.append(call)
+                ignored: int = len(reply.tool_calls) - len(calls)
+                if ignored:
+                    log.warning(f"[app] {len(reply.tool_calls)} calls in one reply: {ignored} ignored")
+                reply.tool_calls = calls
                 if self.__guard is not None and reply.content:
                     self.__screen(question, reply)
                 self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
@@ -333,7 +344,7 @@ class App:
                     reason: str | None = None
                     if made[key] >= SAME_CALLS:
                         reason = REPEATED_CALL
-                        refused += 1
+                        repeats += 1
                     elif room < MIN_ROOM:
                         reason = NO_ROOM
                     else:
@@ -344,8 +355,8 @@ class App:
                         result += IGNORED_CALLS.format(ignored)
                     self.session.add("tool", result, tool_name=call.name)
                     pending.pop(0)
-                if refused >= MAX_REFUSED:
-                    log.warning(f"[app] {refused} calls refused for being the same again: the model goes round in circles")
+                if repeats >= MAX_REFUSED:
+                    log.warning(f"[app] {repeats} calls refused for being the same again: the model goes round in circles")
                     self.__bus.dispatch(CHAT_TURN_ENDED, reason="loop", message=LOOP_MESSAGE)
                     return
         except KeyboardInterrupt:
@@ -399,7 +410,8 @@ class App:
             log.info(f"[guard] {call.name} refused {REFUSED_CALLS} times: withdrawn until the next message")
         return verdict.content
 
-    def __call(self, call: ToolCall, producer: str = "model") -> str:
+    def __call(self, call: ToolCall, producer: str = "model", *, refused: str | None = None,
+               most: float = MAX_RESULT) -> str:
         """
             Run a tool, asked for by producer ("model", "user" or "system"): whatever goes wrong comes back
             as text, for the model to react. A call refused by the app is not run: refused is its result. The result
