@@ -1,0 +1,3 @@
+# LF in the repository and in every checkout, even where core.autocrlf is true (a Windows setting):
+# with CRLF, bash reads the shebang of install.sh as a program named "bash\r"
+* text=auto eol=lf
