@@ -1,0 +1,56 @@
+# Rails of Louis, read by NeMo Guardrails (with every .yml, .co and actions.py of this folder).
+# The rules are the flows listed under rails.input and rails.output: remove a line to turn a rule off.
+# Masking flows anonymize the message, the others refuse it. They run in the order below.
+colang_version: "1.0"
+
+models:
+  # The judge of the self checks: the same model as the chat, so Ollama keeps one model loaded.
+  # NeMo calls the OpenAI API of Ollama (/v1), which cannot set num_ctx nor keep_alive: Ollama uses its own
+  # defaults, and reloads the model when they differ from Louis' (chat.context, chat.keepalive). Start it with
+  #   OLLAMA_CONTEXT_LENGTH=12288 OLLAMA_KEEP_ALIVE=30m ollama serve
+  - type: main
+    engine: ollama
+    model: qwen3:8b
+    parameters:
+      base_url: http://localhost:11434/v1
+      # A judge answers Yes or No at once: thinking first, qwen3 takes ~30s per check instead of ~4s
+      reasoning_effort: none
+
+rails:
+  config:
+    # Presidio. The pattern-based entities work in any language. PERSON is left out: its English spaCy
+    # model reads French poorly, and on a code assistant it masks names of classes and authors
+    sensitive_data_detection:
+      input:
+        entities: [EMAIL_ADDRESS, CREDIT_CARD, IBAN_CODE]
+      output:
+        entities: [EMAIL_ADDRESS, CREDIT_CARD, IBAN_CODE]
+
+  input:
+    flows:
+      # Anonymize before the model reads it: cheap, deterministic, first
+      - mask french ids on input
+      - mask sensitive data on input
+      # Refuse: the model judges the message against the policy of prompts.yml (one more model call)
+      - self check input
+
+  output:
+    flows:
+      # Refuse: a key or a token read by cat_file must never be shown back
+      - block secrets on output
+      - mask french ids on output
+      - mask sensitive data on output
+      - self check output
+
+  # The calls the model asks for, before the tool runs ("output" of the model, in the words of NeMo)
+  tool_output:
+    flows:
+      # Refuse: a secret or a personal data in the arguments of a tool that sends them out of the machine
+      - block sensitive data in tool calls
+
+# Read by the actions of actions.py
+custom_data:
+  guard:
+    # The tools whose arguments leave the machine: the query of web_search goes to a search engine.
+    # The file tools stay out: they write in the user's project, and ask the user first (with the diff)
+    outbound_tools: [web_search]

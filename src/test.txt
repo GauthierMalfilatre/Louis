@@ -1,0 +1,8 @@
+  event guard.triggered {'stage': 'input', 'action': 'refused', 'rails': ['mask sensitive data on input'], 'content': "I'm sorry, an internal error has occurred."}
+input : Verdict(action='refused', content="I'm sorry, an internal error has occurred.", rails=['mask sensitive data on input'])
+  event guard.triggered {'stage': 'output', 'action': 'refused', 'rails': ['mask sensitive data on output'], 'content': "I'm sorry, an internal error has occurred."}
+output: Verdict(action='refused', content="I'm sorry, an internal error has occurred.", rails=['mask sensitive data on output'])
+  event guard.triggered {'stage': 'input', 'action': 'refused', 'rails': ['mask sensitive data on input'], 'content': "I'm sorry, an internal error has occurred."}
+input : Verdict(action='refused', content="I'm sorry, an internal error has occurred.", rails=['mask sensitive data on input'])
+  event guard.triggered {'stage': 'output', 'action': 'refused', 'rails': ['mask sensitive data on output'], 'content': "I'm sorry, an internal error has occurred."}
+output: Verdict(action='refused', content="I'm sorry, an internal error has occurred.", rails=['mask sensitive data on output'])

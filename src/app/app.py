@@ -20,6 +20,8 @@ from tool.impl.file.tool_search import SearchTool
 from tool.impl.file.tool_mkdir import MkdirTool
 from tool.impl.web.tool_websearch import InternetTool
 from tool.permission import PermissionManager
+from guard.guard import Guard
+from guard.verdict import Verdict
 from tool.seen_files import SeenFiles
 from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND
 from events.event_bus import EventBus, Event
@@ -34,6 +36,7 @@ from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
 from collections import Counter
+from collections.abc import Callable
 from datetime import date
 import json
 import os
@@ -81,6 +84,10 @@ LOOP_MESSAGE: str = (
     "Louis tournait en rond (les mêmes appels d'outils, encore et encore) : arrêté. Reformule ou découpe la demande."
 )
 
+# Calls of a tool the guard refuses in a turn before the tool is withdrawn until the next message: the model
+# may redo a call without the sensitive data once, but qwen3 can also ask the same one again and again
+REFUSED_CALLS: int = 2
+
 class App:
     """ App Class: runs the conversation, and tells everything through the bus, never printing itself """
     def __init__(self, settings: dict[str], system_prompt: str, user: User, stream: Interface):
@@ -121,6 +128,11 @@ class App:
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
+
+        # NOTE: Raisable. Loaded after the model: a model that does not answer fails before NeMo takes its time to load
+        self.__guard: Guard | None = Guard(self.__bus) if settings.get("guard.enabled", False) else None
+        # The calls the guard refused in the current turn, by tool: counted again from 0 on each message
+        self.__refused: Counter[str] = Counter()
 
         self.__stream: Interface = stream
         # The interface shows what happens (the conversation, the commands...) by listening to the bus
@@ -247,37 +259,45 @@ class App:
                 log.info("[app] command interrupted by the user")
 
     def __answer(self, text: str) -> None:
-        """ Answer a message of the user: the model replies, calling tools, until a reply calls none """
-        saved: bool = self.session.saved
-        self.session.add("user", text)
-        if not saved and self.session.saved:
-            self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
-
+        """
+            Answer a message of the user: the model replies, calling tools, until a reply calls none.
+            With the guard, the model only reads what the input rails let through, and the user only
+            reads what the output rails let through. Whatever goes wrong in the guard ends the turn:
+            a guard that cannot check never lets a message go unchecked
+        """
         self.__bus.dispatch(CHAT_TURN_STARTED)
         rounds: int = self.__settings.get("chat.tools.maxdepth", 8)
         # The calls of the last reply not answered yet: each of them must get an answer, even if cancelled
         pending: list[ToolCall] = []
         nudged: bool = False
-        # The calls made for this message, to see the model go round in circles
-        made: Counter = Counter()
-        refused: int = 0
+        # A reply can only be checked whole: with the guard, it is shown once checked, not as it is written
+        stream: Callable | None = None if self.__guard else lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk)
+        self.__refused.clear()
         try:
+            question: str = text
+            if self.__guard is not None:
+                verdict: Verdict = self.__guard.check_input(text)
+                # Refused: kept out of the session, the model would read it again on the next message
+                if verdict.refused:
+                    self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
+                    return
+                question = verdict.content
+
+            saved: bool = self.session.saved
+            self.session.add("user", question)
+            if not saved and self.session.saved:
+                self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+
             for _ in range(rounds):
                 reply: Reply = self.__model.chat(
-                    self.__view(),
-                    self.__toolManager.all(),
+                    self.session.history,
+                    [tool for tool in self.__toolManager.all() if self.__refused[tool["function"]["name"]] < REFUSED_CALLS],
                     think=self.think,
-                    on_text=lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk),
+                    on_text=stream,
                     on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk)
                 )
-                calls: list[ToolCall] = []
-                for call in reply.tool_calls:
-                    if call not in calls and len(calls) < MAX_CALLS:
-                        calls.append(call)
-                ignored: int = len(reply.tool_calls) - len(calls)
-                if ignored:
-                    log.warning(f"[app] {len(reply.tool_calls)} calls in one reply: {ignored} ignored")
-                reply.tool_calls = calls
+                if self.__guard is not None and reply.content:
+                    self.__screen(question, reply)
                 self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
                 # Without the counts of Ollama (a reply cut short), the last known value stays
                 if reply.tokens:
@@ -346,14 +366,48 @@ class App:
         log.warning(f"[app] stopped after {rounds} rounds of tool calls")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} tours d'appels d'outils.")
 
-    def __call(self, call: ToolCall, producer: str = "model", *, refused: str | None = None,
-               most: float = MAX_RESULT) -> str:
+    def __screen(self, question: str, reply: Reply) -> None:
+        """
+            Put the reply through the output rails, then show it: masked, or replaced by the refusal.
+            Kept in the session as it is shown, so the model never reads again what the user could not.
+            A refused reply calls no tool: what the model meant to do with it is not known
+        """
+        verdict: Verdict = self.__guard.check_output(question, reply.content)
+        reply.content = verdict.content
+        if verdict.refused:
+            reply.tool_calls = []
+        self.__bus.dispatch(CHAT_TEXT, text=reply.content)
+
+    def __screen_call(self, call: ToolCall, producer: str) -> str | None:
+        """
+            Put a call of the model through the tool rails before it runs: the refusal to give back as its
+            result, or None to run it. The calls of the user and of Louis are not the model's: they go through.
+            A guard that cannot check refuses: an unchecked call never runs
+        """
+        if self.__guard is None or producer != "model":
+            return None
+        try:
+            verdict: Verdict = self.__guard.check_tool_call(call)
+        except Exception as e:
+            log.exception(f"[guard] the check of {call.name} failed")
+            return (f"Erreur : le garde-fou n'a pas pu vérifier l'appel à '{call.name}' ({type(e).__name__}), "
+                    "il n'a pas été lancé.")
+        if not verdict.refused:
+            return None
+        self.__refused[call.name] += 1
+        if self.__refused[call.name] >= REFUSED_CALLS:
+            log.info(f"[guard] {call.name} refused {REFUSED_CALLS} times: withdrawn until the next message")
+        return verdict.content
+
+    def __call(self, call: ToolCall, producer: str = "model") -> str:
         """
             Run a tool, asked for by producer ("model", "user" or "system"): whatever goes wrong comes back
             as text, for the model to react. A call refused by the app is not run: refused is its result. The result
             takes at most the share most of the context
         """
-        self.__bus.dispatch(TOOL_CALL_STARTED, name=call.name, arguments=call.arguments, producer=producer)
+        # With the guard, the interfaces show the arguments masked, as the replies are
+        shown: dict = self.__guard.hide(call.arguments) if self.__guard is not None else call.arguments
+        self.__bus.dispatch(TOOL_CALL_STARTED, name=call.name, arguments=shown, producer=producer)
         log.info(f"[tool] {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
         start: float = time.perf_counter()
         tool: Tool | None = self.__toolManager.get(call.name)
@@ -362,6 +416,8 @@ class App:
         elif tool is None:
             names: str = ", ".join(schema["function"]["name"] for schema in self.__toolManager.all())
             result = f"Erreur : l'outil '{call.name}' n'existe pas. Les outils disponibles sont : {names}."
+        elif (refusal := self.__screen_call(call, producer)) is not None:
+            result = refusal
         else:
             try:
                 result = tool.handle(self, **call.arguments)

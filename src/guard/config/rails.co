@@ -1,0 +1,31 @@
+# Flows of the rails of Louis (Colang 1.0). The built-in ones (self check input, mask sensitive data on
+# output...) come with NeMo: only the ones calling actions.py are defined here, and enabled in config.yml
+
+# What Louis says when a rail refuses a message (replaces the English default of NeMo)
+define bot refuse to respond
+  "Je ne peux pas répondre à cette demande."
+
+# Anonymize: the message goes on, rewritten by the action
+define subflow mask french ids on input
+  $user_message = execute mask_french_ids(text=$user_message)
+
+define subflow mask french ids on output
+  $bot_message = execute mask_french_ids(text=$bot_message)
+
+# Refuse: the action only tells, the flow stops the message
+define subflow block secrets on output
+  $found = execute contains_secret(text=$bot_message)
+  if $found
+    bot refuse to respond
+    stop
+
+# Refuse a call: the model reads the refusal as the result of the tool, and does without it.
+# It starts with "Refusé" as the refusals of the tools do: Louis shows it as a refused call
+define bot refuse tool call
+  "Refusé : le garde-fou a bloqué cet appel, ses arguments contiennent une donnée sensible (secret ou donnée personnelle) qui sortirait de la machine. Refais-le sans elle."
+
+define subflow block sensitive data in tool calls
+  $leaks = execute tool_call_leaks(calls=$tool_calls)
+  if $leaks
+    bot refuse tool call
+    stop

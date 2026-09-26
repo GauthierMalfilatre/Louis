@@ -10,7 +10,7 @@ THINKING_DISABLED = "chat.thinking.disabled"   # data: none
 
 # The conversation, as it goes: the app never prints, the interfaces show these their own way
 CHAT_TURN_STARTED = "chat.turn.started"   # data: none (the model starts answering a message of the user)
-CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length"), message (None when done or cancelled)
+CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length", "refused"), message (None when done or cancelled)
 CHAT_TEXT         = "chat.text"           # data: text (a piece of the reply, as the model writes it)
 CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" if it only calls tools), tools (their names)
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
@@ -21,8 +21,15 @@ CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the mode
 # and at last the oldest exchanges left out. What is saved of the session stays whole
 CHAT_COMPACTED    = "chat.compacted"      # data: results (cut down this time), dropped (messages left out this time), used, size (tokens)
 
+# A rail of the guard changed a message: the user's before the model reads it, the model's before it is shown,
+# or a tool call of the model before it runs (between its TOOL_CALL_STARTED and TOOL_CALL_ENDED).
+# A refused message never reaches the model: its turn ends with the reason "refused", and the refusal as message.
+# A refused reply is replaced by the refusal, shown and kept in the session in its place.
+# A refused call never runs: the refusal is its result, the model reads it and does without
+GUARD_TRIGGERED   = "guard.triggered"     # data: stage ("input", "output", "tool_call"), action ("masked", "refused"), rails (the names of those that refused), content (what goes on instead), tool (its name, for "tool_call" only)
+
 # producer: who wanted the call, "model" (the model asked for it), "user" (a command) or "system" (Louis itself)
-TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments, producer
+TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments (masked with the guard: to show, not to run), producer
 TOOL_CALL_ENDED   = "tool.call.ended"     # data: name, producer, ok (False if it did not do it: unknown, crashed, failed or refused), result, duration (seconds)
 
 APP_STARTED       = "app.started"         # data: model (its name), think (True if /think is on), commands: [{name, usage, description}]
