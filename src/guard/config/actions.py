@@ -18,3 +18,16 @@ async def mask_french_ids(text: str) -> str:
 async def contains_secret(text: str) -> bool:
     """ Check if the text holds a secret """
     return patterns.contains_secret(text)
+
+@action(name="tool_call_leaks")
+async def tool_call_leaks(calls: list[dict] | None = None, config=None) -> bool:
+    """ Check if a call to a tool of custom_data.guard.outbound_tools has sensitive data in its arguments """
+    outbound: list[str] = ((config.custom_data if config else {}).get("guard") or {}).get("outbound_tools") or []
+    for call in calls or []:
+        function: dict = call.get("function") or {}
+        if function.get("name") not in outbound:
+            continue
+        # What the log would mask would leave the machine
+        if any(patterns.redact(str(value)) != str(value) for value in (function.get("arguments") or {}).values()):
+            return True
+    return False

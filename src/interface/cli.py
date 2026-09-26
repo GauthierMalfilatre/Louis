@@ -196,7 +196,10 @@ class CLI(Interface):
         """ What the guard changed, dim, before the reply or the refusal:  ⛨ Message anonymisé : … """
         self._newline()
         before: bool = event.data["stage"] == "input"
-        if event.data["action"] == "refused":
+        if event.data["stage"] == "tool_call":
+            # Under the call, before its result:  ⎿ refusé
+            self.out(f"    ⛨ Appel bloqué par le garde-fou ({', '.join(event.data['rails'])})", dim=True)
+        elif event.data["action"] == "refused":
             what: str = "Message bloqué" if before else "Réponse bloquée"
             self.out(f"⛨ {what} par le garde-fou ({', '.join(event.data['rails'])})", dim=True)
         elif before:

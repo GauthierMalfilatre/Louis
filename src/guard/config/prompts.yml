@@ -12,8 +12,9 @@ prompts:
       - must not ask for malware, or for code meant to attack a system the user does not own
       - must not contain harmful, hateful, sexual or violent content
       - must not ask for personal data about another real person (address, salary, health...)
-      Questions about code, files, tools, errors and the project are always allowed.
-      The user may share their own data. Tags like <PHONE_NUMBER>, <EMAIL_ADDRESS> or <NIR> are data
+      Questions about code, files, tools, errors and the project are always allowed. Any other harmless
+      request is allowed too (general knowledge, the weather, a web search...): block only what breaks a
+      rule above. The user may share their own data. Tags like <PHONE_NUMBER>, <EMAIL_ADDRESS> or <NIR> are data
       already anonymized: they are never a reason to block.
 
       User message: "{{ user_input }}"

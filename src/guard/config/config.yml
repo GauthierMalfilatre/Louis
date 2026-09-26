@@ -41,3 +41,16 @@ rails:
       - mask french ids on output
       - mask sensitive data on output
       - self check output
+
+  # The calls the model asks for, before the tool runs ("output" of the model, in the words of NeMo)
+  tool_output:
+    flows:
+      # Refuse: a secret or a personal data in the arguments of a tool that sends them out of the machine
+      - block sensitive data in tool calls
+
+# Read by the actions of actions.py
+custom_data:
+  guard:
+    # The tools whose arguments leave the machine: the query of web_search goes to a search engine.
+    # The file tools stay out: they write in the user's project, and ask the user first (with the diff)
+    outbound_tools: [web_search]

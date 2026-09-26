@@ -33,6 +33,7 @@ from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
+from collections import Counter
 from collections.abc import Callable
 import json
 import os
@@ -54,6 +55,10 @@ CANCELLED_TOOL: str = "Annulé : l'utilisateur a interrompu Louis avant la fin d
 
 # Characters of the history (as JSON, with the tools) for a token of qwen3: measured on Ollama, 3.91 to 3.93
 CHARS_PER_TOKEN: float = 3.9
+
+# Calls of a tool the guard refuses in a turn before the tool is withdrawn until the next message: the model
+# may redo a call without the sensitive data once, but qwen3 can also ask the same one again and again
+REFUSED_CALLS: int = 2
 
 class App:
     """ App Class: runs the conversation, and tells everything through the bus, never printing itself """
@@ -95,6 +100,8 @@ class App:
 
         # NOTE: Raisable. Loaded after the model: a model that does not answer fails before NeMo takes its time to load
         self.__guard: Guard | None = Guard(self.__bus) if settings.get("guard.enabled", False) else None
+        # The calls the guard refused in the current turn, by tool: counted again from 0 on each message
+        self.__refused: Counter[str] = Counter()
 
         self.__stream: Interface = stream
         # The interface shows what happens (the conversation, the commands...) by listening to the bus
@@ -206,6 +213,7 @@ class App:
         nudged: bool = False
         # A reply can only be checked whole: with the guard, it is shown once checked, not as it is written
         stream: Callable | None = None if self.__guard else lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk)
+        self.__refused.clear()
         try:
             question: str = text
             if self.__guard is not None:
@@ -224,7 +232,7 @@ class App:
             for _ in range(rounds):
                 reply: Reply = self.__model.chat(
                     self.session.history,
-                    self.__toolManager.all(),
+                    [tool for tool in self.__toolManager.all() if self.__refused[tool["function"]["name"]] < REFUSED_CALLS],
                     think=self.think,
                     on_text=stream,
                     on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk)
@@ -284,18 +292,43 @@ class App:
             reply.tool_calls = []
         self.__bus.dispatch(CHAT_TEXT, text=reply.content)
 
+    def __screen_call(self, call: ToolCall, producer: str) -> str | None:
+        """
+            Put a call of the model through the tool rails before it runs: the refusal to give back as its
+            result, or None to run it. The calls of the user and of Louis are not the model's: they go through.
+            A guard that cannot check refuses: an unchecked call never runs
+        """
+        if self.__guard is None or producer != "model":
+            return None
+        try:
+            verdict: Verdict = self.__guard.check_tool_call(call)
+        except Exception as e:
+            log.exception(f"[guard] the check of {call.name} failed")
+            return (f"Erreur : le garde-fou n'a pas pu vérifier l'appel à '{call.name}' ({type(e).__name__}), "
+                    "il n'a pas été lancé.")
+        if not verdict.refused:
+            return None
+        self.__refused[call.name] += 1
+        if self.__refused[call.name] >= REFUSED_CALLS:
+            log.info(f"[guard] {call.name} refused {REFUSED_CALLS} times: withdrawn until the next message")
+        return verdict.content
+
     def __call(self, call: ToolCall, producer: str = "model") -> str:
         """
             Run a tool, asked for by producer ("model", "user" or "system"): whatever goes wrong comes back
             as text, for the model to react
         """
-        self.__bus.dispatch(TOOL_CALL_STARTED, name=call.name, arguments=call.arguments, producer=producer)
+        # With the guard, the interfaces show the arguments masked, as the replies are
+        shown: dict = self.__guard.hide(call.arguments) if self.__guard is not None else call.arguments
+        self.__bus.dispatch(TOOL_CALL_STARTED, name=call.name, arguments=shown, producer=producer)
         log.info(f"[tool] {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
         start: float = time.perf_counter()
         tool: Tool | None = self.__toolManager.get(call.name)
         if tool is None:
             names: str = ", ".join(schema["function"]["name"] for schema in self.__toolManager.all())
             result = f"Erreur : l'outil '{call.name}' n'existe pas. Les outils disponibles sont : {names}."
+        elif (refusal := self.__screen_call(call, producer)) is not None:
+            result = refusal
         else:
             try:
                 result = tool.handle(self, **call.arguments)

@@ -18,3 +18,14 @@ define subflow block secrets on output
   if $found
     bot refuse to respond
     stop
+
+# Refuse a call: the model reads the refusal as the result of the tool, and does without it.
+# It starts with "Refusé" as the refusals of the tools do: Louis shows it as a refused call
+define bot refuse tool call
+  "Refusé : le garde-fou a bloqué cet appel, ses arguments contiennent une donnée sensible (secret ou donnée personnelle) qui sortirait de la machine. Refais-le sans elle."
+
+define subflow block sensitive data in tool calls
+  $leaks = execute tool_call_leaks(calls=$tool_calls)
+  if $leaks
+    bot refuse tool call
+    stop

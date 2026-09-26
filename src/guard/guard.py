@@ -7,10 +7,12 @@
 ## Usage:  guard = Guard(bus)
 ##         verdict = guard.check_input(text)           before the message reaches the model
 ##         verdict = guard.check_output(text, reply)   before the reply reaches the user
+##         verdict = guard.check_tool_call(call)       before the tool the model asked for runs
 ##
 import os
 from .verdict import Verdict, PASS, MASKED, REFUSED
 from .patterns import redact
+from tool.tool_call import ToolCall
 from events.event_bus import EventBus
 from events.event_list import GUARD_TRIGGERED
 from logger.logger import log, protect
@@ -41,21 +43,40 @@ class Guard:
 
     def check_input(self, question: str) -> Verdict:
         """ Check a message of the user, before the model reads it """
-        return self.__check("input", [{"role": "user", "content": question}], question)
+        return self.__check("input", "input", [{"role": "user", "content": question}], question)
 
     def check_output(self, question: str, answer: str) -> Verdict:
         """ Check a reply of the model to the question, before the user reads it """
         return self.__check(
-            "output",
+            "output", "output",
             [{"role": "user", "content": question}, {"role": "assistant", "content": answer}],
             answer
         )
 
-    def __check(self, stage: str, messages: list[dict], original: str) -> Verdict:
-        """ Run only the rails of the stage ("input" or "output") on the messages: the model is not asked to reply """
+    def check_tool_call(self, call: ToolCall) -> Verdict:
+        """ Check a call the model asks for, before the tool runs: it passes or is refused, never masked """
+        request: dict = {"id": call.name, "type": "function", "function": {"name": call.name, "arguments": call.arguments}}
+        return self.__check(
+            "tool_call", "tool_output",
+            [{"role": "assistant", "content": "", "tool_calls": [request]}],
+            None, tool=call.name
+        )
+
+    def hide(self, arguments: dict) -> dict:
+        """
+            The arguments of a call as the user sees them: masked the way the log is. Only what is shown:
+            the tool runs on the real ones
+        """
+        return {key: redact(value) if isinstance(value, str) else value for key, value in arguments.items()}
+
+    def __check(self, stage: str, rails: str, messages: list[dict], original: str | None, **told) -> Verdict:
+        """
+            Run only the rails of NeMo (input, output, tool_output) on the messages: the model is not asked
+            to reply. Without an original text, what NeMo answers is only a refusal, or nothing to take
+        """
         res = self.__rails.generate(
             messages=messages,
-            options={"rails": [stage], "log": {"activated_rails": True}}
+            options={"rails": [rails], "log": {"activated_rails": True}}
         )
         # With messages, NeMo answers with messages: the last one is the checked text, or the refusal
         content: str = res.response[-1]["content"] if isinstance(res.response, list) else res.response
@@ -63,11 +84,13 @@ class Guard:
 
         if stopped:
             verdict: Verdict = Verdict(REFUSED, content, stopped)
-        elif content != original:
+        elif original is not None and content != original:
             verdict = Verdict(MASKED, content)
         else:
-            verdict = Verdict(PASS, original)
+            verdict = Verdict(PASS, original or "")
         # Only a change is told: the bus logs it, the interfaces show it
         if verdict.action != PASS:
-            self.__bus.dispatch(GUARD_TRIGGERED, stage=stage, action=verdict.action, rails=verdict.rails, content=verdict.content)
+            self.__bus.dispatch(
+                GUARD_TRIGGERED, stage=stage, action=verdict.action, rails=verdict.rails, content=verdict.content, **told
+            )
         return verdict
