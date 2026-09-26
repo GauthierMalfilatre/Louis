@@ -10,9 +10,10 @@
 ##
 import os
 from .verdict import Verdict, PASS, MASKED, REFUSED
+from .patterns import redact
 from events.event_bus import EventBus
 from events.event_list import GUARD_TRIGGERED
-from logger.logger import log
+from logger.logger import log, protect
 
 # The rules: which rails run (config.yml), their flows (rails.co) and the code they call (actions.py)
 CONFIG: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
@@ -25,6 +26,9 @@ class Guard:
     """
     def __init__(self, bus: EventBus, path: str = CONFIG):
         """ Load the rails of the given folder. NOTE: Raisable (NeMo missing, bad config) """
+        # The log sees everything before the rails do (the message typed, the reply, what a tool read):
+        # it keeps it only masked
+        protect(redact)
         # Imported here: with the guard off, Louis never loads NeMo (heavy, and not on Python 3.14)
         try:
             from nemoguardrails import LLMRails, RailsConfig

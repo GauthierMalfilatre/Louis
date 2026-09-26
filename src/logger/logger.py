@@ -11,14 +11,19 @@
 import logging
 import os
 import sys
+from collections.abc import Callable
 
 LOG_FILE  : str = "louis.log"
 LOG_FORMAT: str = "%(asctime)s %(levelname)-5s %(message)s"
 
+# What every line goes through before it is written, set by protect(): the line as it is by default
+_scrub: Callable[[str], str] = lambda line: line
+
 class _Formatter(logging.Formatter):
     """ Indent the lines after the first one, so a multi-line message stays inside its entry """
     def format(self, record: logging.LogRecord) -> str:
-        return super().format(record).replace("\n", "\n    ")
+        # Scrubbed whole, traceback included: no call of log.* can write around it
+        return _scrub(super().format(record)).replace("\n", "\n    ")
 
 log: logging.Logger = logging.getLogger("louis")
 # Nothing is written before setup_logger(): importing a module (in a test...) never creates the file
@@ -42,6 +47,11 @@ def setup_logger(directory: str | None = None, level: int = logging.DEBUG) -> lo
     logging.getLogger().addHandler(handler)
     logging.captureWarnings(True)
     return log
+
+def protect(scrub: Callable[[str], str]) -> None:
+    """ Write every line of the log through scrub, from now on: the guard hides there what it hides elsewhere """
+    global _scrub
+    _scrub = scrub
 
 def log_event(event) -> None:
     """ Log an event of the bus, subscribe it with bus.subscribe(log_event) to log every event """
