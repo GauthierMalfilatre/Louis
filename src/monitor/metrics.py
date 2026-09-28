@@ -95,9 +95,13 @@ def calls_stats(calls: list[dict]) -> dict:
         "speed"            : ratio(sum(call["completion_tokens"] for call in timed), sum(call["generation"] for call in timed)),
     }
 
+def working(record: dict, key: str) -> float:
+    """ How long louis worked on a turn or a tool call: its time, but the one it waited for the user to answer """
+    return max(0.0, record.get(key, 0.0) - record.get("waited", 0.0))
+
 def turns_stats(turns: list[dict]) -> dict:
     """ What the answers tell: how many, how many failed, how long the user waited for the ones that ended well """
-    answered: list[float] = [turn["latency"] for turn in turns if turn.get("reason") == "done"]
+    answered: list[float] = [working(turn, "latency") for turn in turns if turn.get("reason") == "done"]
     failed: int = sum(1 for turn in turns if turn.get("reason") in FAILED_TURNS)
     return {
         "turns"       : len(turns),
@@ -116,7 +120,7 @@ def tools_stats(tools: list[dict]) -> list[dict]:
     rows: list[dict] = []
     for name, calls in by_name.items():
         errors: int = sum(1 for call in calls if not call.get("ok"))
-        durations: list[float] = [call.get("duration", 0.0) for call in calls]
+        durations: list[float] = [working(call, "duration") for call in calls]
         rows.append({
             "name": name, "calls": len(calls), "errors": errors, "error_rate": ratio(errors, len(calls)),
             "p50": percentile(durations, 0.50), "p95": percentile(durations, 0.95)

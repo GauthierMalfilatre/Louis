@@ -60,11 +60,11 @@ Chaque appel au modèle et aux outils est enregistré, une ligne JSON par évén
 | `run`    | un lancement de Louis : le modèle, les réglages qui jouent sur la vitesse |
 | `prompt` | un prompt système, en entier, la première fois qu'il est vu : les autres lignes le nomment par sa version (début de son hash) |
 | `llm`    | une requête au modèle : ce qu'on lui donne, sa réponse, les outils demandés, la latence, le temps jusqu'au premier token, les tokens (prompt / réponse), le temps de chargement, le statut (`ok`, `error`, `cancelled`) |
-| `tool`   | un appel d'outil : arguments, succès, durée, début du résultat |
+| `tool`   | un appel d'outil : arguments, succès, durée, début du résultat, et le temps passé à attendre ta permission (`waited`) |
 | `guard`  | un rail du garde-fou a modifié un message |
-| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, les tokens, le nombre de tours |
+| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours |
 
-Les lignes d'un même tour partagent son `turn`. Les textes longs sont coupés, et masqués comme dans `louis.log` quand le garde-fou est actif.
+Les lignes d'un même tour partagent son `turn`. Le temps que tu mets à répondre à une demande de permission est retiré des latences du tableau de bord. Les textes longs sont coupés, et masqués comme dans `louis.log` quand le garde-fou est actif.
 
 Pour voir les métriques (volume d'appels, latence, taux d'erreur, tokens, dérive dans le temps) :
 

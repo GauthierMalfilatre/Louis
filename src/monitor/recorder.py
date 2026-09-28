@@ -11,7 +11,9 @@
 ##   tool    one tool call: its arguments, whether it worked, how long it took
 ##   guard   a rail of the guard changed a message
 ##   turn    one message of the user answered: how it ended, how long the whole answer took, what it cost
-## The records of a turn share its id. The long texts are cut: the whole conversation is in the database and the log
+## The records of a turn share its id. The long texts are cut: the whole conversation is in the database and the log.
+## A tool that asks the user waits for the answer: the duration of the call and the latency of the turn count that
+## time, waited tells how much of it was the user's (the metrics take it out)
 ##
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +21,7 @@ from events.event import Event
 from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, GUARD_TRIGGERED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
+from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
 from config.settings import settings as default_settings
 from logger.logger import log, scrub
 import hashlib
@@ -89,6 +92,7 @@ class Turn:
     tools            : int        = 0
     tool_errors      : int        = 0
     guard            : int        = 0
+    waited           : float      = 0.0
 
 class Recorder:
     """
@@ -104,6 +108,9 @@ class Recorder:
         self.__turn     : Turn | None       = None
         # The arguments of the tool call running: TOOL_CALL_ENDED does not repeat them
         self.__arguments: dict              = {}
+        # The permission being asked (its id, since when), and the seconds the tool call running waited for the user
+        self.__asked    : tuple[int, float] | None = None
+        self.__waited   : float             = 0.0
         # The prompts already written whole in this run
         self.__prompts  : set[str]          = set()
         self.__broken   : bool              = False
@@ -120,6 +127,9 @@ class Recorder:
         bus.subscribe(self.__on_turn_started, CHAT_TURN_STARTED)
         bus.subscribe(self.__on_model_call, MODEL_CALL)
         bus.subscribe(self.__on_tool_started, TOOL_CALL_STARTED)
+        # Bound before the interface: the question is timed before the user reads it, the answer as soon as it comes
+        bus.subscribe(self.__on_asked, TOOL_BEGFOR_PERMISSION)
+        bus.subscribe(self.__on_answered, TOOL_GRANT_PERMISSION)
         bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
@@ -194,9 +204,24 @@ class Recorder:
     def __on_tool_started(self, event: Event) -> None:
         """ Keep the arguments (masked with the guard, as they are shown) for the end of the call """
         self.__arguments = event.data["arguments"]
+        self.__asked, self.__waited = None, 0.0
+
+    def __on_asked(self, event: Event) -> None:
+        """ A tool asks the user: from now on, the time is the user's """
+        self.__asked = (event.data["id"], time.perf_counter())
+
+    def __on_answered(self, event: Event) -> None:
+        """ The user answered: the first answer ends the wait, as it is the one that counts """
+        if self.__asked is None or event.data.get("id") != self.__asked[0]:
+            return
+        waited: float = time.perf_counter() - self.__asked[1]
+        self.__asked = None
+        self.__waited += waited
+        if self.__turn is not None:
+            self.__turn.waited += waited
 
     def __on_tool_ended(self, event: Event) -> None:
-        """ One tool call: whether it worked, and how long it took """
+        """ One tool call: whether it worked, how long it took, and how much of that it waited for the user """
         data: dict = event.data
         self.__write(
             "tool",
@@ -206,11 +231,13 @@ class Recorder:
             producer=data["producer"],
             ok=data["ok"],
             duration=data["duration"],
+            waited=round(self.__waited, 3),
             arguments=arguments(self.__arguments),
             result=text(data["result"], RESULT_CHARS),
             chars=len(data["result"])
         )
-        self.__arguments = {}
+        # A question nobody answered is no wait of the user: without an interface, the tool is refused at once
+        self.__arguments, self.__asked, self.__waited = {}, None, 0.0
         if self.__turn is not None:
             self.__turn.tools += 1
             self.__turn.tool_errors += not data["ok"]
@@ -242,6 +269,7 @@ class Recorder:
             reason=event.data["reason"],
             message=text(event.data.get("message"), OUTPUT_CHARS),
             latency=round(time.perf_counter() - turn.start, 3),
+            waited=round(turn.waited, 3),
             model=turn.model,
             prompt=turn.prompt,
             think=turn.think,
