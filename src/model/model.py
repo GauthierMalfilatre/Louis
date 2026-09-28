@@ -10,6 +10,7 @@ from .model_exception import ModelException
 from .reply import Reply
 from config.settings import settings
 import json
+import time
 from tool.tool_call import ToolCall
 from logger.logger import log
 
@@ -101,6 +102,7 @@ class OllamaModel:
         stats: dict = {}
 
         shown: int = 0
+        start: float = time.perf_counter()
         try:
             with requests.post(
                 f"{self.__uri}/api/chat", json=payload, stream=settings.get("chat.stream", True), timeout=CHAT_TIMEOUT
@@ -114,6 +116,9 @@ class OllamaModel:
                     message: dict = chunk.get("message") or {}
                     if chunk.get("done"):
                         stats = chunk
+                    # The first piece of the reply, whatever it is: until then, the user only waits
+                    if reply.ttft is None and any(message.get(key) for key in ("content", "thinking", "tool_calls")):
+                        reply.ttft = round(time.perf_counter() - start, 3)
                     if thought := message.get("thinking"):
                         thinking += thought
                         if on_thinking is not None:
@@ -145,7 +150,13 @@ class OllamaModel:
         if on_text is not None and shown < len(reply.content):
             on_text(reply.content[shown:])
 
-        reply.tokens = stats.get("prompt_eval_count", 0) + stats.get("eval_count", 0)
+        reply.done = stats.get("done_reason")
+        reply.prompt_tokens = stats.get("prompt_eval_count", 0)
+        reply.completion_tokens = stats.get("eval_count", 0)
+        # Ollama counts in nanoseconds
+        reply.load, reply.prompt_eval, reply.generation = (
+            round(stats.get(key, 0) / 1e9, 3) for key in ("load_duration", "prompt_eval_duration", "eval_duration")
+        )
         OllamaModel.__log_reply(reply, thinking, stats)
         return reply
 

@@ -26,6 +26,9 @@ settings: dict[str] = {
     # Database of the sessions, in the working directory, unless LOUIS_DB gives another path:
     # the launcher of install.sh points it at the global one
     "db.file"              : "louis.db",
+    # Every call to the model and to the tools, one JSON line each (latency, tokens, errors...), next to the database
+    # unless LOUIS_TRACES gives another path. louis --dashboard turns them into metrics
+    "monitor.file"         : "louis.traces.jsonl",
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
     "guard.enabled"        : False,

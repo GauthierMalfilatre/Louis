@@ -53,6 +53,10 @@ def protect(scrub: Callable[[str], str]) -> None:
     global _scrub
     _scrub = scrub
 
+def scrub(text: str) -> str:
+    """ A text as the log may keep it: for what is written elsewhere than the log (the traces of the monitoring) """
+    return _scrub(text)
+
 def log_event(event) -> None:
     """ Log an event of the bus, subscribe it with bus.subscribe(log_event) to log every event """
     data: str = ", ".join(f"{key}={value}" for key, value in event.data.items())

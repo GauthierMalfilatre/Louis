@@ -51,6 +51,30 @@ python src/main.py
 - Créer un lanceur (`louis`) dans `$HOME/.local/bin`.
 - Configurer le PATH pour que `louis` soit accessible depuis n'importe quel répertoire.
 
+## Monitoring
+
+Chaque appel au modèle et aux outils est enregistré, une ligne JSON par événement, dans `louis.traces.jsonl` (à côté de `louis.db` : dans le dossier courant, ou dans `~/.local/share/louis/` avec le lanceur de `install.sh` ; `LOUIS_TRACES` change le chemin).
+
+| Type     | Ce qu'il contient |
+| -------- | ----------------- |
+| `run`    | un lancement de Louis : le modèle, les réglages qui jouent sur la vitesse |
+| `prompt` | un prompt système, en entier, la première fois qu'il est vu : les autres lignes le nomment par sa version (début de son hash) |
+| `llm`    | une requête au modèle : ce qu'on lui donne, sa réponse, les outils demandés, la latence, le temps jusqu'au premier token, les tokens (prompt / réponse), le temps de chargement, le statut (`ok`, `error`, `cancelled`) |
+| `tool`   | un appel d'outil : arguments, succès, durée, début du résultat, et le temps passé à attendre ta permission (`waited`) |
+| `guard`  | un rail du garde-fou a modifié un message |
+| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours |
+
+Les lignes d'un même tour partagent son `turn`. Le temps que tu mets à répondre à une demande de permission est retiré des latences du tableau de bord. Les textes longs sont coupés, et masqués comme dans `louis.log` quand le garde-fou est actif.
+
+Pour voir les métriques (volume d'appels, latence, taux d'erreur, tokens, dérive dans le temps) :
+
+```bash
+louis --dashboard                  # ou : python src/main.py --dashboard
+cd src && python -m monitor ../louis.traces.jsonl -o /tmp/dashboard.html --open
+```
+
+Le résumé s'affiche dans le terminal, et `louis.dashboard.html` (une page autonome, sans serveur) s'ouvre dans le navigateur. En haut, les **dérives** : chaque nouveau prompt ou modèle est comparé à celui qu'il remplace, et les dernières 24 h à la semaine d'avant. Une alerte apparaît au-delà de ±30 % de latence médiane, ±30 % de tokens par appel ou ±5 points de taux d'erreur, avec au moins 5 appels de chaque côté. Un prompt modifié hier qui double la latence apparaît donc en tête, avec la hausse des tokens qui l'explique.
+
 ## Notes
 
 - Le script d'installation vérifie automatiquement la version de Python (au moins Python 3.12).

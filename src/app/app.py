@@ -35,8 +35,10 @@ from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
+from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import date
 import json
 import os
@@ -54,8 +56,13 @@ ANNOUNCE: re.Pattern = re.compile(
     re.IGNORECASE | re.MULTILINE
 )
 
-# Logged whole elsewhere (the reply by the model, the tool calls by __call): not once more per event
-UNLOGGED: frozenset[str] = frozenset({CHAT_TEXT, CHAT_THINKING, CHAT_REPLY, TOOL_CALL_STARTED, TOOL_CALL_ENDED})
+# Logged whole elsewhere (the reply and its stats by the model, the tool calls by __call): not once more per event
+UNLOGGED: frozenset[str] = frozenset({
+    CHAT_TEXT, CHAT_THINKING, CHAT_REPLY, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
+})
+
+# Where the context Louis adds starts, after the system prompt
+CONTEXT: str = "\n\n# Contexte\n"
 
 CANCELLED_TOOL: str = "Annulé : l'utilisateur a interrompu Louis avant la fin de cet outil."
 
@@ -90,8 +97,12 @@ REFUSED_CALLS: int = 2
 
 class App:
     """ App Class: runs the conversation, and tells everything through the bus, never printing itself """
-    def __init__(self, settings: dict[str], system_prompt: str, user: User, stream: Interface):
-        """ Init the Application class, on a new session of the user, shown by the interface stream """
+    def __init__(self, settings: dict[str], system_prompt: str, user: User, stream: Interface,
+                 monitor: Recorder | None = None):
+        """
+            Init the Application class, on a new session of the user, shown by the interface stream.
+            With a monitor, every call to the model and to the tools is recorded, for the metrics
+        """
         self.__settings: dict[str] = settings
         self.__user: User = user
         self.__system_prompt: str = system_prompt
@@ -100,6 +111,9 @@ class App:
         self.__bus: EventBus = EventBus()
         # Subscribed first: an event is logged before any other handler reacts to it
         self.__bus.subscribe(lambda event: event.name in UNLOGGED or log_event(event))
+        # Before APP_STARTED: the run is recorded with its model
+        if monitor is not None:
+            monitor.bind(self.__bus)
         # The interface asks the user (TOOL_BEGFOR_PERMISSION) and answers (TOOL_GRANT_PERMISSION)
         self.__permissions: PermissionManager = PermissionManager(self.__bus)
 
@@ -204,7 +218,15 @@ class App:
         lines: list[str] = [f"- Date : {date.today().isoformat()}"]
         if not self.__user.is_anonymous:
             lines.insert(0, f"- Utilisateur : {self.__user.name}")
-        return "\n\n# Contexte\n" + "\n".join(lines) + "\n"
+        return CONTEXT + "\n".join(lines) + "\n"
+
+    def __prompt(self) -> str:
+        """ The system prompt of the current session, without the context put after it: the date changes it every day """
+        messages = self.session.messages
+        if not messages or messages[0].role != "system":
+            return ""
+        prompt, found, _ = messages[0].content.rpartition(CONTEXT)
+        return prompt if found else messages[0].content
 
     def __on_session_changed(self, event: Event) -> None:
         """ Another session: nothing of it is cut or read yet. A resumed one fills the context with its history """
@@ -292,12 +314,10 @@ class App:
                 self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
 
             for _ in range(rounds):
-                reply: Reply = self.__model.chat(
+                reply: Reply = self.__chat(
                     self.__view(),
                     [tool for tool in self.__toolManager.all() if self.__refused[tool["function"]["name"]] < REFUSED_CALLS],
-                    think=self.think,
-                    on_text=stream,
-                    on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk)
+                    stream
                 )
                 calls: list[ToolCall] = []
                 for call in reply.tool_calls:
@@ -376,6 +396,44 @@ class App:
 
         log.warning(f"[app] stopped after {rounds} rounds of tool calls")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} tours d'appels d'outils.")
+
+    def __chat(self, messages: list[dict], tools: list[dict], stream: Callable | None) -> Reply:
+        """
+            Ask the model for its next reply, and tell how the request went (MODEL_CALL), even when it fails or the
+            user cancels it: the monitoring records every call, with its latency and its tokens
+        """
+        start: float = time.perf_counter()
+        reply: Reply | None = None
+        status, error = "ok", None
+        try:
+            reply = self.__model.chat(
+                messages, tools, think=self.think, on_text=stream,
+                on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk)
+            )
+            return reply
+        except ModelException as e:
+            status, error = "error", e.message
+            raise
+        except KeyboardInterrupt:
+            status = "cancelled"
+            raise
+        except Exception as e:
+            status, error = "error", f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            self.__bus.dispatch(
+                MODEL_CALL,
+                model=self.__model.model,
+                system=self.__prompt(),
+                messages=messages,
+                tools=[tool["function"]["name"] for tool in tools],
+                think=self.think,
+                status=status,
+                error=error,
+                latency=round(time.perf_counter() - start, 3),
+                # A copy: the app changes the reply afterwards (the calls kept, the guard's mask)
+                reply=asdict(reply) if reply is not None else None
+            )
 
     def __screen(self, question: str, reply: Reply) -> None:
         """
