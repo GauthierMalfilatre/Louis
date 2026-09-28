@@ -18,6 +18,10 @@ venv/
 *.db
 *.db-journal
 
+# Monitoring: the traces of the calls, and their dashboard
+*.jsonl
+louis.dashboard.html
+
 # Test 
 test/
 

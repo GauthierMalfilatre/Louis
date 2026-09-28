@@ -21,6 +21,11 @@ CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the mode
 # and at last the oldest exchanges left out. What is saved of the session stays whole
 CHAT_COMPACTED    = "chat.compacted"      # data: results (cut down this time), dropped (messages left out this time), used, size (tokens)
 
+# One request to the model, however it went: what the monitoring records. status is "ok", "error" (error tells why) or
+# "cancelled" (Ctrl+C); latency the seconds of the whole request; system the prompt of the session, without the context
+# put after it (the date changes it every day); reply the Reply as a dict (tokens, timings...), None if there is none
+MODEL_CALL        = "model.call"          # data: model, system, messages (as sent), tools (the names offered), think, status, error, latency, reply
+
 # A rail of the guard changed a message: the user's before the model reads it, the model's before it is shown,
 # or a tool call of the model before it runs (between its TOOL_CALL_STARTED and TOOL_CALL_ENDED).
 # A refused message never reaches the model: its turn ends with the reason "refused", and the refusal as message.
