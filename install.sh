@@ -57,6 +57,20 @@ mkdir -p "$LOUIS_HOME"
 info "Installing the dependencies"
 "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$REPO/requirements.txt"
 
+# Heavier, and only if the settings of this checkout ask for it: venv --clear above wiped any earlier install of it,
+# so this must run on every install.sh, not only the first one, or guard.enabled silently stops working after a pull
+GUARD="$("$VENV/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from config.settings import settings as s; print(s.get("guard.enabled", False))' "$REPO/src")"
+if [[ "$GUARD" == "True" ]]; then
+    info "guard.enabled is on: installing NeMo Guardrails (requirements-guard.txt)"
+    if "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$REPO/requirements-guard.txt" \
+        && "$VENV/bin/python" -m spacy download en_core_web_lg --quiet; then
+        info "NeMo Guardrails installed"
+    else
+        warn "Could not install the guardrails (NeMo needs Python 3.10 to 3.13; this venv uses $("$VENV/bin/python" --version)): retry with"
+        warn "  $VENV/bin/pip install -r $REPO/requirements-guard.txt && $VENV/bin/python -m spacy download en_core_web_lg"
+    fi
+fi
+
 # The launcher runs the sources of this repository: a git pull updates louis,
 # and louis keeps the directory it was typed in as the project it works on.
 # It saves the sessions in the global database, and the traces of its calls next to it (louis --dashboard reads them
