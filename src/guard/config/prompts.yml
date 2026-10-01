@@ -15,7 +15,9 @@ prompts:
       Questions about code, files, tools, errors and the project are always allowed. Any other harmless
       request is allowed too (general knowledge, the weather, a web search...): block only what breaks a
       rule above. The user may share their own data. Tags like <PHONE_NUMBER>, <EMAIL_ADDRESS> or <NIR> are data
-      already anonymized: they are never a reason to block.
+      already anonymized: they are never a reason to block. The name of a project, a library, a file or a
+      variable is never itself a reason to block, however unfamiliar, invented or misspelled it looks.
+      Answer Yes only when a rule above is clearly and specifically broken; answer No when unsure.
 
       User message: "{{ user_input }}"
 

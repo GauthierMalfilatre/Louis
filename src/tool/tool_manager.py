@@ -17,6 +17,11 @@ class ToolManager:
         self.__tools[tool.name] = tool
         return self
 
+    def unregister(self, name: str) -> "ToolManager":
+        """ Withdraw a tool from the manager, if it was there """
+        self.__tools.pop(name, None)
+        return self
+
     def has(self, name: str) -> bool:
         """ Wether the manager has the tool """
         return name in self.__tools.keys()

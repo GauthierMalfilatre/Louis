@@ -13,6 +13,7 @@ from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHA
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED, EXPORT_DONE
 from events.event_list import SHARE_CREATED, SHARE_LIST, SHARE_REVOKED
 from datetime import datetime, timezone
+from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
 import json
 import os
 import re
@@ -33,6 +34,7 @@ LABELS: dict[str, str] = {
     "write_file": "Écriture",
     "mkdir"     : "Nouveau dossier",
     "web_search": "Recherche web",
+    "search_knowledge": "Connaissances",
 }
 
 # The formats of /export, as they are named to the user: the others in capitals (JSON)
@@ -52,6 +54,9 @@ def call_detail(name: str, values: dict) -> str:
         return f"« {shorten(values.get('pattern', ''))} »{where}{glob}"
     if name == "web_search":
         return f"« {shorten(values.get('query', ''))} »"
+    if name == "search_knowledge":
+        where: str = f" dans {values['source']}" if values.get("source") else ""
+        return f"« {shorten(values.get('query', ''))} »{where}"
     if path:
         start = values.get("start_line")
         return shorten(path) + (f", dès la ligne {start}" if str(start).isdigit() and int(start) > 1 else "")
@@ -72,6 +77,9 @@ def result_summary(name: str, result: str, ok: bool) -> str:
         more = re.search(r"… (\d+) résultats de plus", result)
         count = sum(1 for line in lines if re.match(r"/\S*:\d+:", line)) + (int(more[1]) if more else 0)
         return f"{count} résultat{'s' if count > 1 else ''}"
+    if name == "search_knowledge" and not lines[0].startswith("Aucun"):
+        count = len(re.findall(r"^\[\d+\] ", result, re.MULTILINE))
+        return f"{count} passage{'s' if count > 1 else ''}"
     if name == "web_search":
         try:
             count = len(json.loads(result))
@@ -139,6 +147,11 @@ class CLI(Interface):
         bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
         bus.subscribe(self.__on_thinking_disabled, THINKING_DISABLED)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
+        bus.subscribe(self.__on_rag_indexing, RAG_INDEXING)
+        bus.subscribe(self.__on_rag_progress, RAG_INDEX_PROGRESS)
+        bus.subscribe(self.__on_rag_indexed, RAG_INDEXED)
+        bus.subscribe(self.__on_rag_sources, RAG_SOURCES)
+        bus.subscribe(self.__on_rag_forgotten, RAG_FORGOTTEN)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -219,6 +232,9 @@ class CLI(Interface):
         if event.data["stage"] == "tool_call":
             # Under the call, before its result:  ⎿ refusé
             self.out(f"    ⛨ Appel bloqué par le garde-fou ({', '.join(event.data['rails'])})", dim=True)
+        elif event.data["stage"] == "tool_result":
+            # Under the call too: what it gave, filtered before the model reads it
+            self.out("    ⛨ Résultat filtré par le garde-fou (passages piégés retirés, données sensibles masquées)", dim=True)
         elif event.data["action"] == "refused":
             what: str = "Message bloqué" if before else "Réponse bloquée"
             self.out(f"⛨ {what} par le garde-fou ({', '.join(event.data['rails'])})", dim=True)
@@ -227,6 +243,42 @@ class CLI(Interface):
             self.out(f"⛨ Message anonymisé avant le modèle : {preview(event.data['content'])}", dim=True)
         else:
             self.out("⛨ Réponse anonymisée par le garde-fou", dim=True)
+
+    def __on_rag_indexing(self, event: Event) -> None:
+        """ Tell the folder is being read: embedding a big one takes minutes """
+        self.out(f"\nIndexation de {short_path(event.data['root'])} ({event.data['files']} fichiers), Ctrl+C pour arrêter…")
+
+    def __on_rag_progress(self, event: Event) -> None:
+        """ How far it is, dim:   … 300/2000 fichiers """
+        self.out(f"  … {event.data['done']}/{event.data['total']} fichiers", dim=True)
+
+    def __on_rag_indexed(self, event: Event) -> None:
+        """ What the folder gave: the source, its files, its passages, and if the search by meaning works on them """
+        data: dict = event.data
+        lines: list[str] = [
+            f"Source « {data['source']} » à jour : {data['files']} fichiers ({data['updated']} lus, {data['unchanged']} "
+            f"inchangés, {data['removed']} retirés, {data['skipped']} ignorés), {data['chunks']} passages · {data['duration']:.1f}s"
+        ]
+        if data["chunks"] and data["embedded"] < data["chunks"]:
+            lines.append(f"  Recherche par mots-clés seulement pour {data['chunks'] - data['embedded']} passages : "
+                         f"{data['warning'] or "aucun modèle d'embedding"}. Relance /index quand il répond.")
+        self.out("\n".join(lines) + "\n")
+
+    def __on_rag_sources(self, event: Event) -> None:
+        """ One line per source, its folder and how many passages it holds """
+        if not event.data["sources"]:
+            self.out("\nLa base de connaissances est vide : /index <dossier> y met de la documentation ou du code.\n")
+            return
+        lines: list[str] = [f"\nBase de connaissances ({len(event.data['sources'])} sources) :"]
+        for source in event.data["sources"]:
+            words: str = "" if source["embedded"] == source["chunks"] else "  (mots-clés seulement)"
+            lines.append(f"  {source['name']:16} {source['files']:>6} fichiers {source['chunks']:>7} passages  "
+                         f"[{short_path(source['root'])}]{words}")
+        self.out("\n".join(lines) + "\n")
+
+    def __on_rag_forgotten(self, event: Event) -> None:
+        """ The source removed """
+        self.out(f"\nSource « {event.data['source']} » retirée ({event.data['chunks']} passages).\n")
 
     def __on_permission(self, event: Event) -> None:
         """ Show what a tool wants to do and its diff, then grant it if the user agrees, or always agrees """

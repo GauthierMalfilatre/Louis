@@ -17,6 +17,7 @@ from session.database import Database
 from session.user import User, ANONYMOUS
 from monitor.recorder import Recorder, traces_path
 from monitor.report import report
+from rag.cli import index_folder
 import argparse
 
 def parse() -> argparse.Namespace:
@@ -26,6 +27,8 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--user", type=str, default=ANONYMOUS, help=f"user name, whose sessions are saved (not {ANONYMOUS}'s)")
     parser.add_argument("--plain", action="store_true", help="plain terminal output, without the curses window")
     parser.add_argument("--dashboard", action="store_true", help="write the metrics of the recorded calls, open them, and quit")
+    parser.add_argument("--index", type=str, default=None, metavar="FOLDER", help="index a folder of documentation or code in the knowledge base, and quit")
+    parser.add_argument("--name", type=str, default=None, help="the name of the source --index makes (default: the name of the folder)")
 
     return parser.parse_args()
 
@@ -70,6 +73,9 @@ if __name__ == "__main__":
         sys.exit(report(traces_path(), open_browser=True))
 
     setup_logger()
+    if args.index:
+        sys.exit(index_folder(args.index, args.name))
+
     log.info(f"===== louis started in {os.getcwd()} =====")
     log.debug(f"[app] settings: {settings}")
 

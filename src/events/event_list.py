@@ -27,17 +27,29 @@ CHAT_COMPACTED    = "chat.compacted"      # data: results (cut down this time), 
 MODEL_CALL        = "model.call"          # data: model, system, messages (as sent), tools (the names offered), think, status, error, latency, reply
 
 # A rail of the guard changed a message: the user's before the model reads it, the model's before it is shown,
-# or a tool call of the model before it runs (between its TOOL_CALL_STARTED and TOOL_CALL_ENDED).
+# a tool call of the model before it runs, or the result of a tool that reads what Louis does not own (the knowledge
+# base) before the model reads it (both between the TOOL_CALL_STARTED and TOOL_CALL_ENDED of the call).
 # A refused message never reaches the model: its turn ends with the reason "refused", and the refusal as message.
 # A refused reply is replaced by the refusal, shown and kept in the session in its place.
-# A refused call never runs: the refusal is its result, the model reads it and does without
-GUARD_TRIGGERED   = "guard.triggered"     # data: stage ("input", "output", "tool_call"), action ("masked", "refused"), rails (the names of those that refused), content (what goes on instead), tool (its name, for "tool_call" only)
+# A refused call never runs: the refusal is its result, the model reads it and does without.
+# A result is never refused, only masked: the passages that give orders to the model are taken out of it, and
+# the sensitive data replaced, the model reads the rest
+GUARD_TRIGGERED   = "guard.triggered"     # data: stage ("input", "output", "tool_call", "tool_result"), action ("masked", "refused"), rails (the names of those that refused), content (what goes on instead), tool (its name, for "tool_call" and "tool_result" only)
 
 # producer: who wanted the call, "model" (the model asked for it), "user" (a command) or "system" (Louis itself)
 TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments (masked with the guard: to show, not to run), producer
 TOOL_CALL_ENDED   = "tool.call.ended"     # data: name, producer, ok (False if it did not do it: unknown, crashed, failed or refused), result, duration (seconds)
 
-APP_STARTED       = "app.started"         # data: model (its name), think (True if /think is on), commands: [{name, usage, description}]
+# The knowledge base (RAG): the folders the user indexed (/index, louis --index), and what the model looked up in them.
+# Nothing is embedded when the embedding model does not answer: the sources are still searched by keywords
+RAG_INDEXING       = "rag.indexing"         # data: source, root, files (found in the folder)
+RAG_INDEX_PROGRESS = "rag.index.progress"   # data: source, done, total (files)
+RAG_INDEXED        = "rag.indexed"          # data: source, root, files, updated, unchanged, removed, skipped, chunks (added), embedded (of them), warning (why the rest was not embedded, or None), duration
+RAG_SOURCES        = "rag.sources"          # data: sources: [{name, root, files, chunks, embedded, model, updated_at}]
+RAG_FORGOTTEN      = "rag.forgotten"        # data: source, chunks (removed)
+RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), mode ("hybrid": keywords and meaning, "keyword"), hits: [{source, path, start, end, score}], duration
+
+APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), commands: [{name, usage, description}]
 APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
 
 # A tool asks before acting: the interface shows the request, and answers with the same id.
