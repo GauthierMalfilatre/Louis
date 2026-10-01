@@ -2,11 +2,7 @@
 ## EPITECH PROJECT, 2026
 ## SENSAI
 ## File description:
-## Markdown export: the document as a page to read, on GitHub, in an editor or a Markdown viewer
-##
-## The replies of the model are written as they are (they are Markdown already). The tool calls are one line each,
-## as the terminal shows them, and their whole result is folded below (<details>): a file read stays at hand
-## without burying the conversation. The files the model wrote come last, whole, under "Fichiers produits"
+## Markdown export: the document as a page to read, the files written by the model at the end
 ##
 from interface.cli import LABELS, call_detail, result_summary, short_path
 from datetime import datetime, timezone

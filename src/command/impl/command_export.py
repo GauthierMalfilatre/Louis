@@ -2,7 +2,7 @@
 ## EPITECH PROJECT, 2026
 ## SENSAI
 ## File description:
-## /export: write a session to a file (JSON, Markdown...)
+## /export: write a session, or one of its files, to a file (JSON, Markdown...)
 ##
 from command.command import Command
 from command.impl.command_sessions import NOT_SAVED

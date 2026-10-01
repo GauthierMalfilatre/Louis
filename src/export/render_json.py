@@ -2,7 +2,7 @@
 ## EPITECH PROJECT, 2026
 ## SENSAI
 ## File description:
-## JSON export: the document as it is, to read again (/import) or to process
+## JSON export: the document as it is, to read again or to process
 ##
 import json
 

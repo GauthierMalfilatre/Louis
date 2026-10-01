@@ -2,14 +2,7 @@
 ## EPITECH PROJECT, 2026
 ## SENSAI
 ## File description:
-## Document: a session as it is exported, the same for every format (JSON, Markdown, PDF...) and for a shared link
-##
-## The document is plain data, JSON-friendly: each format only lays it out.
-##   {"v", "kind": "session", "title", "session": {id, user, cwd, created_at}, "exported_at", "messages", "artifacts"}
-## A message is {"role": "user" | "assistant", "content", "at"}, and the replies of the model that call tools carry
-## them: {"tools": [{"name", "arguments", "result", "ok"}]}, each with the result it got.
-## An artifact is a file the model wrote, as export/artifacts.py rebuilds it. The document of a single artifact
-## (/export --artifact) has the kind "artifact", that file alone, and no messages
+## The document of a session, plain JSON-friendly data, that every export format lays out
 ##
 from config.prompt import NUDGE_PROMPT
 from export.artifacts import collect
@@ -62,7 +55,12 @@ def conversation(session: Session) -> list[dict]:
     return messages
 
 def build(session: Session, user: User) -> dict:
-    """ The document of a session of the user, read from the database (or from memory for the anonymous one) """
+    """
+        The document of a session of the user, read from the database (or from memory for the anonymous one):
+        {"v", "kind": "session", "title", "session": {id, user, cwd, created_at}, "exported_at", "messages",
+        "artifacts"}. A message is {"role", "content", "at"}, and a reply of the model that calls tools has them in
+        "tools": [{"name", "arguments", "result", "ok"}]. The artifacts are those of export/artifacts.py
+    """
     messages: list[dict] = conversation(session)
     return {
         "v"          : VERSION,

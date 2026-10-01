@@ -2,16 +2,7 @@
 ## EPITECH PROJECT, 2026
 ## SENSAI
 ## File description:
-## Artifacts: the files the model wrote in a session, as they were when it was done with them
-##
-## The database keeps the calls, not the files: a file is rebuilt by playing its calls again, in their order, from
-## the database alone. write_file gives the whole content, each edit_file then replaces its passage the way the tool
-## did (its repairs of old_str, its newlines). A file the session only edited was there before it: nothing to
-## start from, it is read on the disk, as is a file whose edits no longer apply. Each artifact tells where its
-## content comes from (source):
-##   session   rebuilt from the calls: what the model wrote, even if the file changed or was removed since
-##   disk      read on the disk at the export: the file may have changed since the session
-##   missing   neither: the file is no longer there (or is not text)
+## Artifacts: the files the model wrote in a session, rebuilt from its tool calls or read on the disk
 ##
 from tool.tool import failed
 from tool.impl.file.tool_write import fix_newlines
@@ -87,7 +78,10 @@ def collect(messages: list[dict], cwd: str) -> list[dict]:
     """
         The files written in the messages of a document (their tool calls with their results), in the order they
         were first written: {"path", "language", "action" ("created" or "modified"), "writes" (successful calls),
-        "source", "content" (None when missing)}
+        "source", "content" (None when missing)}. The database keeps the calls, not the files: write_file gives the
+        whole content, each edit_file is played again on it as the tool did. source tells where the content is from:
+        "session" (rebuilt from the calls), "disk" (only edited, so there before the session, or its edits no longer
+        apply: read now, it may have changed since) or "missing" (neither)
     """
     files: dict[str, dict] = {}
     for message in messages:
