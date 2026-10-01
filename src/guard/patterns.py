@@ -26,6 +26,18 @@ SECRET  : re.Pattern = re.compile(
 # "password = input()" in some code is not one
 ASSIGNED: re.Pattern = re.compile(r"\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY)[A-Z0-9_]*\s*[=:]\s*)[^\s\"']+")
 
+# A text that gives orders to the model instead of informing it: a page or a document it looks up (the knowledge base)
+# must never hold one. Only the classic wordings, in English and French, and the tokens that mark a role in a prompt:
+# "ignore all rules" in the doc of a linter is not one, and a refused result costs the model a whole search
+INJECTION: re.Pattern = re.compile(
+    r"\b(?:ignore|disregard|forget|override)\b[^.\n]{0,30}\b(?:instructions?|prompts?)\b"
+    r"|\b(?:ignore|disregard|forget|override)\b[^.\n]{0,20}\b(?:previous|prior|above|earlier)\b[^.\n]{0,20}\brules\b"
+    r"|\b(?:ignore[zr]?|oublie[zr]?)\b[^.\n]{0,30}\b(?:instructions?|consignes?|directives?)\b"
+    r"|\b(?:reveal|show|print|repeat|display|révèle|affiche)\b[^.\n]{0,20}\b(?:system prompt|prompt système|hidden instructions)\b"
+    r"|<\|(?:im_start|im_end|system|assistant)\|>|\[/?INST\]|<<SYS>>",
+    re.IGNORECASE
+)
+
 # What Presidio masks in the messages, for the log: emails, and the numbers whose checksum holds
 EMAIL   : re.Pattern = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
 CARD    : re.Pattern = re.compile(r"(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])")
@@ -38,6 +50,31 @@ def mask_french_ids(text: str) -> str:
 def contains_secret(text: str) -> bool:
     """ Check if the text holds a secret """
     return SECRET.search(text or "") is not None
+
+def contains_injection(text: str) -> bool:
+    """ Check if the text gives orders to the model (ignore your instructions...) """
+    return INJECTION.search(text or "") is not None
+
+# The tools that look things up give their passages one after the other, each one starting a line with its number:
+# "[1] source /path:1-20", then the text (search_knowledge)
+PASSAGE: re.Pattern = re.compile(r"(?m)^(?=\[\d+\] )")
+
+def drop_injected(text: str) -> str:
+    """
+        The text without the passages that give orders to the model, each replaced by a line saying so: one
+        poisoned passage must not cost the model the others. A text without passages is one, and goes whole
+    """
+    parts: list[str] = PASSAGE.split(text or "")
+    if not any(contains_injection(part) for part in parts):
+        return text
+    kept: list[str] = []
+    for part in parts:
+        if contains_injection(part):
+            number = re.match(r"\[\d+\] ", part)
+            part = (f"{number[0] if number else ''}retiré par le garde-fou : ce passage donnait des ordres au modèle."
+                    + part[len(part.rstrip()):])
+        kept.append(part)
+    return "".join(kept)
 
 def redact(text: str) -> str:
     """ The text, everything sensitive replaced by its kind: what the log may keep """

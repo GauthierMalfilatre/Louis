@@ -48,9 +48,20 @@ rails:
       # Refuse: a secret or a personal data in the arguments of a tool that sends them out of the machine
       - block sensitive data in tool calls
 
-# Read by the actions of actions.py
+  # The results of the tools listed in custom_data.guard.untrusted_tools, before the model reads them
+  tool_input:
+    flows:
+      # Take out the passages that give orders to the model (prompt injection through the knowledge base)
+      - drop injected passages in tool results
+      # Anonymize: a secret or a personal data the indexed folder held
+      - mask sensitive data in tool results
+
+# Read by the actions of actions.py, and by the Guard
 custom_data:
   guard:
+    # The tools that read what nobody in the project wrote: their results are screened. The file tools stay out:
+    # masking the file the model is about to edit_file would make its old_string never match
+    untrusted_tools: [search_knowledge]
     # The tools whose arguments leave the machine: the query of web_search goes to a search engine.
     # The file tools stay out: they write in the user's project, and ask the user first (with the diff)
     outbound_tools: [web_search]

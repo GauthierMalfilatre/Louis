@@ -2,7 +2,7 @@
 ## EPITECH PROJECT, 2026
 ## SENSAI
 ## File description:
-## SQLite database where the users, their sessions and their messages are saved
+## SQLite database where the users, their sessions, their messages and their shared links are saved
 ##
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -35,6 +35,20 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
+
+-- A session, or one of its files, shared by a public link (/share): the document as it was then, never updated.
+-- The token is the link: whoever has it can read the document, until revoked_at is set (/unshare)
+CREATE TABLE IF NOT EXISTS shares (
+    token      TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    kind       TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    document   TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_shares_user ON shares(user_id, created_at);
 """
 
 def now() -> str:
