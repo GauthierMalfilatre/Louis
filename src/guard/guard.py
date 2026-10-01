@@ -8,6 +8,7 @@
 ##         verdict = guard.check_input(text)           before the message reaches the model
 ##         verdict = guard.check_output(text, reply)   before the reply reaches the user
 ##         verdict = guard.check_tool_call(call)       before the tool the model asked for runs
+##         verdict = guard.check_tool_result(tool, result)   before the model reads what a tool gave (see screens_result)
 ##
 import os
 from .verdict import Verdict, PASS, MASKED, REFUSED
@@ -62,6 +63,19 @@ class Guard:
             None, tool=call.name
         )
 
+    def screens_result(self, tool: str) -> bool:
+        """ Check if the results of a tool go through the rails before the model reads them (untrusted_tools) """
+        return tool in (((self.__rails.config.custom_data or {}).get("guard") or {}).get("untrusted_tools") or [])
+
+    def check_tool_result(self, tool: str, result: str) -> Verdict:
+        """ Check what a tool gave, before the model reads it: it passes, is masked, or is replaced by a refusal """
+        # A tool message is checked with the request it answers: the name of the tool stands for it
+        return self.__check(
+            "tool_result", "tool_input",
+            [{"role": "user", "content": tool}, {"role": "tool", "content": result, "name": tool, "tool_call_id": tool}],
+            result, variable="tool_message", tool=tool
+        )
+
     def hide(self, arguments: dict) -> dict:
         """
             The arguments of a call as the user sees them: masked the way the log is. Only what is shown:
@@ -69,18 +83,22 @@ class Guard:
         """
         return {key: redact(value) if isinstance(value, str) else value for key, value in arguments.items()}
 
-    def __check(self, stage: str, rails: str, messages: list[dict], original: str | None, **told) -> Verdict:
+    def __check(self, stage: str, rails: str, messages: list[dict], original: str | None,
+                variable: str | None = None, **told) -> Verdict:
         """
-            Run only the rails of NeMo (input, output, tool_output) on the messages: the model is not asked
-            to reply. Without an original text, what NeMo answers is only a refusal, or nothing to take
+            Run only the rails of NeMo (input, output, tool_output, tool_input) on the messages: the model is not asked
+            to reply. Without an original text, what NeMo answers is only a refusal, or nothing to take.
+            The tool_input rails answer nothing but a refusal: the checked text, masked, is the variable they rewrite
         """
-        res = self.__rails.generate(
-            messages=messages,
-            options={"rails": [rails], "log": {"activated_rails": True}}
-        )
+        options: dict = {"rails": [rails], "log": {"activated_rails": True}}
+        if variable:
+            options["output_vars"] = [variable]
+        res = self.__rails.generate(messages=messages, options=options)
         # With messages, NeMo answers with messages: the last one is the checked text, or the refusal
         content: str = res.response[-1]["content"] if isinstance(res.response, list) else res.response
         stopped: list[str] = [rail.name for rail in res.log.activated_rails if rail.stop] if res.log else []
+        if variable and not stopped:
+            content = (res.output_data or {}).get(variable, original)
 
         if stopped:
             verdict: Verdict = Verdict(REFUSED, content, stopped)

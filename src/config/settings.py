@@ -31,6 +31,19 @@ settings: dict[str] = {
     "monitor.file"         : "louis.traces.jsonl",
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
-    "guard.enabled"        : False,
+    "guard.enabled"        : True,
+    # Knowledge base (RAG): the folders the user indexes (/index, louis --index: documentation, examples of code...),
+    # that the model looks up with search_knowledge. It needs no library beyond numpy; the meaning of the passages is
+    # read by an embedding model of Ollama (ollama pull nomic-embed-text), without it the search is by keywords only.
+    # The index is in the working directory, unless LOUIS_RAG gives another path (the launcher of install.sh: the global one)
+    "rag.enabled"          : True,
+    "rag.file"             : "louis.rag.db",
+    "rag.embed.model"      : "nomic-embed-text",
+    # nomic-embed-text wants to be told which side of the search a text is; another model may want none
+    "rag.embed.query_prefix"   : "search_query: ",
+    "rag.embed.document_prefix": "search_document: ",
+    "rag.embed.batch"      : 32,
+    # Passages search_knowledge gives back by default
+    "rag.results"          : 4,
 
 }

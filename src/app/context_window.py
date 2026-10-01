@@ -89,6 +89,10 @@ class ContextWindow:
         """ The tokens the model sees at once """
         return self.__size
 
+    def set_tools(self, tools: list[dict]) -> None:
+        """ The tools sent in every request changed: they take their room in the context from now on """
+        self.__fixed = len(json.dumps(tools, ensure_ascii=False))
+
     def reset(self) -> None:
         """ Another session: nothing of it is cut yet """
         self.__stubbed, self.__hidden = 0, 1

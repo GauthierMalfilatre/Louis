@@ -19,6 +19,16 @@ async def contains_secret(text: str) -> bool:
     """ Check if the text holds a secret """
     return patterns.contains_secret(text)
 
+@action(name="drop_injected")
+async def drop_injected(text: str) -> str:
+    """ The text without the passages that give orders to the model """
+    return patterns.drop_injected(text)
+
+@action(name="mask_sensitive")
+async def mask_sensitive(text: str) -> str:
+    """ The text, everything sensitive replaced by its kind (as the log does) """
+    return patterns.redact(text)
+
 @action(name="tool_call_leaks")
 async def tool_call_leaks(calls: list[dict] | None = None, config=None) -> bool:
     """ Check if a call to a tool of custom_data.guard.outbound_tools has sensitive data in its arguments """

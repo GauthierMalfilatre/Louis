@@ -19,7 +19,9 @@ from tool.impl.file.tool_write import WriteTool
 from tool.impl.file.tool_search import SearchTool
 from tool.impl.file.tool_mkdir import MkdirTool
 from tool.impl.web.tool_websearch import InternetTool
+from tool.impl.rag.tool_knowledge import KnowledgeTool
 from tool.permission import PermissionManager
+from rag.knowledge import Knowledge
 from guard.guard import Guard
 from guard.verdict import Verdict
 from tool.seen_files import SeenFiles
@@ -35,6 +37,7 @@ from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
+from command.impl.command_index import IndexCommand, UnindexCommand
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -130,6 +133,12 @@ class App:
 
         # What the model sees of the session: cut down before it overflows the context, instead of Ollama cutting it
         self.__window: ContextWindow = ContextWindow(settings.get("chat.context", 12288), self.__toolManager.all())
+
+        # What the user indexed, looked up by the model with search_knowledge. Nothing is read or created on the disk
+        # before something is indexed, and the tool is only offered while there is something to look up
+        self.__knowledge: Knowledge | None = Knowledge.from_settings(settings, self.__bus) if settings.get("rag.enabled", False) else None
+        self.__knowledge_tool: KnowledgeTool = KnowledgeTool()
+        self.offer_knowledge()
         # The files read in another session are not in the history of this one: they must be read again to be edited
         self.__seen_files: SeenFiles = SeenFiles()
         self.__bus.subscribe(self.__on_session_changed, SESSION_CREATED, SESSION_RESUMED)
@@ -139,6 +148,8 @@ class App:
             .register(SessionsCommand())\
             .register(ResumeCommand())\
             .register(ToggleThinkCommand())\
+            .register(IndexCommand())\
+            .register(UnindexCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -260,6 +271,24 @@ class App:
     def seen_files(self) -> SeenFiles:
         """ Get the files the model has read or written in this session, for edit_file to check """
         return self.__seen_files
+
+    @property
+    def knowledge(self) -> Knowledge | None:
+        """ Get the knowledge base the user indexed, None if it is turned off (rag.enabled) """
+        return self.__knowledge
+
+    def offer_knowledge(self) -> None:
+        """ Offer search_knowledge to the model while something is indexed, and withdraw it when nothing is any more """
+        if self.__knowledge is None:
+            return
+        name: str = self.__knowledge_tool.name
+        if self.__knowledge.empty == self.__toolManager.has(name):
+            if self.__knowledge.empty:
+                self.__toolManager.unregister(name)
+            else:
+                self.__toolManager.register(self.__knowledge_tool)
+            self.__window.set_tools(self.__toolManager.all())
+            log.info(f"[app] {name} {'withdrawn' if self.__knowledge.empty else 'offered'}")
 
     def run(self) -> int:
         """ Run the application: answer the messages of the user, until the input ends or Ctrl+C there """
@@ -468,6 +497,21 @@ class App:
             log.info(f"[guard] {call.name} refused {REFUSED_CALLS} times: withdrawn until the next message")
         return verdict.content
 
+    def __screen_result(self, call: ToolCall, result: str) -> str:
+        """
+            Put what a tool read outside the project (the knowledge base: documents nobody here wrote) through the
+            tool result rails before the model reads it: the passages that give it orders taken out, the sensitive data
+            masked. Whoever asked for the call. A guard that cannot check gives nothing: an unchecked result is never read
+        """
+        if self.__guard is None or not self.__guard.screens_result(call.name):
+            return result
+        try:
+            return self.__guard.check_tool_result(call.name, result).content
+        except Exception as e:
+            log.exception(f"[guard] the check of the result of {call.name} failed")
+            return (f"Erreur : le garde-fou n'a pas pu vérifier le résultat de '{call.name}' ({type(e).__name__}), "
+                    "il ne t'est pas donné.")
+
     def __call(self, call: ToolCall, producer: str = "model", *, refused: str | None = None,
                most: float = MAX_RESULT) -> str:
         """
@@ -491,6 +535,7 @@ class App:
         else:
             try:
                 result = tool.handle(self, **call.arguments)
+                result = self.__screen_result(call, result if isinstance(result, str) else str(result))
             except Exception as e:
                 log.exception(f"[tool] {call.name} failed")
                 result = (f"Erreur : l'outil '{call.name}' a échoué ({type(e).__name__} : {e}). "
