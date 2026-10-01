@@ -5,13 +5,12 @@
 ## /share: publish a session, or one of its files, by a public link the user confirms first
 ##
 from command.command import Command
-from command.impl.command_export import selected, ARTIFACT
+from command.impl.command_export import selected, files_typed, ARTIFACT, FILES_HELP
 from events.event_list import SHARE_CREATED
 from logger.logger import log
 from share.store import create, masked, url
 
-USAGE: str = (f"Usage : /share [id] [{ARTIFACT} <fichier>], sans id pour la session en cours, "
-              f"avec {ARTIFACT} pour un seul des fichiers écrits par Louis.")
+USAGE: str = f"Usage : /share [id] [{ARTIFACT} [fichiers]], sans id pour la session en cours, {FILES_HELP}."
 
 ANONYMOUS: str = ("Les liens sont gardés avec tes sessions : lance louis avec --user <nom> pour en partager une.")
 
@@ -37,6 +36,8 @@ def preview(document: dict, hidden: int) -> str:
         read: list[str] = files_read(document)
         if read:
             lines.append(f"  Lus     : {', '.join(read)} (leur contenu sera visible)")
+    elif len(files) > 1:
+        lines.append(f"  Fichiers: {', '.join(files)}")
     if hidden:
         lines.append(f"  Masqué  : {hidden} texte{'s' if hidden > 1 else ''} avec des données sensibles (clés, mots de "
                      "passe, emails...), remplacées par leur type")
@@ -47,8 +48,8 @@ class ShareCommand(Command):
     def __init__(self):
         super().__init__(
             "share",
-            description="publie la session en cours, ou la session <id>, par un lien public (ou un seul de ses fichiers)",
-            usage=f"[id] [{ARTIFACT} <fichier>]"
+            description="publie la session en cours, ou la session <id>, par un lien public (ou seulement ses fichiers)",
+            usage=f"[id] [{ARTIFACT} [fichiers]]"
         )
 
     def handle(self, app, arguments: str) -> None:
@@ -56,20 +57,23 @@ class ShareCommand(Command):
         if app.user.is_anonymous:
             self.error(app, "anonymous", ANONYMOUS)
             return
-        arguments, flag, wanted = arguments.partition(ARTIFACT)
-        wanted = wanted.strip()
-        words: list[str] = arguments.split()
-        if (flag and not wanted) or len(words) > 1:
+        try:
+            arguments, wanted = files_typed(arguments)
+        except ValueError:
             self.error(app, "usage", USAGE)
             return
-        found = selected(self, app, words[0] if words else None, wanted if flag else None, USAGE)
+        words: list[str] = arguments.split()
+        if len(words) > 1:
+            self.error(app, "usage", USAGE)
+            return
+        found = selected(self, app, words[0] if words else None, wanted, USAGE)
         if found is None:
             return
-        session, document, artifact = found
+        session, document, files = found
 
         # A public page never shows what the log would mask: with the guard or not
         document, hidden = masked(document)
-        what: str = (f"{artifact['path']} (session #{session.id})" if artifact is not None
+        what: str = (f"{document['title']} (session #{session.id})" if files is not None
                      else f"la session #{session.id}")
         if not app.permissions.request("share", f"Publier {what} par un lien public ?", preview(document, hidden),
                                        every_time=True):

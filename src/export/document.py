@@ -77,6 +77,7 @@ def build(session: Session, user: User) -> dict:
         "artifacts"  : collect(messages, session.cwd),
     }
 
-def single(document: dict, artifact: dict) -> dict:
-    """ The document of one artifact of a session document: the file alone, named by its path """
-    return {**document, "kind": "artifact", "title": artifact["path"], "messages": [], "artifacts": [artifact]}
+def selection(document: dict, artifacts: list[dict]) -> dict:
+    """ The document of some artifacts of a session document: the files alone, named by the path of the only one """
+    title: str = artifacts[0]["path"] if len(artifacts) == 1 else f"{len(artifacts)} fichiers"
+    return {**document, "kind": "artifact", "title": title, "messages": [], "artifacts": artifacts}

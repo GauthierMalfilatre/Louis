@@ -284,12 +284,15 @@ class CLI(Interface):
         """
             ✓ Session #12 exportée en JSON (8 messages, 1 fichier) : ~/projet/exports/session-12.json
             ✓ /pendu.py (session #12) exporté en Markdown : ~/projet/exports/session-12-pendu.py.md
+            ✓ 3 fichiers (session #12) exportés en Markdown : ~/projet/exports/session-12-fichiers.md
         """
         which: str = f"session #{event.data['id']}" if event.data["id"] is not None else "session"
         path: str = event.data["path"].replace(os.path.expanduser("~") + os.sep, "~" + os.sep)
         shown: str = FORMATS.get(event.data["format"], event.data["format"].upper())
-        if event.data.get("artifact"):
-            self.out(f"\n✓ {event.data['artifact']} ({which}) exporté en {shown} : {path}\n")
+        files: list[str] | None = event.data.get("files")
+        if files:
+            what: str = files[0] if len(files) == 1 else f"{len(files)} fichiers"
+            self.out(f"\n✓ {what} ({which}) exporté{'s' if len(files) > 1 else ''} en {shown} : {path}\n")
             return
         count, files = event.data["messages"], event.data.get("artifacts", 0)
         written: str = f", {files} fichier{'s' if files > 1 else ''}" if files else ""

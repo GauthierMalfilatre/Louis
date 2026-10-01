@@ -7,6 +7,7 @@
 from tool.tool import failed
 from tool.impl.file.tool_write import fix_newlines
 from tool.impl.file.tool_edit import without_line_numbers, unescaped
+from fnmatch import fnmatch
 import os
 
 # The tools that write a file, and the arguments they take
@@ -126,8 +127,26 @@ def collect(messages: list[dict], cwd: str) -> list[dict]:
         })
     return artifacts
 
-def find(artifacts: list[dict], cwd: str, path: str) -> dict | None:
-    """ The artifact of a path typed by the user (pendu.py, /src/pendu.py, ./src/pendu.py...), None if none is """
-    full: str | None = located(cwd, path.strip())
-    wanted: str | None = shown(full, cwd) if full is not None else None
-    return next((artifact for artifact in artifacts if artifact["path"] == wanted), None)
+def select(artifacts: list[dict], cwd: str, patterns: list[str]) -> tuple[list[dict], list[str]]:
+    """
+        The artifacts named by what the user typed, in their order in the session, and the patterns that named none.
+        A pattern is a file (pendu.py, /src/pendu.py), a folder (src/: every file under it, / for all of them) or a
+        glob (*.py, src/*.py: its * also goes through folders)
+    """
+    chosen: set[str] = set()
+    unmatched: list[str] = []
+    for pattern in patterns:
+        if any(mark in pattern for mark in "*?["):
+            glob: str = pattern.strip().removeprefix("./").lstrip("/")
+            found: set[str] = {file["path"] for file in artifacts if fnmatch(file["path"].lstrip("/"), glob)}
+        else:
+            full: str | None = located(cwd, pattern.strip())
+            wanted: str | None = shown(full, cwd) if full is not None else None
+            # "/." is the folder of the session itself: all of its files
+            folder: str | None = None if wanted is None else "/" if wanted == "/." else wanted.rstrip("/") + "/"
+            found = {file["path"] for file in artifacts
+                     if wanted is not None and (file["path"] == wanted or file["path"].startswith(folder))}
+        if not found:
+            unmatched.append(pattern)
+        chosen |= found
+    return [file for file in artifacts if file["path"] in chosen], unmatched

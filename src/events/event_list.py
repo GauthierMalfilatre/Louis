@@ -54,8 +54,8 @@ SESSION_LIST    = "session.list"      # data: user, sessions: [{id, first_messag
 SESSION_RESUMED = "session.resumed"   # data: id, user, messages (count), last_question, last_answer
 
 # A session written to a file by /export: id is None for a session never saved (the anonymous user's). With
-# --artifact, one of the files the model wrote alone: artifact is its path (None for a whole session)
-EXPORT_DONE     = "export.done"       # data: format ("json"...), path (absolute), id, messages (count, as exported), artifact, artifacts (count of files)
+# --artifact, files the model wrote alone: files are their paths (None for a whole session)
+EXPORT_DONE     = "export.done"       # data: format ("json"...), path (absolute), id, messages (count, as exported), files, artifacts (count of files)
 
 # Public links (/share, /shares, /unshare): a share is the document as it was then, its sensitive data masked
 SHARE_CREATED   = "share.created"     # data: token, url, kind ("session" or "artifact"), id (the session), title, masked (texts changed)
