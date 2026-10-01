@@ -5,7 +5,8 @@
 ## Pull request tool: list, read, open, comment and merge the pull requests of the project, through gh
 ##
 from tool.tool import Tool
-from tool.impl.git.tool_git import run, current_branch, has_ref, PROTECTED, REFUSED
+from tool.impl.git.tool_git import run, current_branch, valid_branch, has_ref, fetch, unknown_arguments, PROTECTED, \
+    REFUSED
 import json
 
 LIST_COUNT = 15
@@ -69,7 +70,8 @@ class PullRequestTool(Tool):
                     },
                     "base": {
                         "type": "string",
-                        "description": "create : branche visée (défaut : dev si elle existe, sinon la branche principale)"
+                        "description": "create : branche visée (défaut : dev si elle existe, sinon la branche "
+                                       "principale du dépôt)"
                     },
                     "method": {
                         "type": "string",
@@ -83,6 +85,8 @@ class PullRequestTool(Tool):
 
     def handle(self, app, **kwargs) -> str:
         """ Run the pull request action asked for """
+        if (unknown := unknown_arguments(self, kwargs)) is not None:
+            return unknown
         action = kwargs.get("action")
         if action == "list":
             return self.__list()
@@ -141,25 +145,59 @@ class PullRequestTool(Tool):
             return "Erreur : aucune branche n'est active (HEAD détaché, ou pas de dépôt git)."
         if head in PROTECTED:
             return f"Erreur : on n'ouvre pas de PR depuis {head}. Crée une branche, commite et pousse dessus."
+        fetch()
         ok, count = run("git", "rev-list", "--count", f"origin/{head}..HEAD")
         if not ok:
             return f"Erreur : {head} n'est pas sur origin. Pousse-la d'abord (git, action push)."
         if count != "0":
             return f"Erreur : {count} commit(s) de {head} ne sont pas sur origin. Pousse-les d'abord (git, action push)."
-        if not base and head != "dev" and has_ref("refs/remotes/origin/dev"):
-            base = "dev"
-        if base is not None and (not isinstance(base, str) or base.startswith("-")):
-            return f"Erreur : '{base}' n'est pas une branche valide."
+        base, problem = self.__base(head, base)
+        if problem is not None:
+            return problem
 
-        into: str = base or "la branche principale"
         preview: str = indented(f"{title.strip()}\n\n{body}".rstrip())
-        if not app.permissions.request(self.name, f"Pull request de {head} vers {into}", preview):
+        if not app.permissions.request(self.name, f"Pull request de {head} vers {base}", preview):
             return f"Refusé : l'utilisateur n'a pas autorisé cette pull request. {REFUSED}"
-        args: list[str] = ["pr", "create", "--head", head, "--title", title.strip(), "--body", body]
-        ok, out = run("gh", *args, *(["--base", base] if base else []), timeout=120)
+        args: list[str] = ["pr", "create", "--head", head, "--base", base, "--title", title.strip(), "--body", body]
+        ok, out = run("gh", *args, timeout=120)
         if not ok:
             return f"Erreur : gh pr create a échoué : {out}"
         return f"OK : pull request ouverte : {out.splitlines()[-1]}"
+
+    @staticmethod
+    def __base(head: str, base) -> tuple[str, str | None]:
+        """
+            Where the pull request of head goes, checked before GitHub is asked: base, or else dev, or else the main
+            branch of the repository. With the error to give back when it can not go there
+        """
+        given: bool = bool(base)
+        if not base:
+            if head != "dev" and has_ref("refs/remotes/origin/dev"):
+                base = "dev"
+            else:
+                ok, base = run("gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
+                if not ok or not base:
+                    return "", f"Erreur : la branche principale du dépôt GitHub est introuvable : {base}"
+        if not valid_branch(base):
+            return base, f"Erreur : '{base}' n'est pas un nom de branche valide."
+        if base == head and given:
+            return base, f"Erreur : une PR ne va pas de {head} vers elle-même. Donne une autre base, comme dev ou main."
+        if base == head:
+            # The first branch pushed to an empty repository becomes its main one
+            return base, (f"Erreur : {head} est la branche principale du dépôt GitHub, une PR n'a nulle part où "
+                          "aller. Ne crée pas d'autre branche : dis à l'utilisateur de choisir la branche principale "
+                          "du dépôt sur GitHub.")
+        if not has_ref(f"refs/remotes/origin/{base}"):
+            _, out = run("git", "for-each-ref", "--format=%(refname:lstrip=3)", "refs/remotes/origin")
+            known: list[str] = [name for name in out.splitlines() if name != "HEAD"]
+            return base, (f"Erreur : la branche {base} n'existe pas sur origin. Celles d'origin : "
+                          f"{', '.join(known) or 'aucune'}.")
+        if not run("git", "merge-base", f"origin/{base}", "HEAD")[0]:
+            return base, f"Erreur : {head} et {base} n'ont aucun commit en commun, GitHub refuse une PR entre elles."
+        ok, ahead = run("git", "rev-list", "--count", f"origin/{base}..HEAD")
+        if ok and ahead == "0":
+            return base, f"Erreur : {head} n'a aucun commit que {base} n'a pas déjà : la PR n'aurait rien à proposer."
+        return base, None
 
     def __comment(self, app, number, body) -> str:
         """ Comment on a pull request """

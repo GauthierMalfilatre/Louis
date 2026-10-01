@@ -9,6 +9,10 @@ from utils.diff import diff_preview
 from tool.impl.file.tool_write import fix_newlines, NEWLINES_NOTE
 
 CONTEXT_LINES = 3
+
+# What to do instead of an edit that changes nothing: small models send one when they do not know yet what to change
+NO_CHANGE = ("Si tu sais quoi changer, mets dans new_str le code corrigé. Sinon, n'appelle pas edit_file : cherche la "
+             "cause avec search ou cat_file, ou explique à l'utilisateur ce que tu as trouvé.")
 CLOSEST_MAX_LINES = 15      # An old_str longer than this is the whole file, or nearly: no passage to show
 CLOSEST_MIN_RATIO = 0.5     # Below, the passage found is not close enough to help
 CLOSEST_FILE_LINES = 2000   # Bigger files are not searched for it
@@ -80,6 +84,53 @@ def broken_syntax(path: str, before: str, after: str) -> str | None:
             return str(e)
     return None
 
+def indentation(line: str) -> str:
+    """ The spaces and tabs a line starts with """
+    return line[:len(line) - len(line.lstrip())]
+
+def reindented(text: str, old_str: str, new_str: str) -> tuple[str, str] | None:
+    """
+        old_str as the file has it and new_str shifted as much, when old_str is in the file only with every line
+        shifted by the same indentation: small models lose count of the spaces of nested code. None if it is not,
+        or is at several places
+    """
+    old_lines: list[str] = old_str.split("\n")
+    tail: bool = len(old_lines) > 1 and old_lines[-1] == ""
+    if tail:
+        old_lines.pop()
+    written: list[int] = [n for n, line in enumerate(old_lines) if line.strip()]
+    if not written:
+        return None
+    lines: list[str] = text.split("\n")
+    found: list[tuple[int, str, str]] = []
+    for start in range(len(lines) - len(old_lines) + 1):
+        window: list[str] = lines[start:start + len(old_lines)]
+        # The shift, from the first written line: indentation the file adds to old_str, or cuts from it
+        have, want = indentation(window[written[0]]), indentation(old_lines[written[0]])
+        if have.endswith(want):
+            add, cut = have[:len(have) - len(want)], ""
+        elif want.endswith(have):
+            add, cut = "", want[:len(want) - len(have)]
+        else:
+            continue
+        # The same indentation: the exact search already failed, it is another text
+        if not add and not cut:
+            continue
+        if all(got.strip() == "" if not line.strip() else
+               line.startswith(cut) and got.rstrip() == add + line[len(cut):].rstrip()
+               for line, got in zip(old_lines, window)):
+            found.append((start, add, cut))
+    if len(found) != 1:
+        return None
+
+    start, add, cut = found[0]
+    def shifted(line: str) -> str:
+        if not line.strip():
+            return line
+        return add + (line[len(cut):] if line.startswith(cut) else line.lstrip())
+    passage: str = "\n".join(lines[start:start + len(old_lines)]) + ("\n" if tail else "")
+    return passage, "\n".join(shifted(line) for line in new_str.split("\n"))
+
 def not_found(path: str, text: str, old_str: str) -> str:
     """ Why old_str is not in the file, with the passage the model surely meant, to copy it exactly """
     message = f"Erreur : 'old_str' introuvable dans '{path}'."
@@ -108,7 +159,9 @@ class EditTool(Tool):
             "ligne suivie du texte ajouté. old_str doit "
             "correspondre EXACTEMENT au fichier (espaces, indentation et retours à la ligne compris), sans "
             "les numéros « N | » de cat_file, et être unique sauf si replace_all vaut true. "
-            "Lis le fichier avant de l'éditer.",
+            "Lis le fichier avant de l'éditer. new_str est le code APRÈS ta modification : il doit être différent "
+            "d'old_str. Si tu ne sais pas encore quoi changer, n'appelle pas edit_file : cherche la cause avec "
+            "search ou cat_file, ou explique à l'utilisateur ce que tu as trouvé.",
             {
                 "type": "object",
                 "properties": {
@@ -122,7 +175,8 @@ class EditTool(Tool):
                     },
                     "new_str": {
                         "type": "string",
-                        "description": "Texte de remplacement (vide pour supprimer old_str)"
+                        "description": "Le code après ta modification, différent d'old_str (vide pour supprimer "
+                                       "old_str)"
                     },
                     "replace_all": {
                         "type": "boolean",
@@ -144,8 +198,6 @@ class EditTool(Tool):
             return "Erreur : 'path', 'old_str' et 'new_str' sont requis."
         if old_str == "":
             return "Erreur : 'old_str' ne peut pas être vide. Pour créer un fichier, utilise write_file."
-        if old_str == new_str:
-            return "Erreur : 'old_str' et 'new_str' sont identiques, rien à modifier."
 
         full = resolve_path(manager, path)
         if full is None:
@@ -175,6 +227,14 @@ class EditTool(Tool):
             old_str = old_str.replace("\n", "\r\n")
             new_str = new_str.replace("\n", "\r\n")
 
+        # Checked once the file is read: a call that changes nothing must never pass for a sign the code is right
+        if old_str == new_str:
+            if old_str in text:
+                return ("Erreur : old_str et new_str sont identiques : cet appel ne change rien, le fichier n'a PAS "
+                        f"été modifié. Ce n'est pas la preuve que le code est juste. {NO_CHANGE}")
+            return ("Erreur : old_str et new_str sont identiques, et ce passage n'est même pas dans le fichier : tu "
+                    f"l'as écrit de mémoire. Rien n'a été modifié. {NO_CHANGE}")
+
         count = text.count(old_str)
         # Copied from cat_file with its line numbers, or escaped once too many: repaired the same way in
         # both texts, as long as the repaired old_str is really in the file
@@ -182,6 +242,13 @@ class EditTool(Tool):
             if count == 0 and (repaired := repair(old_str)) != old_str and repaired in text:
                 old_str, new_str = repaired, repair(new_str)
                 count = text.count(old_str)
+        # Indented a few spaces off: found with the indentation of the file, new_str shifted as much
+        reindent_note = ""
+        if count == 0 and (shifted := reindented(text, old_str, new_str)) is not None:
+            old_str, new_str = shifted
+            count = text.count(old_str)
+            reindent_note = ("\nNote : ton old_str n'avait pas l'indentation du fichier. Il a été retrouvé, et new_str "
+                             "décalé d'autant. Copie l'indentation exacte la prochaine fois.")
         if count == 0:
             return not_found(path, text, old_str)
         if count > 1 and not replace_all:
@@ -222,4 +289,5 @@ class EditTool(Tool):
         snippet = "\n".join(f"{n:>5} | {all_lines[n - 1]}" for n in range(lo, hi + 1))
 
         what = f"{count} occurrences remplacées" if replace_all else "1 occurrence remplacée"
-        return f"OK : {what} dans {display_path(full)}.\n{snippet}{NEWLINES_NOTE if fixed != new_text else ''}"
+        return (f"OK : {what} dans {display_path(full)}.\n{snippet}{NEWLINES_NOTE if fixed != new_text else ''}"
+                f"{reindent_note}")

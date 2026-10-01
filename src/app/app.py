@@ -74,7 +74,8 @@ SAME_CALLS : int = 2
 MAX_REFUSED: int = 3
 REPEATED_CALL: str = (
     "Erreur : tu as déjà fait exactement cet appel 2 fois pour cette demande. N'en refais pas un troisième : "
-    "utilise ce que tu sais déjà, lis une autre partie, ou réponds à l'utilisateur."
+    "utilise ce que tu sais déjà, lis une autre partie, ou réponds à l'utilisateur. S'il n'a pas marché, dis-lui "
+    "ce qui a échoué : ne dis jamais avoir fait ce qui n'a pas été fait."
 )
 # The model sometimes asks for dozens of calls at once, often the same ones again (a list gone wrong): the first
 # MAX_CALLS different ones are kept, the others never made. And the results of a round, never cut by the window, must

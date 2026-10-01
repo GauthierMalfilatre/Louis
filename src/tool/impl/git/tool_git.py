@@ -21,6 +21,15 @@ BRANCH_COUNT = 20
 
 REFUSED = "Ne le retente pas : demande-lui ce qu'il veut à la place."
 
+# The git commands small models write instead of the actions of the tool: the action they mean
+ALIASES: dict[str, str] = {
+    "checkout": "branch", "switch": "branch", "create_branch": "branch", "new_branch": "branch",
+    "list_branches": "branches", "fetch": "branches",
+    "delete": "delete_branch", "remove_branch": "delete_branch",
+}
+# The git commands left to the user: they can lose work, or end in conflicts a model can not solve
+UNSUPPORTED: tuple[str, ...] = ("merge", "rebase", "reset", "stash", "cherry-pick", "revert", "restore", "clean")
+
 def run(*args: str, timeout: int = 60) -> tuple[bool, str]:
     """ Run git or gh without a shell: what the model writes is never read by bash """
     try:
@@ -50,6 +59,27 @@ def fetch() -> None:
     """ Learn the branches origin has now: offline, the last ones known stay """
     run("git", "fetch", "--quiet", "--prune", "origin", timeout=30)
 
+def empty_repository() -> bool:
+    """ Whether the repository has no commit yet, on any branch """
+    ok, out = run("git", "rev-list", "-n", "1", "--all")
+    return ok and not out
+
+def origin_has(branch: str) -> bool | None:
+    """ Whether origin has the branch, asked to origin itself: None if it can not be reached """
+    ok, out = run("git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}", timeout=30)
+    return bool(out) if ok else None
+
+def unknown_arguments(tool: Tool, arguments: dict) -> str | None:
+    """
+        Small models invent arguments (force, new...): one that does not exist is refused, for the model never to
+        believe it did something
+    """
+    known: dict = tool.schema["function"]["parameters"]["properties"]
+    extra: list[str] = [name for name in arguments if name not in known]
+    if not extra:
+        return None
+    return f"Erreur : {', '.join(extra)} n'existe pas pour {tool.name}. Ses paramètres sont : {', '.join(known)}."
+
 def as_list(value) -> list:
     """ Small models send a single path as a string instead of a list of one """
     if isinstance(value, str):
@@ -61,11 +91,12 @@ class GitTool(Tool):
         super().__init__(
             "git",
             "Git du projet. status, diff, log : voir l'état, les changements, l'historique. "
-            "branches : lister les branches, d'ici et d'origin. branch : passer sur une branche (d'ici ou d'origin), "
-            "ou en créer une depuis base. delete_branch : supprimer une branche locale dont le travail est sauf. "
+            "branches : lister les branches, d'ici et d'origin. branch (comme git checkout ou switch) : passer sur une "
+            "branche (d'ici ou d'origin), ou en créer une depuis base. delete_branch : supprimer une branche locale dont le travail est sauf. "
             "pull : récupérer la branche courante. "
             "commit : ajouter des fichiers et les commiter. push : pousser la branche courante sur origin. "
-            f"On ne commite ni ne pousse sur {', '.join(PROTECTED)} : crée d'abord une branche.",
+            f"On ne commite ni ne pousse sur {', '.join(PROTECTED)} : crée d'abord une branche. Seule exception : "
+            "le premier commit d'un dépôt vide, qui va sur sa branche principale.",
             {
                 "type": "object",
                 "properties": {
@@ -76,7 +107,7 @@ class GitTool(Tool):
                     },
                     "branch": {
                         "type": "string",
-                        "description": "branch, delete_branch : nom de la branche, comme feat/git-tool ou fix/login"
+                        "description": "branch, delete_branch, push : nom de la branche, comme feat/git-tool ou fix/login"
                     },
                     "base": {
                         "type": "string",
@@ -98,7 +129,19 @@ class GitTool(Tool):
 
     def handle(self, app, **kwargs) -> str:
         """ Run the git action asked for """
+        if (unknown := unknown_arguments(self, kwargs)) is not None:
+            return unknown
         action = kwargs.get("action")
+        if isinstance(action, str):
+            action = action.strip().lower()
+            if action == "add":
+                return "Erreur : pas d'action add, commit ajoute lui-même les fichiers : action commit, avec paths et message."
+            if action in ("checkout", "switch") and kwargs.get("paths") and not kwargs.get("branch"):
+                return ("Erreur : checkout de fichiers (annuler leurs changements) n'est pas disponible. Pour changer "
+                        "de branche : action branch, avec branch.")
+            if action in UNSUPPORTED:
+                return f"Erreur : {action} n'est pas disponible. Si l'utilisateur le veut, dis-lui de le faire lui-même."
+            action = ALIASES.get(action, action)
         if action == "status":
             return self.__read("git", "status", "--short", "--branch")
         if action == "diff":
@@ -119,7 +162,7 @@ class GitTool(Tool):
         if action == "commit":
             return self.__commit(app, as_list(kwargs.get("paths")), kwargs.get("message"))
         if action == "push":
-            return self.__push(app)
+            return self.__push(app, kwargs.get("branch"))
         return ("Erreur : 'action' doit valoir status, diff, log, branches, branch, delete_branch, pull, commit "
                 "ou push.")
 
@@ -181,6 +224,10 @@ class GitTool(Tool):
             return f"Erreur : '{name}' n'est pas un nom de branche valide."
         if name == current_branch():
             return f"OK : déjà sur {name}."
+        if empty_repository():
+            return (f"Erreur : le dépôt n'a encore aucun commit, une branche ne peut partir de rien. Fais le premier "
+                    f"commit directement sur {current_branch() or 'main'} (action commit), pousse-le (action push), "
+                    "puis crée les branches depuis lui.")
         if has_ref(f"refs/heads/{name}"):
             summary, args, done = f"Passage sur la branche {name}", ["switch", name], ""
         else:
@@ -256,7 +303,8 @@ class GitTool(Tool):
         if None in files:
             return "Erreur : un des fichiers est en dehors du projet."
         branch: str | None = current_branch()
-        if branch in PROTECTED:
+        # The first commit of a repository goes on its main branch: the others will start from it
+        if branch in PROTECTED and not empty_repository():
             return f"Erreur : on ne commite pas sur {branch}. Crée d'abord une branche (action branch)."
 
         ok, out = run("git", "add", "--", *files)
@@ -282,12 +330,19 @@ class GitTool(Tool):
             return f"Erreur : git commit a échoué : {out}"
         return f"OK : {out.splitlines()[0]}"
 
-    def __push(self, app) -> str:
-        """ Push the current branch to origin, and track it there """
+    def __push(self, app, asked) -> str:
+        """
+            Push the current branch to origin, and track it there. A protected branch only when origin does not have
+            it yet: the first push of a new repository
+        """
         branch: str | None = current_branch()
         if branch is None:
             return "Erreur : aucune branche n'est active (HEAD détaché, ou pas de dépôt git)."
-        if branch in PROTECTED:
+        if asked and asked != branch:
+            return f"Erreur : push pousse la branche courante, {branch}. Passe d'abord sur {asked} (action branch)."
+        if empty_repository():
+            return "Erreur : rien à pousser, le dépôt n'a encore aucun commit."
+        if branch in PROTECTED and origin_has(branch) is not False:
             return f"Erreur : on ne pousse pas sur {branch}. Crée une branche, puis ouvre une pull request."
         ok, count = run("git", "rev-list", "--count", f"origin/{branch}..HEAD")
         if ok and count == "0":
