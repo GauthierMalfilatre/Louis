@@ -10,15 +10,18 @@ from config.settings import settings
 from events.event_list import EXPORT_DONE
 from export.document import build, single
 from export.artifacts import find
-from export import render_json, render_md
+from export import render_json, render_md, render_html, render_pdf
 from logger.logger import log
 from datetime import datetime
 import os
 
-# The formats, by the name typed after /export: each one a module with render(document) and its EXTENSION
+# The formats, by the name typed after /export: each one a module with render(document) (text, or bytes for a PDF)
+# and its EXTENSION
 FORMATS: dict = {
     "json": render_json,
     "md"  : render_md,
+    "html": render_html,
+    "pdf" : render_pdf,
 }
 # Other names typed for a format
 ALIASES: dict[str, str] = {"markdown": "md"}
@@ -92,9 +95,19 @@ class ExportCommand(Command):
         folder: str = os.path.abspath(settings.get("export.dir", "exports"))
         path: str = os.path.join(folder, f"{stem}.{renderer.EXTENSION}")
         try:
+            output: str | bytes = renderer.render(document)
+        except ImportError as e:
+            # An optional library of the format is missing (WeasyPrint for the PDF): the message says what to install
+            self.error(app, "missing", str(e), format=name)
+            return
+        try:
             os.makedirs(folder, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as file:
-                file.write(renderer.render(document))
+            if isinstance(output, bytes):
+                with open(path, "wb") as file:
+                    file.write(output)
+            else:
+                with open(path, "w", encoding="utf-8") as file:
+                    file.write(output)
         except OSError as e:
             self.error(app, "write", f"Impossible d'écrire {path} : {e.strerror or e}", path=path)
             return

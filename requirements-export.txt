@@ -1,0 +1,4 @@
+# Optional: the PDF export (/export pdf). WeasyPrint also needs Pango on the system:
+# https://doc.courtbouillon.org/weasyprint/stable/first_steps.html
+-r requirements.txt
+weasyprint==70.0
