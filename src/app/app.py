@@ -19,6 +19,8 @@ from tool.impl.file.tool_write import WriteTool
 from tool.impl.file.tool_search import SearchTool
 from tool.impl.file.tool_mkdir import MkdirTool
 from tool.impl.web.tool_websearch import InternetTool
+from tool.impl.git.tool_git import GitTool
+from tool.impl.git.tool_pr import PullRequestTool
 from tool.impl.rag.tool_knowledge import KnowledgeTool
 from tool.permission import PermissionManager
 from rag.knowledge import Knowledge
@@ -79,7 +81,8 @@ SAME_CALLS : int = 2
 MAX_REFUSED: int = 3
 REPEATED_CALL: str = (
     "Erreur : tu as déjà fait exactement cet appel 2 fois pour cette demande. N'en refais pas un troisième : "
-    "utilise ce que tu sais déjà, lis une autre partie, ou réponds à l'utilisateur."
+    "utilise ce que tu sais déjà, lis une autre partie, ou réponds à l'utilisateur. S'il n'a pas marché, dis-lui "
+    "ce qui a échoué : ne dis jamais avoir fait ce qui n'a pas été fait."
 )
 # The model sometimes asks for dozens of calls at once, often the same ones again (a list gone wrong): the first
 # MAX_CALLS different ones are kept, the others never made. And the results of a round, never cut by the window, must
@@ -132,6 +135,8 @@ class App:
             .register(SearchTool())\
             .register(MkdirTool())\
             .register(InternetTool())\
+            .register(GitTool())\
+            .register(PullRequestTool())\
 
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
@@ -269,6 +274,11 @@ class App:
             self.__bus.dispatch(CHAT_COMPACTED, **cut, used=used, size=self.__window.size)
             self.__bus.dispatch(CHAT_CONTEXT, used=used, size=self.__window.size, estimated=True)
         return messages
+
+    @property
+    def settings(self) -> dict[str]:
+        """ Get the settings Louis runs with, for the tools to read theirs """
+        return self.__settings
 
     @property
     def permissions(self) -> PermissionManager:

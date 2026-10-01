@@ -36,8 +36,8 @@ VERSION: int = 1
 
 # The settings that change the latency or the tokens of a reply: kept with each run, to explain a drift
 RUN_SETTINGS: tuple[str, ...] = (
-    "chat.context", "chat.predict", "chat.stream", "chat.keepalive", "chat.tools.maxdepth", "guard.enabled",
-    "rag.enabled"
+    "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth",
+    "guard.enabled", "rag.enabled"
 )
 
 # Characters kept of each text: enough to know what it was about

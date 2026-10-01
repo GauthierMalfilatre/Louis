@@ -35,6 +35,8 @@ LABELS: dict[str, str] = {
     "mkdir"     : "Nouveau dossier",
     "web_search": "Recherche web",
     "search_knowledge": "Connaissances",
+    "git"       : "Git",
+    "github_pr" : "Pull request",
 }
 
 # The formats of /export, as they are named to the user: the others in capitals (JSON)
@@ -113,8 +115,9 @@ class CLI(Interface):
         self.__prompt: str = prompt
         # Whether the last text written ended a line: the tool calls always start their own
         self.__at_line_start: bool = True
-        # "a" to a permission: the tools may act without asking, until the session changes
-        self.__always: bool = False
+        # "a" to a permission: that tool may act without asking, until the session changes. Only that one: an "a" to
+        # an edit never lets a commit or a push go by unseen
+        self.__always: set[str] = set()
         super().__init__()
 
     @property
@@ -286,15 +289,17 @@ class CLI(Interface):
         self.out(f"\n{event.data['summary']}{' :' if preview else ''}")
         if preview:
             self._show_diff(preview)
+        tool: str = event.data["tool"]
         if event.data.get("every_time"):
             # Asked each time: "always" is for the tools, never for this
             granted: bool = self._choose("Confirmer ? [y] oui  [n] non  ", "yn") == "y"
-        elif self.__always:
-            self.out("(autorisé : tu as répondu « toujours » dans cette session)", dim=True)
+        elif tool in self.__always:
+            self.out(f"(autorisé : tu as répondu « toujours » pour {tool} dans cette session)", dim=True)
             granted = True
         else:
-            choice: str = self._choose("Autoriser ? [y] oui  [n] non  [a] toujours pour cette session  ", "yna")
-            self.__always = choice == "a"
+            choice: str = self._choose(f"Autoriser ? [y] oui  [n] non  [a] toujours pour {tool} dans cette session  ", "yna")
+            if choice == "a":
+                self.__always.add(tool)
             granted = choice in "ya"
         self.__bus.dispatch(TOOL_GRANT_PERMISSION, id=event.data["id"], granted=granted)
 
@@ -306,7 +311,7 @@ class CLI(Interface):
 
     def __on_session_created(self, event: Event) -> None:
         """ Nouvelle session avec ton prompt système. """
-        self.__always = False
+        self.__always.clear()
         saved: str = "" if event.data["persistent"] else " (non enregistrée)"
         self.out(f"\nNouvelle session{saved}{' avec ton prompt système' if event.data['custom_prompt'] else ''}.\n")
 
@@ -324,7 +329,7 @@ class CLI(Interface):
 
     def __on_session_resumed(self, event: Event) -> None:
         """ The session resumed, with its last question and answer to remember where it was """
-        self.__always = False
+        self.__always.clear()
         lines: list[str] = [f"\nSession #{event.data['id']} reprise ({event.data['messages']} messages)."]
         if event.data["last_question"]:
             lines.append(f"  Toi   : {preview(event.data['last_question'])}")
