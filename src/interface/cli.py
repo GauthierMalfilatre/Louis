@@ -11,6 +11,8 @@ from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, CO
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_COMPACTED
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED, EXPORT_DONE
+from events.event_list import SHARE_CREATED, SHARE_LIST, SHARE_REVOKED
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -129,6 +131,9 @@ class CLI(Interface):
         bus.subscribe(self.__on_session_list, SESSION_LIST)
         bus.subscribe(self.__on_session_resumed, SESSION_RESUMED)
         bus.subscribe(self.__on_export_done, EXPORT_DONE)
+        bus.subscribe(self.__on_share_created, SHARE_CREATED)
+        bus.subscribe(self.__on_share_list, SHARE_LIST)
+        bus.subscribe(lambda event: self.out(f"\n✓ Lien fermé : {event.data['url']}\n"), SHARE_REVOKED)
         bus.subscribe(self.__on_command_unknown, COMMAND_UNKNOWN)
         bus.subscribe(self.__on_command_error, COMMAND_ERROR)
         bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
@@ -229,9 +234,12 @@ class CLI(Interface):
         self.out(f"\n{event.data['summary']}{' :' if preview else ''}")
         if preview:
             self._show_diff(preview)
-        if self.__always:
+        if event.data.get("every_time"):
+            # Asked each time: "always" is for the tools, never for this
+            granted: bool = self._choose("Confirmer ? [y] oui  [n] non  ", "yn") == "y"
+        elif self.__always:
             self.out("(autorisé : tu as répondu « toujours » dans cette session)", dim=True)
-            granted: bool = True
+            granted = True
         else:
             choice: str = self._choose("Autoriser ? [y] oui  [n] non  [a] toujours pour cette session  ", "yna")
             self.__always = choice == "a"
@@ -286,6 +294,35 @@ class CLI(Interface):
         count, files = event.data["messages"], event.data.get("artifacts", 0)
         written: str = f", {files} fichier{'s' if files > 1 else ''}" if files else ""
         self.out(f"\n✓ {which.capitalize()} exportée en {shown} ({count} message{'s' if count > 1 else ''}{written}) : {path}\n")
+
+    def __on_share_created(self, event: Event) -> None:
+        """ ✓ Lien public de la session #12 : http://…/s/Xk3f9QaL…, and how to close it """
+        what: str = (f"de {event.data['title']} (session #{event.data['id']})" if event.data["kind"] == "artifact"
+                     else f"de la session #{event.data['id']}")
+        lines: list[str] = [f"\n✓ Lien public {what} : {event.data['url']}"]
+        if event.data["masked"]:
+            lines.append(f"  {event.data['masked']} texte{'s' if event.data['masked'] > 1 else ''} masqué"
+                         f"{'s' if event.data['masked'] > 1 else ''} (données sensibles).")
+        lines.append(f"  /unshare {event.data['token'][:8]} pour le fermer.")
+        self.out("\n".join(lines) + "\n")
+
+    def __on_share_list(self, event: Event) -> None:
+        """ One link per line: the start of its token (for /unshare), its session, when, its title, then its address """
+        if not event.data["shares"]:
+            self.out(f"\nAucun lien public ouvert pour {event.data['user']} : /share pour en créer un.\n")
+            return
+        lines: list[str] = [f"\nLiens publics de {event.data['user']} (/unshare <jeton> pour en fermer un) :"]
+        for share in event.data["shares"]:
+            try:
+                # Saved in UTC: shown in the time of the user
+                when: str = datetime.strptime(share["created_at"], "%Y-%m-%d %H:%M:%S") \
+                    .replace(tzinfo=timezone.utc).astimezone().strftime("%d/%m %H:%M")
+            except (TypeError, ValueError):
+                when = share["created_at"] or ""
+            session: str = f"#{share['session_id']}" if share["session_id"] is not None else "–"
+            lines.append(f"  {share['token'][:8]}  {session:<5} {when}  {preview(share['title'] or '(sans titre)')}")
+            lines.append(f"            {share['url']}")
+        self.out("\n".join(lines) + "\n")
 
     def __on_command_unknown(self, event: Event) -> None:
         """ The commands there are, one per line, aligned """
