@@ -1,0 +1,4 @@
+# What CI fails on: errors only, never the style. E9: the file does not parse. F63, F7: comparisons and statements
+# that can not work. F82: a name that does not exist (as a line lost in a merge)
+[lint]
+select = ["E9", "F63", "F7", "F82"]
