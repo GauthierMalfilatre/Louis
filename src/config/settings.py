@@ -32,5 +32,8 @@ settings: dict[str] = {
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
     "guard.enabled"        : False,
+    # Louis signs the commits it makes with a "Co-authored-by" line: the user stays their author. For GitHub to show
+    # Louis on the commits, it must be the noreply address of a GitHub account (Settings > Emails). Empty: no line
+    "git.coauthor"         : "Louis <336655023+louis-sensai@users.noreply.github.com>",
 
 }

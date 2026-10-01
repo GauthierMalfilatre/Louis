@@ -31,6 +31,8 @@ LABELS: dict[str, str] = {
     "write_file": "Écriture",
     "mkdir"     : "Nouveau dossier",
     "web_search": "Recherche web",
+    "git"       : "Git",
+    "github_pr" : "Pull request",
 }
 
 def shorten(text: str, length: int = ARGUMENT_LENGTH) -> str:

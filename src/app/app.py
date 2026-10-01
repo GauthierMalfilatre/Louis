@@ -19,6 +19,8 @@ from tool.impl.file.tool_write import WriteTool
 from tool.impl.file.tool_search import SearchTool
 from tool.impl.file.tool_mkdir import MkdirTool
 from tool.impl.web.tool_websearch import InternetTool
+from tool.impl.git.tool_git import GitTool
+from tool.impl.git.tool_pr import PullRequestTool
 from tool.permission import PermissionManager
 from guard.guard import Guard
 from guard.verdict import Verdict
@@ -125,6 +127,8 @@ class App:
             .register(SearchTool())\
             .register(MkdirTool())\
             .register(InternetTool())\
+            .register(GitTool())\
+            .register(PullRequestTool())\
 
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
@@ -250,6 +254,11 @@ class App:
             self.__bus.dispatch(CHAT_COMPACTED, **cut, used=used, size=self.__window.size)
             self.__bus.dispatch(CHAT_CONTEXT, used=used, size=self.__window.size, estimated=True)
         return messages
+
+    @property
+    def settings(self) -> dict[str]:
+        """ Get the settings Louis runs with, for the tools to read theirs """
+        return self.__settings
 
     @property
     def permissions(self) -> PermissionManager:
