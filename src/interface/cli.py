@@ -10,7 +10,9 @@ from events.event import Event
 from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_COMPACTED
-from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED
+from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED, EXPORT_DONE
+from events.event_list import SHARE_CREATED, SHARE_LIST, SHARE_REVOKED
+from datetime import datetime, timezone
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
 import json
 import os
@@ -34,6 +36,9 @@ LABELS: dict[str, str] = {
     "web_search": "Recherche web",
     "search_knowledge": "Connaissances",
 }
+
+# The formats of /export, as they are named to the user: the others in capitals (JSON)
+FORMATS: dict[str, str] = {"md": "Markdown"}
 
 def shorten(text: str, length: int = ARGUMENT_LENGTH) -> str:
     """ A text on one line, cut if it is too long """
@@ -133,6 +138,10 @@ class CLI(Interface):
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
         bus.subscribe(self.__on_session_list, SESSION_LIST)
         bus.subscribe(self.__on_session_resumed, SESSION_RESUMED)
+        bus.subscribe(self.__on_export_done, EXPORT_DONE)
+        bus.subscribe(self.__on_share_created, SHARE_CREATED)
+        bus.subscribe(self.__on_share_list, SHARE_LIST)
+        bus.subscribe(lambda event: self.out(f"\n✓ Lien fermé : {event.data['url']}\n"), SHARE_REVOKED)
         bus.subscribe(self.__on_command_unknown, COMMAND_UNKNOWN)
         bus.subscribe(self.__on_command_error, COMMAND_ERROR)
         bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
@@ -277,9 +286,12 @@ class CLI(Interface):
         self.out(f"\n{event.data['summary']}{' :' if preview else ''}")
         if preview:
             self._show_diff(preview)
-        if self.__always:
+        if event.data.get("every_time"):
+            # Asked each time: "always" is for the tools, never for this
+            granted: bool = self._choose("Confirmer ? [y] oui  [n] non  ", "yn") == "y"
+        elif self.__always:
             self.out("(autorisé : tu as répondu « toujours » dans cette session)", dim=True)
-            granted: bool = True
+            granted = True
         else:
             choice: str = self._choose("Autoriser ? [y] oui  [n] non  [a] toujours pour cette session  ", "yna")
             self.__always = choice == "a"
@@ -318,6 +330,53 @@ class CLI(Interface):
             lines.append(f"  Toi   : {preview(event.data['last_question'])}")
         if event.data["last_answer"]:
             lines.append(f"  Louis : {preview(event.data['last_answer'])}")
+        self.out("\n".join(lines) + "\n")
+
+    def __on_export_done(self, event: Event) -> None:
+        """
+            ✓ Session #12 exportée en JSON (8 messages, 1 fichier) : ~/projet/exports/session-12.json
+            ✓ /pendu.py (session #12) exporté en Markdown : ~/projet/exports/session-12-pendu.py.md
+            ✓ 3 fichiers (session #12) exportés en Markdown : ~/projet/exports/session-12-fichiers.md
+        """
+        which: str = f"session #{event.data['id']}" if event.data["id"] is not None else "session"
+        path: str = event.data["path"].replace(os.path.expanduser("~") + os.sep, "~" + os.sep)
+        shown: str = FORMATS.get(event.data["format"], event.data["format"].upper())
+        files: list[str] | None = event.data.get("files")
+        if files:
+            what: str = files[0] if len(files) == 1 else f"{len(files)} fichiers"
+            self.out(f"\n✓ {what} ({which}) exporté{'s' if len(files) > 1 else ''} en {shown} : {path}\n")
+            return
+        count, files = event.data["messages"], event.data.get("artifacts", 0)
+        written: str = f", {files} fichier{'s' if files > 1 else ''}" if files else ""
+        self.out(f"\n✓ {which.capitalize()} exportée en {shown} ({count} message{'s' if count > 1 else ''}{written}) : {path}\n")
+
+    def __on_share_created(self, event: Event) -> None:
+        """ ✓ Lien public de la session #12 : http://…/s/Xk3f9QaL…, and how to close it """
+        what: str = (f"de {event.data['title']} (session #{event.data['id']})" if event.data["kind"] == "artifact"
+                     else f"de la session #{event.data['id']}")
+        lines: list[str] = [f"\n✓ Lien public {what} : {event.data['url']}"]
+        if event.data["masked"]:
+            lines.append(f"  {event.data['masked']} texte{'s' if event.data['masked'] > 1 else ''} masqué"
+                         f"{'s' if event.data['masked'] > 1 else ''} (données sensibles).")
+        lines.append(f"  /unshare {event.data['token'][:8]} pour le fermer.")
+        self.out("\n".join(lines) + "\n")
+
+    def __on_share_list(self, event: Event) -> None:
+        """ One link per line: the start of its token (for /unshare), its session, when, its title, then its address """
+        if not event.data["shares"]:
+            self.out(f"\nAucun lien public ouvert pour {event.data['user']} : /share pour en créer un.\n")
+            return
+        lines: list[str] = [f"\nLiens publics de {event.data['user']} (/unshare <jeton> pour en fermer un) :"]
+        for share in event.data["shares"]:
+            try:
+                # Saved in UTC: shown in the time of the user
+                when: str = datetime.strptime(share["created_at"], "%Y-%m-%d %H:%M:%S") \
+                    .replace(tzinfo=timezone.utc).astimezone().strftime("%d/%m %H:%M")
+            except (TypeError, ValueError):
+                when = share["created_at"] or ""
+            session: str = f"#{share['session_id']}" if share["session_id"] is not None else "–"
+            lines.append(f"  {share['token'][:8]}  {session:<5} {when}  {preview(share['title'] or '(sans titre)')}")
+            lines.append(f"            {share['url']}")
         self.out("\n".join(lines) + "\n")
 
     def __on_command_unknown(self, event: Event) -> None:

@@ -29,6 +29,11 @@ settings: dict[str] = {
     # Every call to the model and to the tools, one JSON line each (latency, tokens, errors...), next to the database
     # unless LOUIS_TRACES gives another path. louis --dashboard turns them into metrics
     "monitor.file"         : "louis.traces.jsonl",
+    # Where /export writes the sessions, relative to the working directory
+    "export.dir"           : "exports",
+    # Where the public links of /share point to (the server of louis --serve, or the address that reaches it),
+    # unless LOUIS_SHARE_URL gives another
+    "share.base_url"       : "http://localhost:8080",
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
     "guard.enabled"        : True,
