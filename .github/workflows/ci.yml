@@ -1,0 +1,58 @@
+# Checks every change on its way to dev or main: what a merge can break (a name that no longer exists, a
+# dependency missing from requirements.txt, a tool that stops working) fails here, before Louis runs it.
+# The same checks locally: pip install -r requirements.txt -r requirements-dev.txt, then ruff check and pytest
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+# A new push to a pull request stops the run of the previous one
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: checks (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The versions install.sh picks from. The guard (requirements-guard.txt) needs 3.13 at most: not installed here
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # The errors only (ruff.toml): undefined names, syntax. Not the style
+      - name: Lint
+        run: ruff check
+
+      - name: Compile
+        run: python -m compileall -q src
+
+      # Louis starts from src: every module it loads must import, without Ollama
+      - name: Import
+        working-directory: src
+        run: python -c "import app.app, main"
+
+      - name: Tests
+        run: pytest
