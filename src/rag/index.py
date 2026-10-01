@@ -61,13 +61,17 @@ STOPWORDS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class Hit:
-    """ A passage found: where it is (the source, the path from its root, the lines) and its text """
+    """
+        A passage found: where it is (the source, the path from its root, the lines) and its text. score is what it
+        is ranked by: the fusion of the search, or the reranker's once it read it (the fusion is then kept in fused)
+    """
     source: str
     path  : str
     start : int
     end   : int
     text  : str
     score : float
+    fused : float | None = None
 
 def pack(vector: list[float]) -> bytes:
     """ A vector as it is saved: unit length (a dot product is then a cosine), 32 bits per number """

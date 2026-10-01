@@ -45,5 +45,19 @@ settings: dict[str] = {
     "rag.embed.batch"      : 32,
     # Passages search_knowledge gives back by default
     "rag.results"          : 4,
+    # Reranking: the passages the search found are read again with the question by a cross-encoder (ONNX on the CPU,
+    # by fastembed: installed with the guard, or by requirements-rerank.txt), the best first, and those under
+    # min_score left out (0 to 1: 0 keeps them all). Download the model once: cd src && python -m rag.reranker
+    # Without fastembed or the model, the search goes on in the order of the index. Measured with python -m rag.evaluate
+    # (docs/RAG.md): mmarco-mMiniLMv2 reads French, ~2.5s a search on a laptop CPU; jinaai/jina-reranker-v2-base-multilingual
+    # ranks a little better, but takes ~10s and 5 GB of memory, under a non-commercial license
+    "rag.rerank.enabled"   : True,
+    "rag.rerank.model"     : "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    # Passages of the search the reranker reads: the right one is rarely further down (python -m rag.evaluate: hit@20)
+    "rag.rerank.pool"      : 20,
+    # Measured: 0.05 kept every right answer of the test, and left most of the questions it cannot answer with nothing
+    "rag.rerank.min_score" : 0.05,
+    # What it reads of each passage: its time grows with it, and the start of a passage tells what it is about
+    "rag.rerank.max_chars" : 1000,
 
 }

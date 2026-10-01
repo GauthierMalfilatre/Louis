@@ -71,6 +71,20 @@ if [[ "$GUARD" == "True" ]]; then
     fi
 fi
 
+# The same for the reranker of the knowledge base, and its model downloaded now: louis never downloads it during a chat.
+# The model is kept out of the venv (~/.cache/louis/rerank), venv --clear does not download it again
+RERANK="$("$VENV/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from config.settings import settings as s; print(bool(s.get("rag.enabled") and s.get("rag.rerank.enabled")))' "$REPO/src")"
+if [[ "$RERANK" == "True" ]]; then
+    info "rag.rerank.enabled is on: installing fastembed (requirements-rerank.txt) and the reranking model"
+    if "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$REPO/requirements-rerank.txt" \
+        && (cd "$REPO/src" && "$VENV/bin/python" -m rag.reranker >/dev/null); then
+        info "Reranker installed"
+    else
+        warn "Could not install the reranker: the knowledge base is searched without it. Retry with"
+        warn "  $VENV/bin/pip install -r $REPO/requirements-rerank.txt && (cd $REPO/src && $VENV/bin/python -m rag.reranker)"
+    fi
+fi
+
 # The launcher runs the sources of this repository: a git pull updates louis,
 # and louis keeps the directory it was typed in as the project it works on.
 # It saves the sessions in the global database, and the traces of its calls next to it (louis --dashboard reads them

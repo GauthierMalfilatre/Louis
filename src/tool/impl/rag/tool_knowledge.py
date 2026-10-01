@@ -36,7 +36,7 @@ class KnowledgeTool(Tool):
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": f"Nombre de passages renvoyés (défaut : celui des réglages, max : {MAX_RESULTS})"
+                        "description": f"Nombre de passages renvoyés au plus : ceux qui ne répondent pas sont écartés (défaut : celui des réglages, max : {MAX_RESULTS})"
                     }
                 },
                 "required": ["query"]
@@ -64,10 +64,17 @@ class KnowledgeTool(Tool):
             limit = knowledge.results
         limit = max(1, min(limit, MAX_RESULTS))
 
-        hits = knowledge.search(query, source, limit)
-        if not hits:
-            where = f" dans la source {source}" if source else ""
+        found = knowledge.search(query, source, limit)
+        where = f" dans la source {source}" if source else ""
+        if not found.hits and found.candidates:
+            # Passages were found, and the reranker read them: none answers. Other words would find the same ones
+            return (f"Aucun passage de la base{where} ne répond à '{query}' : ceux qui en sont proches parlent d'autre "
+                    "chose. Ne cherche pas encore avec d'autres mots : réponds avec ce que tu sais, en disant que la "
+                    "base de l'utilisateur ne couvre pas ce sujet.")
+        if not found.hits:
             return f"Aucun résultat pour '{query}'{where}. Essaie d'autres mots (le nom exact d'une fonction, en anglais)."
+        # The lines keep starting with "[n] ": the guard cuts the result into passages there (guard/patterns.py, PASSAGE)
         return "\n\n".join(
-            f"[{number}] {hit.source} {hit.path}:{hit.start}-{hit.end}\n{hit.text}" for number, hit in enumerate(hits, 1)
+            f"[{number}] {hit.source} {hit.path}:{hit.start}-{hit.end}\n{hit.text}"
+            for number, hit in enumerate(found.hits, 1)
         )

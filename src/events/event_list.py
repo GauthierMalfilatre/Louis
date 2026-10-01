@@ -47,7 +47,9 @@ RAG_INDEX_PROGRESS = "rag.index.progress"   # data: source, done, total (files)
 RAG_INDEXED        = "rag.indexed"          # data: source, root, files, updated, unchanged, removed, skipped, chunks (added), embedded (of them), warning (why the rest was not embedded, or None), duration
 RAG_SOURCES        = "rag.sources"          # data: sources: [{name, root, files, chunks, embedded, model, updated_at}]
 RAG_FORGOTTEN      = "rag.forgotten"        # data: source, chunks (removed)
-RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), mode ("hybrid": keywords and meaning, "keyword"), hits: [{source, path, start, end, score}], duration
+# A look-up: the index found candidates, the reranker (when it could) read them again, ranked them by its score (0 to 1)
+# and dropped those under its threshold. Without it, score is the fusion of the index and nothing is dropped
+RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), mode ("hybrid": keywords and meaning, "keyword"), reranker (its model, None if it did not rerank), candidates (found by the index), dropped (under the threshold), hits: [{source, path, start, end, score, fused (the score of the index, None if not reranked)}], rerank (seconds, None), duration (seconds, all of it)
 
 APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), commands: [{name, usage, description}]
 APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")

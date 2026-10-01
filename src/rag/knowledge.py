@@ -6,12 +6,18 @@
 ##
 ## Usage:  knowledge = Knowledge.from_settings(settings, bus)
 ##         knowledge.index("~/docs/python", "python")     the folder, cut and embedded (RAG_INDEXED tells how it went)
-##         hits = knowledge.search("comment lire un fichier json ?")     (RAG_RETRIEVED tells what was found)
+##         found = knowledge.search("comment lire un fichier json ?")     (RAG_RETRIEVED tells what was found)
 ##
+## A search goes in two steps: the index finds what may answer (keywords and meaning, rag/index.py), then the
+## reranker reads each of those passages with the question, puts the best first and leaves out the near-misses
+## (rag/reranker.py). Without the reranker (turned off, not installed), the order of the index is kept, and nothing is left out
+##
+from dataclasses import dataclass, replace
 from rag.chunker import split
 from rag.embedder import Embedder, EmbedError
 from rag.index import Index, Hit
 from rag.ingest import scan, load
+from rag.reranker import Reranker, RerankError
 from events.event_bus import EventBus
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_RETRIEVED
 from config.settings import settings as default_settings
@@ -33,17 +39,28 @@ def source_name(root: str, name: str | None = None) -> str:
     """ The name of a source: the one given, or the name of its folder, cut to what a command can type """
     return re.sub(r"[^\w.-]+", "-", (name or os.path.basename(os.path.normpath(root)) or "root")).strip("-") or "root"
 
+@dataclass(frozen=True, slots=True)
+class Found:
+    """
+        What a search gives: the passages, best first, and how many the index found before the reranker left the
+        near-misses out. No hit out of some candidates: the base holds nothing that answers, not "try other words"
+    """
+    hits      : list[Hit]
+    candidates: int
+
 class Knowledge:
     """
         Knowledge Class: indexes folders and searches them. It tells what it does through the bus, never printing.
         Without the embedding model (Ollama stopped, model not downloaded), it goes on by keywords alone
     """
-    def __init__(self, bus: EventBus, index: Index, embedder: Embedder | None, results: int = 4):
-        """ Init the knowledge base on an index, embedding with embedder (or not at all) """
-        self.__bus     : EventBus       = bus
-        self.__index   : Index          = index
+    def __init__(self, bus: EventBus, index: Index, embedder: Embedder | None, results: int = 4,
+                 reranker: Reranker | None = None):
+        """ Init the knowledge base on an index, embedding with embedder (or not at all), reranking with reranker (or not) """
+        self.__bus     : EventBus        = bus
+        self.__index   : Index           = index
         self.__embedder: Embedder | None = embedder
-        self.__results : int            = results
+        self.__results : int             = results
+        self.__reranker: Reranker | None = reranker
 
     @classmethod
     def from_settings(cls, settings: dict[str], bus: EventBus) -> "Knowledge":
@@ -55,7 +72,13 @@ class Knowledge:
             settings.get("rag.embed.document_prefix", ""),
             settings.get("rag.embed.batch", 32)
         )
-        return cls(bus, Index(rag_path()), embedder, settings.get("rag.results", 4))
+        reranker: Reranker | None = Reranker(
+            settings.get("rag.rerank.model", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"),
+            settings.get("rag.rerank.pool", 20),
+            settings.get("rag.rerank.min_score", 0.0),
+            settings.get("rag.rerank.max_chars", 0)
+        ) if settings.get("rag.rerank.enabled", False) else None
+        return cls(bus, Index(rag_path()), embedder, settings.get("rag.results", 4), reranker)
 
     @property
     def empty(self) -> bool:
@@ -80,9 +103,13 @@ class Knowledge:
         """ Remove a source: the passages removed, 0 if it was not there """
         return self.__index.forget(source)
 
-    def search(self, query: str, source: str | None = None, limit: int | None = None) -> list[Hit]:
-        """ The passages that answer the query best, in one source or in all of them """
+    def search(self, query: str, source: str | None = None, limit: int | None = None, *, drop: bool = True) -> Found:
+        """
+            The passages that answer the query best, in one source or in all of them: limit at most, fewer (or none)
+            when the reranker finds the others do not answer. drop=False keeps them, ranked (to measure the threshold)
+        """
         start: float = time.perf_counter()
+        limit = limit or self.__results
         vector: list[float] | None = None
         model: str | None = None
         if self.__embedder is not None:
@@ -90,16 +117,43 @@ class Knowledge:
                 vector, model = self.__embedder.query(query), self.__embedder.model
             except EmbedError as e:
                 log.warning(f"[rag] searching by keywords only: {e.message}")
-        hits: list[Hit] = self.__index.search(query, vector, model, limit or self.__results, source)
+        reranker: Reranker | None = self.__reranker
+        # The reranker reads its whole pool whatever the limit: the passages it puts first may be far down the index's list
+        candidates: list[Hit] = self.__index.search(query, vector, model, max(limit, reranker.pool) if reranker else limit, source)
+        retrieved: float = time.perf_counter()
+
+        hits: list[Hit] = candidates[:limit]
+        reranked: bool = False
+        dropped: int = 0
+        if reranker is not None and candidates:
+            try:
+                # The path tells what a passage is about as much as its text: "AgentPPO/model.py" for "the networks of PPO"
+                scores: list[float] = reranker.score(query, [f"{hit.path}\n{hit.text}" for hit in candidates])
+            except RerankError as e:
+                log.warning(f"[rag] not reranking: {e.message}")
+            else:
+                ranked: list[Hit] = sorted(
+                    (replace(hit, score=round(score, 4), fused=hit.score) for hit, score in zip(candidates, scores)),
+                    key=lambda hit: hit.score, reverse=True
+                )
+                kept: list[Hit] = [hit for hit in ranked if hit.score >= reranker.min_score] if drop else ranked
+                hits, reranked, dropped = kept[:limit], True, len(ranked) - len(kept)
+
+        end: float = time.perf_counter()
         self.__bus.dispatch(
             RAG_RETRIEVED,
             query=query,
             source=source,
             mode="hybrid" if vector is not None else "keyword",
-            hits=[{"source": h.source, "path": h.path, "start": h.start, "end": h.end, "score": h.score} for h in hits],
-            duration=round(time.perf_counter() - start, 3)
+            reranker=reranker.model if reranked else None,
+            candidates=len(candidates),
+            dropped=dropped,
+            hits=[{"source": h.source, "path": h.path, "start": h.start, "end": h.end, "score": h.score, "fused": h.fused}
+                  for h in hits],
+            rerank=round(end - retrieved, 3) if reranked else None,
+            duration=round(end - start, 3)
         )
-        return hits
+        return Found(hits, len(candidates))
 
     def index(self, root: str, name: str | None = None) -> dict:
         """
