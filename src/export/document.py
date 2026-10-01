@@ -7,9 +7,12 @@
 ## The document is plain data, JSON-friendly: each format only lays it out.
 ##   {"v", "kind": "session", "title", "session": {id, user, cwd, created_at}, "exported_at", "messages", "artifacts"}
 ## A message is {"role": "user" | "assistant", "content", "at"}, and the replies of the model that call tools carry
-## them: {"tools": [{"name", "arguments", "result", "ok"}]}, each with the result it got
+## them: {"tools": [{"name", "arguments", "result", "ok"}]}, each with the result it got.
+## An artifact is a file the model wrote, as export/artifacts.py rebuilds it. The document of a single artifact
+## (/export --artifact) has the kind "artifact", that file alone, and no messages
 ##
 from config.prompt import NUDGE_PROMPT
+from export.artifacts import collect
 from session.database import now
 from session.session import Session
 from session.user import User
@@ -73,6 +76,9 @@ def build(session: Session, user: User) -> dict:
         },
         "exported_at": now(),
         "messages"   : messages,
-        # The files the model wrote in the session: collected in a later step
-        "artifacts"  : [],
+        "artifacts"  : collect(messages, session.cwd),
     }
+
+def single(document: dict, artifact: dict) -> dict:
+    """ The document of one artifact of a session document: the file alone, named by its path """
+    return {**document, "kind": "artifact", "title": artifact["path"], "messages": [], "artifacts": [artifact]}

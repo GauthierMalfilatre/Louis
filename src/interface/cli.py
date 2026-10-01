@@ -273,11 +273,19 @@ class CLI(Interface):
         self.out("\n".join(lines) + "\n")
 
     def __on_export_done(self, event: Event) -> None:
-        """ ✓ Session #12 exportée en JSON (8 messages) : ~/projet/exports/session-12.json """
-        which: str = f"Session #{event.data['id']}" if event.data["id"] is not None else "Session"
+        """
+            ✓ Session #12 exportée en JSON (8 messages, 1 fichier) : ~/projet/exports/session-12.json
+            ✓ /pendu.py (session #12) exporté en Markdown : ~/projet/exports/session-12-pendu.py.md
+        """
+        which: str = f"session #{event.data['id']}" if event.data["id"] is not None else "session"
         path: str = event.data["path"].replace(os.path.expanduser("~") + os.sep, "~" + os.sep)
-        count: int = event.data["messages"]
-        self.out(f"\n✓ {which} exportée en {FORMATS.get(event.data['format'], event.data['format'].upper())} ({count} message{'s' if count > 1 else ''}) : {path}\n")
+        shown: str = FORMATS.get(event.data["format"], event.data["format"].upper())
+        if event.data.get("artifact"):
+            self.out(f"\n✓ {event.data['artifact']} ({which}) exporté en {shown} : {path}\n")
+            return
+        count, files = event.data["messages"], event.data.get("artifacts", 0)
+        written: str = f", {files} fichier{'s' if files > 1 else ''}" if files else ""
+        self.out(f"\n✓ {which.capitalize()} exportée en {shown} ({count} message{'s' if count > 1 else ''}{written}) : {path}\n")
 
     def __on_command_unknown(self, event: Event) -> None:
         """ The commands there are, one per line, aligned """

@@ -6,7 +6,7 @@
 ##
 ## The replies of the model are written as they are (they are Markdown already). The tool calls are one line each,
 ## as the terminal shows them, and their whole result is folded below (<details>): a file read stays at hand
-## without burying the conversation
+## without burying the conversation. The files the model wrote come last, whole, under "Fichiers produits"
 ##
 from interface.cli import LABELS, call_detail, result_summary, short_path
 from datetime import datetime, timezone
@@ -40,10 +40,10 @@ def code(text: str) -> str:
     padded: str = f" {text} " if text.startswith("`") or text.endswith("`") else text
     return f"{marks}{padded}{marks}"
 
-def block(text: str) -> str:
-    """ text as a code block, never closed early by a ``` inside it """
+def block(text: str, language: str = "") -> str:
+    """ text as a code block, in its language if known, never closed early by a ``` inside it """
     marks: str = "`" * max(3, ticks(text) + 1)
-    return f"{marks}\n{text.rstrip()}\n{marks}"
+    return f"{marks}{language}\n{text.rstrip()}\n{marks}"
 
 def kept_lines(text: str) -> str:
     """
@@ -87,6 +87,24 @@ def message(shown: dict) -> list[str]:
         parts += [folded for _, folded in calls if folded]
     return parts
 
+# What became of a file in the session, and where its content comes from (see export/artifacts.py)
+ACTIONS: dict[str, str] = {"created": "créé", "modified": "modifié"}
+SOURCES: dict[str, str] = {
+    "session": "",
+    "disk"   : "contenu lu sur le disque à l'export : il a pu changer depuis la session",
+    "missing": "contenu introuvable : le fichier n'existe plus, ou n'est pas du texte",
+}
+
+def artifact(file: dict, level: str = "###") -> list[str]:
+    """ The blocks of a file the model wrote: its path, what became of it, then its whole content """
+    writes: int = file["writes"]
+    about: list[str] = [ACTIONS.get(file["action"], file["action"]),
+                        f"{writes} écriture{'s' if writes > 1 else ''}", SOURCES.get(file["source"], "")]
+    parts: list[str] = [f"{level} {code(file['path'])}", f"*{' · '.join(part for part in about if part)}*"]
+    if file["content"] is not None:
+        parts.append(block(file["content"], file["language"]))
+    return parts
+
 def render(document: dict) -> str:
     """ The document as Markdown: a title, what the session is, then the conversation, one part per speaker """
     session: dict = document["session"]
@@ -97,6 +115,9 @@ def render(document: dict) -> str:
         f"*{' · '.join(part for part in about if part)}*  \n*Exportée le {local(document.get('exported_at'))}*",
         "---",
     ]
+    if document.get("kind") == "artifact":
+        # One file alone: its content is the page
+        return "\n\n".join(blocks + artifact(document["artifacts"][0], "##")[1:]) + "\n"
     speaker: str | None = None
     for shown in document["messages"]:
         # The rounds of tool calls of one answer are as many replies of the model: one part for all of them
@@ -105,4 +126,8 @@ def render(document: dict) -> str:
             blocks.append(f"### {SPEAKERS.get(shown['role'], shown['role'])}{f' · {at}' if at else ''}")
             speaker = shown["role"]
         blocks += message(shown)
+    if document.get("artifacts"):
+        blocks += ["---", "## Fichiers produits"]
+        for file in document["artifacts"]:
+            blocks += artifact(file)
     return "\n\n".join(blocks) + "\n"
