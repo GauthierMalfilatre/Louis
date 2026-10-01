@@ -112,8 +112,13 @@ def render(document: dict) -> str:
         "---",
     ]
     if document.get("kind") == "artifact":
-        # One file alone: its content is the page
-        return "\n\n".join(blocks + artifact(document["artifacts"][0], "##")[1:]) + "\n"
+        # One file alone: its content is the page, under its path as title. Several: one part each
+        files: list[dict] = document["artifacts"]
+        if len(files) == 1:
+            return "\n\n".join(blocks + artifact(files[0], "##")[1:]) + "\n"
+        for file in files:
+            blocks += artifact(file, "##")
+        return "\n\n".join(blocks) + "\n"
     speaker: str | None = None
     for shown in document["messages"]:
         # The rounds of tool calls of one answer are as many replies of the model: one part for all of them
