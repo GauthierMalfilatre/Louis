@@ -22,6 +22,9 @@ venv/
 *.jsonl
 louis.dashboard.html
 
+# Export: the sessions written by /export
+exports/
+
 # Test 
 test/
 

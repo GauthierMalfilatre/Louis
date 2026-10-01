@@ -35,6 +35,7 @@ from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
+from command.impl.command_export import ExportCommand
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -138,6 +139,7 @@ class App:
             .register(ClearCommand())\
             .register(SessionsCommand())\
             .register(ResumeCommand())\
+            .register(ExportCommand())\
             .register(ToggleThinkCommand())\
 
         # NOTE: Raisable

@@ -52,5 +52,8 @@ SESSION_SAVED   = "session.saved"     # data: id (the current session is in the 
 SESSION_LIST    = "session.list"      # data: user, sessions: [{id, first_message, cwd, here, current, created_at}]
 SESSION_RESUMED = "session.resumed"   # data: id, user, messages (count), last_question, last_answer
 
+# A session written to a file by /export: id is None for a session never saved (the anonymous user's)
+EXPORT_DONE     = "export.done"       # data: format ("json"...), path (absolute), id, messages (count, as exported)
+
 COMMAND_UNKNOWN = "command.unknown"   # data: name, commands: [{name, usage, description}]
 COMMAND_ERROR   = "command.error"     # data: command, reason (a short code), message (one sentence), details...

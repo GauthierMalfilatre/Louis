@@ -10,7 +10,7 @@ from events.event import Event
 from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_COMPACTED
-from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED
+from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED, EXPORT_DONE
 import json
 import os
 import re
@@ -32,6 +32,9 @@ LABELS: dict[str, str] = {
     "mkdir"     : "Nouveau dossier",
     "web_search": "Recherche web",
 }
+
+# The formats of /export, as they are named to the user: the others in capitals (JSON)
+FORMATS: dict[str, str] = {"md": "Markdown"}
 
 def shorten(text: str, length: int = ARGUMENT_LENGTH) -> str:
     """ A text on one line, cut if it is too long """
@@ -125,6 +128,7 @@ class CLI(Interface):
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
         bus.subscribe(self.__on_session_list, SESSION_LIST)
         bus.subscribe(self.__on_session_resumed, SESSION_RESUMED)
+        bus.subscribe(self.__on_export_done, EXPORT_DONE)
         bus.subscribe(self.__on_command_unknown, COMMAND_UNKNOWN)
         bus.subscribe(self.__on_command_error, COMMAND_ERROR)
         bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
@@ -267,6 +271,13 @@ class CLI(Interface):
         if event.data["last_answer"]:
             lines.append(f"  Louis : {preview(event.data['last_answer'])}")
         self.out("\n".join(lines) + "\n")
+
+    def __on_export_done(self, event: Event) -> None:
+        """ ✓ Session #12 exportée en JSON (8 messages) : ~/projet/exports/session-12.json """
+        which: str = f"Session #{event.data['id']}" if event.data["id"] is not None else "Session"
+        path: str = event.data["path"].replace(os.path.expanduser("~") + os.sep, "~" + os.sep)
+        count: int = event.data["messages"]
+        self.out(f"\n✓ {which} exportée en {FORMATS.get(event.data['format'], event.data['format'].upper())} ({count} message{'s' if count > 1 else ''}) : {path}\n")
 
     def __on_command_unknown(self, event: Event) -> None:
         """ The commands there are, one per line, aligned """
