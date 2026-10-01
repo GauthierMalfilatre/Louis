@@ -5,8 +5,7 @@
 ## Pull request tool: list, read, open, comment and merge the pull requests of the project, through gh
 ##
 from tool.tool import Tool
-from tool.impl.git.tool_git import run, current_branch, valid_branch, has_ref, fetch, unknown_arguments, PROTECTED, \
-    REFUSED
+from tool.impl.git.tool_git import run, current_branch, valid_branch, has_ref, fetch, unknown_arguments, REFUSED
 import json
 
 LIST_COUNT = 15
@@ -47,8 +46,9 @@ class PullRequestTool(Tool):
         super().__init__(
             "github_pr",
             "Pull requests GitHub du projet, par gh. list : celles qui sont ouvertes. view : le détail d'une PR "
-            "(défaut : celle de la branche courante). create : ouvrir une PR de la branche courante, déjà poussée "
-            "avec git push. comment : commenter une PR. merge : fusionner une PR.",
+            "(défaut : celle de la branche courante). create : ouvrir une PR de head vers base, head étant déjà "
+            "poussée avec git push (pour fusionner dev dans main : head dev, base main). comment : commenter une PR. "
+            "merge : fusionner une PR.",
             {
                 "type": "object",
                 "properties": {
@@ -68,9 +68,13 @@ class PullRequestTool(Tool):
                         "type": "string",
                         "description": "create : description de la PR. comment : texte du commentaire"
                     },
+                    "head": {
+                        "type": "string",
+                        "description": "create : branche à fusionner (défaut : la branche courante)"
+                    },
                     "base": {
                         "type": "string",
-                        "description": "create : branche visée (défaut : dev si elle existe, sinon la branche "
+                        "description": "create : branche où fusionner (défaut : dev si elle existe, sinon la branche "
                                        "principale du dépôt)"
                     },
                     "method": {
@@ -93,7 +97,7 @@ class PullRequestTool(Tool):
         if action == "view":
             return self.__view(kwargs.get("number"))
         if action == "create":
-            return self.__create(app, kwargs.get("title"), kwargs.get("body"), kwargs.get("base"))
+            return self.__create(app, kwargs.get("title"), kwargs.get("body"), kwargs.get("head"), kwargs.get("base"))
         if action == "comment":
             return self.__comment(app, kwargs.get("number"), kwargs.get("body"))
         if action == "merge":
@@ -135,22 +139,30 @@ class PullRequestTool(Tool):
             f"Description :\n{pr.get('body') or '(vide)'}"
         )
 
-    def __create(self, app, title, body, base) -> str:
-        """ Open a pull request of the current branch, once it is on origin with all its commits """
+    def __create(self, app, title, body, head, base) -> str:
+        """
+            Open a pull request of head, the current branch by default, once it is on origin with all its commits.
+            From any branch: a pull request changes nothing until it is reviewed and merged (dev into main is one)
+        """
         if not isinstance(title, str) or not title.strip():
             return "Erreur : 'title' est requis pour create."
         body = body if isinstance(body, str) else ""
-        head: str | None = current_branch()
+        head = head or current_branch()
         if head is None:
-            return "Erreur : aucune branche n'est active (HEAD détaché, ou pas de dépôt git)."
-        if head in PROTECTED:
-            return f"Erreur : on n'ouvre pas de PR depuis {head}. Crée une branche, commite et pousse dessus."
+            return "Erreur : aucune branche n'est active (HEAD détaché, ou pas de dépôt git). Donne head."
+        if not valid_branch(head):
+            return f"Erreur : '{head}' n'est pas un nom de branche valide."
         fetch()
-        ok, count = run("git", "rev-list", "--count", f"origin/{head}..HEAD")
-        if not ok:
-            return f"Erreur : {head} n'est pas sur origin. Pousse-la d'abord (git, action push)."
-        if count != "0":
-            return f"Erreur : {count} commit(s) de {head} ne sont pas sur origin. Pousse-les d'abord (git, action push)."
+        if not has_ref(f"refs/remotes/origin/{head}"):
+            if has_ref(f"refs/heads/{head}"):
+                return f"Erreur : {head} n'est pas sur origin. Pousse-la d'abord (git, action push)."
+            return f"Erreur : la branche {head} n'existe ni ici ni sur origin."
+        # The pull request takes the branch as origin has it: commits only here would be left out
+        if has_ref(f"refs/heads/{head}"):
+            ok, count = run("git", "rev-list", "--count", f"origin/{head}..refs/heads/{head}")
+            if ok and count != "0":
+                return (f"Erreur : {count} commit(s) de {head} ne sont pas sur origin. Pousse-les d'abord "
+                        "(git, action push).")
         base, problem = self.__base(head, base)
         if problem is not None:
             return problem
@@ -181,7 +193,7 @@ class PullRequestTool(Tool):
         if not valid_branch(base):
             return base, f"Erreur : '{base}' n'est pas un nom de branche valide."
         if base == head and given:
-            return base, f"Erreur : une PR ne va pas de {head} vers elle-même. Donne une autre base, comme dev ou main."
+            return base, f"Erreur : une PR ne va pas de {head} vers elle-même. Donne une autre base que {head}."
         if base == head:
             # The first branch pushed to an empty repository becomes its main one
             return base, (f"Erreur : {head} est la branche principale du dépôt GitHub, une PR n'a nulle part où "
@@ -192,9 +204,9 @@ class PullRequestTool(Tool):
             known: list[str] = [name for name in out.splitlines() if name != "HEAD"]
             return base, (f"Erreur : la branche {base} n'existe pas sur origin. Celles d'origin : "
                           f"{', '.join(known) or 'aucune'}.")
-        if not run("git", "merge-base", f"origin/{base}", "HEAD")[0]:
+        if not run("git", "merge-base", f"origin/{base}", f"origin/{head}")[0]:
             return base, f"Erreur : {head} et {base} n'ont aucun commit en commun, GitHub refuse une PR entre elles."
-        ok, ahead = run("git", "rev-list", "--count", f"origin/{base}..HEAD")
+        ok, ahead = run("git", "rev-list", "--count", f"origin/{base}..origin/{head}")
         if ok and ahead == "0":
             return base, f"Erreur : {head} n'a aucun commit que {base} n'a pas déjà : la PR n'aurait rien à proposer."
         return base, None
