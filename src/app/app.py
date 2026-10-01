@@ -36,6 +36,9 @@ from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
 from command.impl.command_export import ExportCommand
+from command.impl.command_share import ShareCommand
+from command.impl.command_shares import SharesCommand
+from command.impl.command_unshare import UnshareCommand
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -140,6 +143,9 @@ class App:
             .register(SessionsCommand())\
             .register(ResumeCommand())\
             .register(ExportCommand())\
+            .register(ShareCommand())\
+            .register(SharesCommand())\
+            .register(UnshareCommand())\
             .register(ToggleThinkCommand())\
 
         # NOTE: Raisable

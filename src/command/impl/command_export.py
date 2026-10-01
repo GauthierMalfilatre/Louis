@@ -12,6 +12,7 @@ from export.document import build, single
 from export.artifacts import find
 from export import render_json, render_md, render_html, render_pdf
 from logger.logger import log
+from session.session import Session
 from datetime import datetime
 import os
 
@@ -31,6 +32,41 @@ ARTIFACT: str = "--artifact"
 
 USAGE: str = (f"Usage : /export [{'|'.join(FORMATS)}] [id] [{ARTIFACT} <fichier>], sans id pour la session en cours, "
               f"avec {ARTIFACT} pour un seul des fichiers écrits par Louis.")
+
+def selected(command: Command, app, identifier: str | None, wanted: str | None,
+             usage: str) -> tuple[Session, dict, dict | None] | None:
+    """
+        The session asked for (the current one without identifier), its document, and the file wanted alone if any
+        (the document is then that file's). None if there is none: the user was told why, usage on a bad identifier
+    """
+    session: Session | None = app.session
+    if identifier is not None:
+        identifier = identifier.removeprefix("#")
+        if not identifier.isdigit():
+            command.error(app, "usage", usage)
+            return None
+        if app.user.is_anonymous:
+            command.error(app, "anonymous", NOT_SAVED)
+            return None
+        session = app.user.get_session(int(identifier))
+        if session is None:
+            command.error(app, "not_found", f"Tu n'as pas de session #{identifier} : tape /sessions pour les voir.",
+                          id=int(identifier))
+            return None
+
+    document: dict = build(session, app.user)
+    if not any(message["role"] == "user" for message in document["messages"]):
+        command.error(app, "empty", "Cette session n'a encore aucun message : il n'y a rien à en tirer.")
+        return None
+    if wanted is None:
+        return session, document, None
+    artifact: dict | None = find(document["artifacts"], session.cwd, wanted)
+    if artifact is None:
+        written: str = ", ".join(file["path"] for file in document["artifacts"]) or "aucun"
+        command.error(app, "no_artifact", f"Louis n'a pas écrit {wanted} dans cette session. "
+                                          f"Fichiers écrits : {written}.", path=wanted)
+        return None
+    return session, single(document, artifact), artifact
 
 class ExportCommand(Command):
     def __init__(self):
@@ -57,39 +93,16 @@ class ExportCommand(Command):
             self.error(app, "usage", USAGE)
             return
 
-        #get session
-        session = app.session
-        #check asked id session
-        if words:
-            identifier: str = words[0].removeprefix("#")
-            if not identifier.isdigit():
-                self.error(app, "usage", USAGE)
-                return
-            if app.user.is_anonymous:
-                self.error(app, "anonymous", NOT_SAVED)
-                return
-            session = app.user.get_session(int(identifier))
-            if session is None:
-                self.error(app, "not_found", f"Tu n'as pas de session #{identifier} : tape /sessions pour les voir.",
-                           id=int(identifier))
-                return
-
-        document: dict = build(session, app.user)
-        if not any(message["role"] == "user" for message in document["messages"]):
-            self.error(app, "empty", "Rien à exporter : cette session n'a encore aucun message.")
+        #get session, document and file asked for
+        found = selected(self, app, words[0] if words else None, wanted if flag else None, USAGE)
+        if found is None:
             return
+        session, document, artifact = found
 
         renderer = FORMATS[name]
         # An anonymous session has no id: named by the time it is exported, never overwriting another
         stem: str = f"session-{session.id}" if session.saved else f"session-{datetime.now():%Y%m%d-%H%M%S}"
-        if flag:
-            artifact: dict | None = find(document["artifacts"], session.cwd, wanted)
-            if artifact is None:
-                written: str = ", ".join(file["path"] for file in document["artifacts"]) or "aucun"
-                self.error(app, "no_artifact", f"Louis n'a pas écrit {wanted} dans cette session. "
-                                               f"Fichiers écrits : {written}.", path=wanted)
-                return
-            document = single(document, artifact)
+        if artifact is not None:
             # session-12-pendu.py.md: the file, and the session it comes from
             stem += "-" + os.path.basename(artifact["path"])
         folder: str = os.path.abspath(settings.get("export.dir", "exports"))
@@ -115,5 +128,5 @@ class ExportCommand(Command):
         log.info(f"[export] session #{session.id}{f' ({wanted})' if flag else ''} written to {path} ({name})")
         app.events.dispatch(
             EXPORT_DONE, format=name, path=path, id=session.id, messages=len(document["messages"]),
-            artifact=document["artifacts"][0]["path"] if flag else None, artifacts=len(document["artifacts"])
+            artifact=artifact["path"] if artifact is not None else None, artifacts=len(document["artifacts"])
         )
