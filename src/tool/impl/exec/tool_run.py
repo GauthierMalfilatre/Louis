@@ -32,12 +32,18 @@ LANGUAGES: dict[str, Language] = {
     "go": Language("golang:alpine", ["sh", "-c", "cat > main.go && go run main.go"], timeout=60, memory="1g",
                    compiled=True, env={"GOCACHE": "/tmp/gocache", "GOPATH": "/tmp/gopath", "CGO_ENABLED": "0",
                                        "GOFLAGS": "-buildvcs=false", "GOTOOLCHAIN": "local"}),
+    # One image for both: gcc and g++. The warnings (-Wall) are what the model needs to fix its code; -lm for math.h
+    "c": Language("gcc:latest", ["sh", "-c", "cat > main.c && gcc -Wall -o main main.c -lm && ./main"],
+                  timeout=30, memory="1g", compiled=True),
+    "cpp": Language("gcc:latest", ["sh", "-c", "cat > main.cpp && g++ -std=c++20 -Wall -o main main.cpp && ./main"],
+                    timeout=30, memory="1g", compiled=True),
     "rust": Language("rust:alpine", ["sh", "-c", "cat > main.rs && rustc --edition 2021 main.rs && ./main"],
                      timeout=60, memory="1g", compiled=True),
 }
 # The names small models give a language instead of the ones of the tool: the language they mean
 ALIASES: dict[str, str] = {
     "py": "python", "python3": "python", "bash": "sh", "shell": "sh", "zsh": "sh", "golang": "go", "rs": "rust",
+    "cc": "c", "gcc": "c", "c++": "cpp", "cxx": "cpp", "g++": "cpp",
 }
 
 OUTPUT = 4000
@@ -121,10 +127,10 @@ class RunTool(Tool):
             "run_code",
             "Exécute du code et renvoie sa sortie, pour tester une idée, un calcul ou un script avant de l'écrire "
             "dans un fichier. Le code tourne dans un conteneur isolé : sans réseau, sans accès aux fichiers du projet, "
-            "et arrêté au bout de quelques secondes (une minute pour go et rust, compilation comprise). Il ne peut donc "
-            "ni installer de paquet ou de crate (bibliothèque standard seulement), ni lire ou modifier le projet : "
+            "et arrêté au bout de quelques secondes (30 s pour c et c++, une minute pour go et rust, compilation comprise). Il ne peut donc "
+            "ni installer de paquet, de crate ou de bibliothèque (bibliothèque standard seulement), ni lire ou modifier le projet : "
             "pour ça, utilise cat_file et edit_file. Donne un programme complet (package main pour go, fn main pour "
-            "rust) qui affiche ce que tu veux voir (print, echo) : seule la sortie te revient.",
+            "rust, main pour c et c++) qui affiche ce que tu veux voir (print, echo) : seule la sortie te revient.",
             {
                 "type": "object",
                 "properties": {

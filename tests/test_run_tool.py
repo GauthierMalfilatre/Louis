@@ -19,6 +19,7 @@ needs_python = pytest.mark.skipif(not image_ready("python:3.13-alpine"), reason=
 needs_sh = pytest.mark.skipif(not image_ready("alpine:latest"), reason="docker or alpine:latest missing")
 needs_go = pytest.mark.skipif(not image_ready("golang:alpine"), reason="docker or golang:alpine missing")
 needs_rust = pytest.mark.skipif(not image_ready("rust:alpine"), reason="docker or rust:alpine missing")
+needs_gcc = pytest.mark.skipif(not image_ready("gcc:latest"), reason="docker or gcc:latest missing")
 
 @pytest.fixture
 def no_docker_call(monkeypatch):
@@ -63,7 +64,11 @@ def test_the_model_names_of_a_language_are_understood(app, monkeypatch):
     run_code(app, language="python3", code="print(1)")
     run_code(app, language="Golang", code="package main")
     run_code(app, language="rs", code="fn main() {}")
-    assert seen == ["alpine:latest", "python:3.13-alpine", "golang:alpine", "rust:alpine"]
+    run_code(app, language="C++", code="int main() {}")
+    run_code(app, language="gcc", code="int main() {}")
+    assert seen == ["alpine:latest", "python:3.13-alpine", "golang:alpine", "rust:alpine", "gcc:latest", "gcc:latest"]
+    # cc is the C compiler, not C++
+    assert tool_run.ALIASES["cc"] == "c" and tool_run.ALIASES["c++"] == "cpp"
 
 def test_settings_give_another_image(app, monkeypatch):
     app.settings["sandbox.languages"] = {"python": {"image": "python:3.12-slim", "timeout": 3, "bogus": 1}}
@@ -183,3 +188,24 @@ def test_rust_builds_and_runs_a_program(app):
 def test_a_rust_compile_error_comes_back_for_the_model_to_fix(app):
     result = run_code(app, language="rust", code='fn main() { let x: i32 = "a"; }\n')
     assert result.startswith("Code de sortie : 1") and "mismatched types" in result
+
+@needs_gcc
+def test_c_builds_and_runs_a_program_with_math(app):
+    code = '#include <stdio.h>\n#include <math.h>\nint main(void) { printf("%.0f\\n", sqrt(1764.0)); return 0; }\n'
+    assert run_code(app, language="c", code=code) == "Code de sortie : 0\n--- stdout ---\n42"
+
+@needs_gcc
+def test_a_c_compile_error_comes_back_for_the_model_to_fix(app):
+    result = run_code(app, language="c", code="int main(void) { return x; }\n")
+    assert result.startswith("Code de sortie : 1") and "'x' undeclared" in result
+
+@needs_gcc
+def test_cpp_builds_and_runs_a_program(app):
+    code = '#include <iostream>\n#include <vector>\nint main() { std::vector<int> v{1, 2, 3}; std::cout << v.size() * 14 << "\\n"; }\n'
+    assert run_code(app, language="cpp", code=code).endswith("42")
+
+@needs_gcc
+def test_c_can_not_eat_the_memory_of_the_machine(app):
+    code = ('#include <stdlib.h>\n#include <string.h>\nint main(void) { char *p = malloc(4UL << 30); '
+            'memset(p, 1, 4UL << 30); return 0; }\n')
+    assert run_code(app, language="c", code=code).startswith("Code de sortie : 137")
