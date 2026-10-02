@@ -5,24 +5,41 @@
 ## Run tool: run a piece of code in a container with no network, no project and no way out
 ##
 from tool.tool import Tool
+from dataclasses import dataclass, field, replace
 import shutil
 import subprocess
 import threading
 import uuid
 
-# What runs the code of each language: its image (settings "sandbox.images" may name another) and its command, which
-# reads the code on stdin: no file is written, no folder of the project is mounted
-LANGUAGES: dict[str, tuple[str, list[str]]] = {
-    "python": ("python:3.13-alpine", ["python3", "-u", "-"]),
-    "sh": ("alpine:latest", ["sh", "-s"]),
+@dataclass(frozen=True)
+class Language:
+    """
+        What runs the code of a language: its image (the user pulls it), its command, which reads the code on stdin:
+        no file of the project is mounted. A compiled language writes the code in /tmp, builds it there and runs the
+        result: its /tmp can run programs and is larger, and it gets the time and memory of a build
+    """
+    image: str
+    command: list[str]
+    timeout: int = 10
+    memory: str = "256m"
+    compiled: bool = False
+    env: dict[str, str] = field(default_factory=dict)
+
+LANGUAGES: dict[str, Language] = {
+    "python": Language("python:3.13-alpine", ["python3", "-u", "-"]),
+    "sh": Language("alpine:latest", ["sh", "-s"]),
+    # No go.mod, so no module to download; no cgo, the image has no C compiler; the toolchain is the one of the image
+    "go": Language("golang:alpine", ["sh", "-c", "cat > main.go && go run main.go"], timeout=60, memory="1g",
+                   compiled=True, env={"GOCACHE": "/tmp/gocache", "GOPATH": "/tmp/gopath", "CGO_ENABLED": "0",
+                                       "GOFLAGS": "-buildvcs=false", "GOTOOLCHAIN": "local"}),
+    "rust": Language("rust:alpine", ["sh", "-c", "cat > main.rs && rustc --edition 2021 main.rs && ./main"],
+                     timeout=60, memory="1g", compiled=True),
 }
 # The names small models give a language instead of the ones of the tool: the language they mean
 ALIASES: dict[str, str] = {
-    "py": "python", "python3": "python", "bash": "sh", "shell": "sh", "zsh": "sh",
+    "py": "python", "python3": "python", "bash": "sh", "shell": "sh", "zsh": "sh", "golang": "go", "rs": "rust",
 }
 
-TIMEOUT = 10
-MEMORY = "256m"
 OUTPUT = 4000
 # The code goes through a pipe the container reads as it runs: kept below the 64 KiB of a pipe, writing it never blocks
 MAX_CODE = 30000
@@ -65,18 +82,21 @@ class Capture(threading.Thread):
         """ What was kept, as text: a cut inside a character, or a program that prints bytes, is not an error """
         return self.__kept.decode("utf-8", errors="replace")
 
-def sandbox(name: str, image: str, command: list[str], memory: str) -> list[str]:
+def sandbox(name: str, language: Language) -> list[str]:
     """
         The docker command that runs a program cut off from everything: no network, a read-only disk but a small
         /tmp, nobody as the user, no capability and no way to get one, and limits on processes, memory and cpu
     """
+    tmp = "/tmp:size=512m,exec" if language.compiled else "/tmp:size=16m,noexec"
+    env = {"HOME": "/tmp", "PYTHONDONTWRITEBYTECODE": "1", **language.env}
     return [
         "docker", "run", "--rm", "--init", "--interactive", "--name", name, "--pull", "never",
-        "--network", "none", "--read-only", "--tmpfs", "/tmp:size=16m,noexec", "--workdir", "/tmp",
+        "--network", "none", "--read-only", "--tmpfs", tmp, "--workdir", "/tmp",
         "--user", "65534:65534", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-        "--pids-limit", "64", "--memory", memory, "--memory-swap", memory, "--cpus", "1",
-        "--env", "HOME=/tmp", "--env", "PYTHONDONTWRITEBYTECODE=1",
-        image, *command,
+        "--pids-limit", "256" if language.compiled else "64", "--memory", language.memory,
+        "--memory-swap", language.memory, "--cpus", "2" if language.compiled else "1",
+        *[arg for key, value in env.items() for arg in ("--env", f"{key}={value}")],
+        language.image, *language.command,
     ]
 
 def image_problem(image: str) -> str | None:
@@ -101,9 +121,10 @@ class RunTool(Tool):
             "run_code",
             "Exécute du code et renvoie sa sortie, pour tester une idée, un calcul ou un script avant de l'écrire "
             "dans un fichier. Le code tourne dans un conteneur isolé : sans réseau, sans accès aux fichiers du projet, "
-            "et arrêté au bout de quelques secondes. Il ne peut donc ni installer de paquet, ni lire ou modifier le "
-            "projet : pour ça, utilise cat_file et edit_file. Affiche ce que tu veux voir (print, echo) : "
-            "seule la sortie te revient.",
+            "et arrêté au bout de quelques secondes (une minute pour go et rust, compilation comprise). Il ne peut donc "
+            "ni installer de paquet ou de crate (bibliothèque standard seulement), ni lire ou modifier le projet : "
+            "pour ça, utilise cat_file et edit_file. Donne un programme complet (package main pour go, fn main pour "
+            "rust) qui affiche ce que tu veux voir (print, echo) : seule la sortie te revient.",
             {
                 "type": "object",
                 "properties": {
@@ -135,21 +156,27 @@ class RunTool(Tool):
             return f"Erreur : ce code est trop long pour {self.name} ({MAX_CODE} octets au plus) : écris-le dans un fichier."
 
         settings: dict = getattr(app, "settings", None) or {}
-        image: str = {**{k: v[0] for k, v in LANGUAGES.items()}, **settings.get("sandbox.images", {})}[language]
+        profile: Language = self.__configured(language, settings)
         # Before asking the user: no point in letting them read code that can not run
-        if (problem := image_problem(image)) is not None:
+        if (problem := image_problem(profile.image)) is not None:
             return problem
         if not app.permissions.request(self.name, f"Exécution de code {language} dans un conteneur isolé", code):
             return ("Refusé : l'utilisateur n'a pas autorisé l'exécution. "
                     "Ne la retente pas : demande-lui ce qu'il veut à la place.")
-        return self.__execute(language, image, code, int(settings.get("sandbox.timeout", TIMEOUT)),
-                              str(settings.get("sandbox.memory", MEMORY)), int(settings.get("sandbox.output", OUTPUT)))
+        return self.__execute(profile, code, int(settings.get("sandbox.output", OUTPUT)))
 
-    def __execute(self, language: str, image: str, code: str, timeout: int, memory: str, limit: int) -> str:
+    @staticmethod
+    def __configured(language: str, settings: dict) -> Language:
+        """ The profile of the language, with what the settings (sandbox.languages) change: image, timeout, memory """
+        wanted: dict = settings.get("sandbox.languages", {}).get(language, {})
+        return replace(LANGUAGES[language], **{k: v for k, v in wanted.items() if k in ("image", "timeout", "memory")})
+
+    def __execute(self, language: Language, code: str, limit: int) -> str:
         """ Start the container, hand it the code, and give back what it printed, or why it was stopped """
+        timeout, memory = language.timeout, language.memory
         name: str = f"louis-sandbox-{uuid.uuid4().hex[:12]}"
         try:
-            proc = subprocess.Popen(sandbox(name, image, LANGUAGES[language][1], memory),
+            proc = subprocess.Popen(sandbox(name, language),
                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as e:
             return f"Erreur : docker n'a pas pu démarrer : {e.strerror or e}"

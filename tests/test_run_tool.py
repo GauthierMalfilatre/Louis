@@ -6,7 +6,7 @@
 ##
 import pytest
 from tool.impl.exec import tool_run
-from tool.impl.exec.tool_run import RunTool, Capture, sandbox
+from tool.impl.exec.tool_run import RunTool, Capture, Language, LANGUAGES, sandbox
 
 def run_code(app, **arguments) -> str:
     return RunTool().handle(app, **arguments)
@@ -17,6 +17,8 @@ def image_ready(image: str) -> bool:
 
 needs_python = pytest.mark.skipif(not image_ready("python:3.13-alpine"), reason="docker or python:3.13-alpine missing")
 needs_sh = pytest.mark.skipif(not image_ready("alpine:latest"), reason="docker or alpine:latest missing")
+needs_go = pytest.mark.skipif(not image_ready("golang:alpine"), reason="docker or golang:alpine missing")
+needs_rust = pytest.mark.skipif(not image_ready("rust:alpine"), reason="docker or rust:alpine missing")
 
 @pytest.fixture
 def no_docker_call(monkeypatch):
@@ -59,23 +61,36 @@ def test_the_model_names_of_a_language_are_understood(app, monkeypatch):
     monkeypatch.setattr(tool_run, "image_problem", lambda image: seen.append(image) or "Erreur : stop")
     run_code(app, language="Bash", code="echo 1")
     run_code(app, language="python3", code="print(1)")
-    assert seen == ["alpine:latest", "python:3.13-alpine"]
+    run_code(app, language="Golang", code="package main")
+    run_code(app, language="rs", code="fn main() {}")
+    assert seen == ["alpine:latest", "python:3.13-alpine", "golang:alpine", "rust:alpine"]
 
 def test_settings_give_another_image(app, monkeypatch):
-    app.settings["sandbox.images"] = {"python": "python:3.12-slim"}
+    app.settings["sandbox.languages"] = {"python": {"image": "python:3.12-slim", "timeout": 3, "bogus": 1}}
     seen: list[str] = []
     monkeypatch.setattr(tool_run, "image_problem", lambda image: seen.append(image) or "Erreur : stop")
     run_code(app, language="python", code="print(1)")
     assert seen == ["python:3.12-slim"]
 
 def test_the_container_is_cut_off_from_everything():
-    command: str = " ".join(sandbox("n", "img", ["cmd"], "256m"))
+    command: str = " ".join(sandbox("n", Language("img", ["cmd"])))
     for flag in ("--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges",
                  "--pids-limit 64", "--memory 256m", "--memory-swap 256m", "--user 65534:65534", "--pull never"):
         assert flag in command
     # Nothing of the project, or of the machine, is mounted
     assert "--volume" not in command and " -v " not in command and "--mount" not in command
-    assert command.endswith("img cmd")
+    assert "noexec" in command and command.endswith("img cmd")
+
+def test_a_compiled_language_gets_a_tmp_that_runs_programs_and_the_room_to_build():
+    command: str = " ".join(sandbox("n", LANGUAGES["go"]))
+    assert "/tmp:size=512m,exec" in command and "--memory 1g" in command and "--network none" in command
+    assert LANGUAGES["go"].timeout > LANGUAGES["python"].timeout
+
+def test_the_settings_change_a_profile_without_touching_the_others(app, monkeypatch):
+    app.settings["sandbox.languages"] = {"rust": {"timeout": 120, "memory": "2g"}}
+    rust = RunTool._RunTool__configured("rust", app.settings)
+    assert (rust.timeout, rust.memory, rust.image) == (120, "2g", "rust:alpine")
+    assert LANGUAGES["rust"].timeout == 60
 
 def test_capture_keeps_the_start_and_counts_the_rest():
     class Stream:
@@ -114,7 +129,7 @@ def test_the_project_is_not_there(app, folder):
 
 @needs_python
 def test_a_program_that_never_ends_is_stopped_with_what_it_printed(app):
-    app.settings["sandbox.timeout"] = 2
+    app.settings["sandbox.languages"] = {"python": {"timeout": 2}}
     result = run_code(app, language="python", code="import time\nprint('start')\ntime.sleep(60)\n")
     assert result.startswith("Erreur : le code n'a pas fini en 2s") and "start" in result
     # The container is stopped, not only the docker command that watched it
@@ -122,7 +137,7 @@ def test_a_program_that_never_ends_is_stopped_with_what_it_printed(app):
 
 @needs_python
 def test_a_program_that_prints_without_end_is_cut(app):
-    app.settings["sandbox.timeout"] = 3
+    app.settings["sandbox.languages"] = {"python": {"timeout": 3}}
     result = run_code(app, language="python", code="while True:\n    print('x' * 1000)\n")
     assert len(result) < 3 * tool_run.OUTPUT and "coupés" in result
 
@@ -141,3 +156,30 @@ def test_the_memory_limit_kills_a_program_that_eats_it(app):
 @needs_sh
 def test_a_shell_script_runs_too(app):
     assert run_code(app, language="sh", code="echo hello; id -u").endswith("hello\n65534")
+
+@needs_go
+def test_go_builds_and_runs_a_program(app):
+    code = 'package main\nimport "fmt"\nfunc main() { fmt.Println("hello", 6*7) }\n'
+    assert run_code(app, language="go", code=code) == "Code de sortie : 0\n--- stdout ---\nhello 42"
+
+@needs_go
+def test_a_go_compile_error_comes_back_for_the_model_to_fix(app):
+    result = run_code(app, language="go", code="package main\nfunc main() { x := 1 }\n")
+    assert result.startswith("Code de sortie : 1") and "declared and not used" in result
+
+@needs_go
+def test_go_has_no_network_and_no_module_to_download(app):
+    code = 'package main\nimport ("fmt"; "net/http")\nfunc main() { _, err := http.Get("http://1.1.1.1"); fmt.Println(err != nil) }\n'
+    assert run_code(app, language="go", code=code).endswith("true")
+    code = 'package main\nimport "github.com/x/y"\nfunc main() { y.Z() }\n'
+    assert run_code(app, language="go", code=code).startswith("Code de sortie : 1")
+
+@needs_rust
+def test_rust_builds_and_runs_a_program(app):
+    result = run_code(app, language="rust", code='fn main() { println!("hello {}", 6 * 7); }\n')
+    assert result == "Code de sortie : 0\n--- stdout ---\nhello 42"
+
+@needs_rust
+def test_a_rust_compile_error_comes_back_for_the_model_to_fix(app):
+    result = run_code(app, language="rust", code='fn main() { let x: i32 = "a"; }\n')
+    assert result.startswith("Code de sortie : 1") and "mismatched types" in result

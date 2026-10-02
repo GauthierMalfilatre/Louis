@@ -46,14 +46,14 @@ settings: dict[str] = {
     "git.coauthor"         : "Louis <336655023+louis-sensai@users.noreply.github.com>",
     # Code the model runs (run_code) goes in a Docker container: no network, no access to the project, read-only disk,
     # limits on time, memory and processes. The tool is only offered if docker is installed. The images must be pulled
-    # by the user (docker pull python:3.13-alpine alpine:latest): the container never reaches the network to get them
+    # by the user (docker pull python:3.13-alpine alpine:latest golang:alpine rust:alpine): the container never
+    # reaches the network to get them, nor the libraries a program would want (go, rust: standard library only)
     "sandbox.enabled"      : True,
-    "sandbox.timeout"      : 10,
-    "sandbox.memory"       : "256m",
     # Bytes of the output of the code the model sees, for each of stdout and stderr: the rest is cut
     "sandbox.output"       : 4000,
-    # Image of a language, to use another than the default of the tool: {"python": "python:3.12-slim"}
-    "sandbox.images"       : {},
+    # What differs from the profile of a language (tool/impl/exec/tool_run.py: python and sh 10 s and 256m, go and rust
+    # a minute and 1g for their build): its image, timeout (seconds) and memory. {"python": {"image": "python:3.12-slim"}}
+    "sandbox.languages"    : {},
     # Knowledge base (RAG): the folders the user indexes (/index, louis --index: documentation, examples of code...),
     # that the model looks up with search_knowledge. It needs no library beyond numpy; the meaning of the passages is
     # read by an embedding model of Ollama (ollama pull nomic-embed-text), without it the search is by keywords only.

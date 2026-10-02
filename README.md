@@ -57,7 +57,7 @@ Louis cherche dans la documentation et les exemples de code que tu lui indexes (
 
 ## Exécution de code (sandbox)
 
-Louis peut tester du code (`python` ou `sh`) avec l'outil `run_code`, après que tu as lu le code et l'as autorisé. Il tourne dans un conteneur Docker sans réseau, sans accès au projet, avec un disque en lecture seule (sauf un petit `/tmp`), limité en temps (10 s), en mémoire (256 Mo) et en processus. Sans Docker, l'outil n'est pas proposé. Les images ne sont jamais téléchargées par Louis : `docker pull python:3.13-alpine alpine:latest`. Les réglages sont les `sandbox.*` de `src/config/settings.py`.
+Louis peut tester du code (`python`, `sh`, `go` ou `rust`, bibliothèque standard seulement) avec l'outil `run_code`, après que tu as lu le code et l'as autorisé. Il tourne dans un conteneur Docker sans réseau, sans accès au projet, avec un disque en lecture seule (sauf un petit `/tmp`), limité en temps (10 s, une minute pour go et rust avec leur compilation), en mémoire et en processus. Sans Docker, l'outil n'est pas proposé. Les images ne sont jamais téléchargées par Louis : `docker pull python:3.13-alpine alpine:latest golang:alpine rust:alpine`. Les réglages sont les `sandbox.*` de `src/config/settings.py`.
 
 ## Monitoring
 
