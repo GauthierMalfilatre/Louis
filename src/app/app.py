@@ -31,7 +31,7 @@ from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND
 from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
-from config.prompt import NUDGE_PROMPT
+from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT
 from session.user import User
 from session.session import Session
 from command.command import CommandTree
@@ -96,6 +96,12 @@ IGNORED_CALLS: str = (
 NO_ROOM: str = (
     "Erreur : les résultats de ta réponse prennent déjà trop de place dans le contexte : cet appel n'a pas été fait. "
     "Refais-le dans ta prochaine réponse."
+)
+EMPTY_MESSAGE: str = "Louis n'a rien répondu, deux fois : le modèle a sans doute appelé un outil qui n'existe pas ici. "
+# Why, when the session called tools this version of Louis does not have: the model calls them again
+GONE_TOOLS: str = (
+    "Cette session a utilisé des outils absents de cette version de Louis (une autre branche ?), et le modèle les "
+    "appelle encore : {tools}. Lance Louis depuis une version qui les a, ou repars d'une session neuve avec /clear."
 )
 LOOP_MESSAGE: str = (
     "Louis tournait en rond (les mêmes appels d'outils, encore et encore) : arrêté. Reformule ou découpe la demande."
@@ -259,14 +265,22 @@ class App:
         if event.name == SESSION_RESUMED:
             self.__estimate_context()
 
+    def __history(self) -> list[dict]:
+        """
+            The session as it is sent, without the empty replies saved before they were kept out: read again, they
+            lead the model to more of them
+        """
+        return [message for message in self.session.history
+                if message["role"] != "assistant" or message["content"].strip() or message.get("tool_calls")]
+
     def __estimate_context(self) -> None:
         """ Tell how full the context is with the current session, as it will be sent, before the model measures it """
-        messages, _ = self.__window.view(self.session.history)
+        messages, _ = self.__window.view(self.__history())
         self.__bus.dispatch(CHAT_CONTEXT, used=self.__window.tokens(messages), size=self.__window.size, estimated=True)
 
     def __view(self) -> list[dict]:
         """ The session as the model sees it: its old tool results cut down, and told, once the context fills up """
-        messages, cut = self.__window.view(self.session.history)
+        messages, cut = self.__window.view(self.__history())
         if cut:
             used: int = self.__window.tokens(messages)
             log.info(f"[app] context cut down: {cut['results']} tool results, {cut['dropped']} messages left out, "
@@ -339,6 +353,7 @@ class App:
         # The calls of the last reply not answered yet: each of them must get an answer, even if cancelled
         pending: list[ToolCall] = []
         nudged: bool = False
+        emptied: bool = False
         # A reply can only be checked whole: with the guard, it is shown once checked, not as it is written
         stream: Callable | None = None if self.__guard else lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk)
         self.__refused.clear()
@@ -376,7 +391,25 @@ class App:
                 reply.tool_calls = calls
                 if self.__guard is not None and reply.content:
                     self.__screen(question, reply)
+                # Nothing to read and no call: the model called a tool it is not offered, or wrote nothing. Never
+                # saved, and asked again once with the tools it has: the user is never left without an answer
+                if not reply.content.strip() and not reply.tool_calls:
+                    if emptied:
+                        log.warning("[app] empty reply again: the turn ends")
+                        gone: list[str] = sorted({call["function"]["name"] for message in self.session.history
+                                                  for call in message.get("tool_calls") or []
+                                                  if not self.__toolManager.has(call["function"]["name"])})
+                        why: str = GONE_TOOLS.format(tools=", ".join(gone)) if gone else "Reformule ta demande."
+                        self.__bus.dispatch(CHAT_TURN_ENDED, reason="empty", message=EMPTY_MESSAGE + why)
+                        return
+                    emptied = True
+                    log.warning("[app] empty reply (a call to a tool it is not offered?): asking again")
+                    names: str = ", ".join(schema["function"]["name"] for schema in self.__toolManager.all())
+                    self.session.add("user", EMPTY_PROMPT.format(tools=names))
+                    continue
                 self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
+                # What Ollama counted of the prompt: the window measures its estimate on it, to cut in time
+                self.__window.measured(reply.prompt_tokens)
                 # Without the counts of Ollama (a reply cut short), the last known value stays
                 if reply.tokens:
                     self.__bus.dispatch(
@@ -417,7 +450,7 @@ class App:
                     else:
                         made[key] += 1
                     result: str = self.__call(call, refused=reason, most=min(MAX_RESULT, room))
-                    room -= share(result, self.__window.size)
+                    room -= share(result, self.__window.size, self.__window.ratio)
                     if ignored and len(pending) == 1:
                         result += IGNORED_CALLS.format(ignored)
                     self.session.add("tool", result, tool_name=call.name)
@@ -561,7 +594,7 @@ class App:
         result = result if isinstance(result, str) else str(result)
         # Never more than its share of the context: a whole big file would push the rest of the conversation out
         if refused is None:
-            result = capped(result, self.__window.size, most)
+            result = capped(result, self.__window.size, most, self.__window.ratio)
         # Unknown, crashed, or it could not do it (a text not found, a permission refused...): not ok
         ok: bool = not failed(result)
         duration: float = time.perf_counter() - start

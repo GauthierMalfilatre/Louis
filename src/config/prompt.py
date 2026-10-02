@@ -67,6 +67,13 @@ Tu n'es pas un simple chatbot : tu as des outils pour explorer et lire le code, 
 - Sois honnête : si tu n'as pas pu vérifier quelque chose, dis-le.
 """
 
+# Sent when the reply of the model is empty, no text and no tool call: Ollama drops the call of a tool the model is
+# not offered (one it saw in an old session, from another version of Louis), and the model believes it acted
+EMPTY_PROMPT: str = (
+    "Ta réponse est arrivée vide : tu as sans doute appelé un outil qui n'existe pas ici. Tes outils sont : {tools}. "
+    "Appelle l'un d'eux, ou réponds à l'utilisateur en texte, et dis-lui si tu ne peux pas faire ce qu'il demande."
+)
+
 # Sent when the model announces an action ("je vais créer…") without calling a tool: small models
 # often stop there, and a reply without tool call ends their turn
 NUDGE_PROMPT: str = (

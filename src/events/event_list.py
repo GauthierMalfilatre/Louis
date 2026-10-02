@@ -10,7 +10,7 @@ THINKING_DISABLED = "chat.thinking.disabled"   # data: none
 
 # The conversation, as it goes: the app never prints, the interfaces show these their own way
 CHAT_TURN_STARTED = "chat.turn.started"   # data: none (the model starts answering a message of the user)
-CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length", "refused"), message (None when done or cancelled)
+CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length", "refused", "empty"), message (None when done or cancelled)
 CHAT_TEXT         = "chat.text"           # data: text (a piece of the reply, as the model writes it)
 CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" if it only calls tools), tools (their names)
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
