@@ -44,6 +44,16 @@ settings: dict[str] = {
     # Louis signs the commits it makes with a "Co-authored-by" line: the user stays their author. For GitHub to show
     # Louis on the commits, it must be the noreply address of a GitHub account (Settings > Emails). Empty: no line
     "git.coauthor"         : "Louis <336655023+louis-sensai@users.noreply.github.com>",
+    # Code the model runs (run_code) goes in a Docker container: no network, no access to the project, read-only disk,
+    # limits on time, memory and processes. The tool is only offered if docker is installed. The images must be pulled
+    # by the user (docker pull python:3.13-alpine alpine:latest): the container never reaches the network to get them
+    "sandbox.enabled"      : True,
+    "sandbox.timeout"      : 10,
+    "sandbox.memory"       : "256m",
+    # Bytes of the output of the code the model sees, for each of stdout and stderr: the rest is cut
+    "sandbox.output"       : 4000,
+    # Image of a language, to use another than the default of the tool: {"python": "python:3.12-slim"}
+    "sandbox.images"       : {},
     # Knowledge base (RAG): the folders the user indexes (/index, louis --index: documentation, examples of code...),
     # that the model looks up with search_knowledge. It needs no library beyond numpy; the meaning of the passages is
     # read by an embedding model of Ollama (ollama pull nomic-embed-text), without it the search is by keywords only.

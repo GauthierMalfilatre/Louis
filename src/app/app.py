@@ -21,6 +21,7 @@ from tool.impl.file.tool_mkdir import MkdirTool
 from tool.impl.web.tool_websearch import InternetTool
 from tool.impl.git.tool_git import GitTool
 from tool.impl.git.tool_pr import PullRequestTool
+from tool.impl.exec.tool_run import RunTool, available as sandbox_available
 from tool.impl.rag.tool_knowledge import KnowledgeTool
 from tool.permission import PermissionManager
 from rag.knowledge import Knowledge
@@ -143,6 +144,10 @@ class App:
             .register(InternetTool())\
             .register(GitTool())\
             .register(PullRequestTool())\
+
+        # Code runs in a container: no docker, or the setting off, and the model is not offered the tool
+        if settings.get("sandbox.enabled", True) and sandbox_available():
+            self.__toolManager.register(RunTool())
 
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
