@@ -45,6 +45,10 @@ settings: dict[str] = {
     "rag.embed.batch"      : 32,
     # Passages search_knowledge gives back by default
     "rag.results"          : 4,
+    # A long file with fewer distinct lines than this share was made by a program (a grid of settings, a dump): it is not
+    # indexed, its passages would all look alike and take the places of the others. 0: only those marked "@generated"...
+    # To leave out other files of a folder: /index <dossier> [<nom>] --exclude "<motif>" (kept for its next /index)
+    "rag.index.generated_ratio": 0.10,
     # Reranking: the passages the search found are read again with the question by a cross-encoder (ONNX on the CPU,
     # by fastembed: installed with the guard, or by requirements-rerank.txt), the best first, and those under
     # min_score left out (0 to 1: 0 keeps them all). Download the model once: cd src && python -m rag.reranker

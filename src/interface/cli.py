@@ -253,6 +253,16 @@ class CLI(Interface):
         if data["chunks"] and data["embedded"] < data["chunks"]:
             lines.append(f"  Recherche par mots-clés seulement pour {data['chunks'] - data['embedded']} passages : "
                          f"{data['warning'] or "aucun modèle d'embedding"}. Relance /index quand il répond.")
+        if data.get("excluded"):
+            lines.append(f"  {data['excluded']} fichiers exclus par {', '.join(data['exclude'])}.")
+        made: list[dict] = data.get("generated") or []
+        if made:
+            # Left out without being asked: the user must see which, and how to keep one
+            lines.append(f"  Laissés de côté, générés par un programme ({len(made)}) :")
+            lines.extend(f"    {item['path']} ({item['reason']})" for item in made[:5])
+            if len(made) > 5:
+                lines.append(f"    … et {len(made) - 5} autres")
+            lines.append("  Pour en garder : réglage rag.index.generated_ratio (0 : seulement ceux marqués « @generated »).")
         self.out("\n".join(lines) + "\n")
 
     def __on_rag_sources(self, event: Event) -> None:
@@ -263,8 +273,9 @@ class CLI(Interface):
         lines: list[str] = [f"\nBase de connaissances ({len(event.data['sources'])} sources) :"]
         for source in event.data["sources"]:
             words: str = "" if source["embedded"] == source["chunks"] else "  (mots-clés seulement)"
+            excluded: str = f"  sans {', '.join(source['exclude'])}" if source.get("exclude") else ""
             lines.append(f"  {source['name']:16} {source['files']:>6} fichiers {source['chunks']:>7} passages  "
-                         f"[{short_path(source['root'])}]{words}")
+                         f"[{short_path(source['root'])}]{words}{excluded}")
         self.out("\n".join(lines) + "\n")
 
     def __on_rag_forgotten(self, event: Event) -> None:

@@ -11,10 +11,11 @@ from config.settings import settings
 import os
 import sys
 
-def index_folder(path: str, name: str | None = None) -> int:
+def index_folder(path: str, name: str | None = None, exclude: list[str] | None = None) -> int:
     """
         Index a folder, or bring it up to date: the same as /index, but for a big folder, that takes minutes, without
-        loading the model of the chat. The events are shown by the CLI, as in a session. Ctrl+C keeps what was done
+        loading the model of the chat. The events are shown by the CLI, as in a session. Ctrl+C keeps what was done.
+        exclude: the patterns of paths left out, kept with the source (None: those it had)
     """
     folder: str = os.path.realpath(os.path.expanduser(path))
     if not os.path.isdir(folder):
@@ -23,7 +24,7 @@ def index_folder(path: str, name: str | None = None) -> int:
     bus: EventBus = EventBus()
     CLI().bind(bus)
     try:
-        Knowledge.from_settings(settings, bus).index(folder, name)
+        Knowledge.from_settings(settings, bus).index(folder, name, exclude)
     except KeyboardInterrupt:
         sys.stderr.write("\nInterrompu : les fichiers déjà indexés sont gardés, relance la commande pour finir.\n")
         return 130

@@ -13,6 +13,8 @@
 ## The deeper search keeps what the threshold of the reranker drops: the scores of the right answers it would drop
 ## are seen, and the table of thresholds tells what each one would keep and drop.
 ## Compare:  --no-rerank (the index alone), --rerank-model Xenova/ms-marco-MiniLM-L-6-v2, --min-score 0.2
+## A question may give the filters the model should choose ("filters": {"path": "src/auth", "kind": "code"}):
+## the run then tells what the filters bring when they are well chosen (--no-filters: without them, to compare)
 ##
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -58,6 +60,7 @@ class Result:
     top_score   : float | None   # the score of the first passage found, whatever it is, nothing dropped
     returned    : int            # passages in the k (fewer than k once a threshold drops some)
     hits        : list[str]      # the k passages, as "path:start-end (score)"
+    filters     : dict | None = None   # the filters on the files searched with, None without
 
 def parse_expected(text: str) -> Expected:
     """ "/src/app.py:120-180" or "/src/app.py", as search_knowledge writes them """
@@ -86,11 +89,14 @@ def load_questions(path: str) -> tuple[str | None, list[dict]]:
     source: str | None = data.get("source")
     return (None if not source or source.startswith(PLACEHOLDER) else source), questions
 
-def evaluate(knowledge: Knowledge, source: str | None, question: dict, k: int) -> Result:
-    """ Search a question as search_knowledge does, then deeper """
+def evaluate(knowledge: Knowledge, source: str | None, question: dict, k: int, filtered: bool = True) -> Result:
+    """ Search a question as search_knowledge does, then deeper: with its filters, when it has some and filtered is True """
     expected: list[Expected] = [parse_expected(e) for e in question.get("expected", [])]
-    hits: list[Hit] = knowledge.search(question["question"], source, k).hits
-    deep: list[Hit] = knowledge.search(question["question"], source, DEPTH, drop=False).hits
+    filters: dict = {key: value for key, value in (question.get("filters") or {}).items() if key in ("path", "kind") and value}
+    if not filtered:
+        filters = {}
+    hits: list[Hit] = knowledge.search(question["question"], source, k, **filters).hits
+    deep: list[Hit] = knowledge.search(question["question"], source, DEPTH, drop=False, **filters).hits
     deep_rank: int | None = rank_of(deep, expected) if expected else None
     return Result(
         question=question["question"],
@@ -101,7 +107,8 @@ def evaluate(knowledge: Knowledge, source: str | None, question: dict, k: int) -
         answer_score=deep[deep_rank - 1].score if deep_rank else None,
         top_score=deep[0].score if deep else None,
         returned=len(hits),
-        hits=[f"{hit.path}:{hit.start}-{hit.end} ({hit.score})" for hit in hits]
+        hits=[f"{hit.path}:{hit.start}-{hit.end} ({hit.score})" for hit in hits],
+        filters=filters or None
     )
 
 def summarize(results: list[Result], k: int) -> dict:
@@ -170,7 +177,8 @@ def show(results: list[Result], summary: dict, k: int, baseline: dict[str, dict]
         if baseline and (before := baseline.get(r.question)) is not None and r.answerable:
             old, new = before.get("deep_rank") or DEPTH + 1, r.deep_rank or DEPTH + 1
             change = "  mieux" if new < old else "  pire" if new > old else ""
-        print(f"{mark} [{r.kind}] {r.question}\n    {where}{change}")
+        tag: str = (" {" + ", ".join(f"{key}={value}" for key, value in r.filters.items()) + "}") if r.filters else ""
+        print(f"{mark} [{r.kind}]{tag} {r.question}\n    {where}{change}")
         if r.answerable and r.rank != 1:
             for hit in r.hits:
                 print(f"      {hit}")
@@ -206,6 +214,7 @@ def main() -> int:
     parser.add_argument("--rerank-model", default=None, help="un autre modèle de reranking (défaut : rag.rerank.model)")
     parser.add_argument("--min-score", type=float, default=None, help="un autre seuil du reranker (défaut : rag.rerank.min_score)")
     parser.add_argument("--max-chars", type=int, default=None, help="ce que le reranker lit de chaque passage (défaut : rag.rerank.max_chars, 0 : tout)")
+    parser.add_argument("--no-filters", action="store_true", help="sans les filtres (path, kind) des questions")
     args: argparse.Namespace = parser.parse_args()
 
     # Knowledge.from_settings reads the path of the index there, as louis does
@@ -243,7 +252,7 @@ def main() -> int:
     print(f"Source : {source or 'toutes'}, k = {args.k}, {len(questions)} question(s), "
           f"reranker : {wanted or 'aucun'}" + (f" (seuil {config.get('rag.rerank.min_score', 0.0)})" if wanted else "") + "\n")
 
-    results: list[Result] = [evaluate(knowledge, source, question, args.k) for question in questions]
+    results: list[Result] = [evaluate(knowledge, source, question, args.k, not args.no_filters) for question in questions]
     keyword: int = sum(1 for e in events if e["mode"] == "keyword")
     if keyword:
         print(f"Attention : {keyword} recherche(s) par mots-clés seulement (Ollama ou "

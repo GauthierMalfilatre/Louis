@@ -273,6 +273,10 @@ class Recorder:
             session=self.__session,
             query=text(data["query"], INPUT_CHARS),
             source=data["source"],
+            # Whether the model filters, and how: what its description and its size change
+            path=data.get("path"),
+            kind=data.get("kind"),
+            files=data.get("files"),
             mode=data["mode"],
             reranker=data.get("reranker"),
             candidates=data.get("candidates"),

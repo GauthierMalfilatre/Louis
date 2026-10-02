@@ -10,13 +10,16 @@
 ##
 ## A search goes in two steps: the index finds what may answer (keywords and meaning, rag/index.py), then the
 ## reranker reads each of those passages with the question, puts the best first and leaves out the near-misses
-## (rag/reranker.py). Without the reranker (turned off, not installed), the order of the index is kept, and nothing is left out
+## (rag/reranker.py). Without the reranker (turned off, not installed), the order of the index is kept, and nothing is left out.
+## A search may be kept to some files, by their path or their kind (code, doc, config, data): the model chooses, from
+## what catalog() tells it the base holds
 ##
 from dataclasses import dataclass, replace
-from rag.chunker import split
+from rag.chunker import split, VERSION
+from rag.context import contexts, header, brief
 from rag.embedder import Embedder, EmbedError
-from rag.index import Index, Hit
-from rag.ingest import scan, load
+from rag.index import Index, Hit, Filter, path_matches
+from rag.ingest import scan, load, generated, GENERATED_RATIO
 from rag.reranker import Reranker, RerankError
 from events.event_bus import EventBus
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_RETRIEVED
@@ -30,6 +33,8 @@ import time
 FLUSH_CHUNKS  : int = 64
 # Files between two RAG_INDEX_PROGRESS, whatever they were (a folder already indexed goes by fast)
 PROGRESS_EVERY: int = 100
+# Folders of a source told to the model at most, the biggest: each one costs tokens in every request
+CATALOG_FOLDERS: int = 20
 
 def rag_path() -> str:
     """ Where the index is: LOUIS_RAG, or the file of the settings in the working directory (as louis.db) """
@@ -43,10 +48,12 @@ def source_name(root: str, name: str | None = None) -> str:
 class Found:
     """
         What a search gives: the passages, best first, and how many the index found before the reranker left the
-        near-misses out. No hit out of some candidates: the base holds nothing that answers, not "try other words"
+        near-misses out. No hit out of some candidates: the base holds nothing that answers, not "try other words".
+        files is how many files the filter on the paths and kinds kept (None without one): 0, the filter is wrong
     """
     hits      : list[Hit]
     candidates: int
+    files     : int | None = None
 
 class Knowledge:
     """
@@ -54,13 +61,17 @@ class Knowledge:
         Without the embedding model (Ollama stopped, model not downloaded), it goes on by keywords alone
     """
     def __init__(self, bus: EventBus, index: Index, embedder: Embedder | None, results: int = 4,
-                 reranker: Reranker | None = None):
-        """ Init the knowledge base on an index, embedding with embedder (or not at all), reranking with reranker (or not) """
-        self.__bus     : EventBus        = bus
-        self.__index   : Index           = index
-        self.__embedder: Embedder | None = embedder
-        self.__results : int             = results
-        self.__reranker: Reranker | None = reranker
+                 reranker: Reranker | None = None, generated_ratio: float = GENERATED_RATIO):
+        """
+            Init the knowledge base on an index, embedding with embedder (or not at all), reranking with reranker (or
+            not). A file with fewer distinct lines than generated_ratio is not indexed (0: only the marked ones)
+        """
+        self.__bus      : EventBus        = bus
+        self.__index    : Index           = index
+        self.__embedder : Embedder | None = embedder
+        self.__results  : int             = results
+        self.__reranker : Reranker | None = reranker
+        self.__generated: float           = generated_ratio
 
     @classmethod
     def from_settings(cls, settings: dict[str], bus: EventBus) -> "Knowledge":
@@ -78,7 +89,8 @@ class Knowledge:
             settings.get("rag.rerank.min_score", 0.0),
             settings.get("rag.rerank.max_chars", 0)
         ) if settings.get("rag.rerank.enabled", False) else None
-        return cls(bus, Index(rag_path()), embedder, settings.get("rag.results", 4), reranker)
+        return cls(bus, Index(rag_path()), embedder, settings.get("rag.results", 4), reranker,
+                   settings.get("rag.index.generated_ratio", GENERATED_RATIO))
 
     @property
     def empty(self) -> bool:
@@ -103,13 +115,36 @@ class Knowledge:
         """ Remove a source: the passages removed, 0 if it was not there """
         return self.__index.forget(source)
 
-    def search(self, query: str, source: str | None = None, limit: int | None = None, *, drop: bool = True) -> Found:
+    def folders(self, source: str) -> list[str]:
+        """ The folders of a source, the biggest first: what a filter on the paths may name """
+        return [folder for folder, _ in self.__index.outline(source)["folders"]]
+
+    def catalog(self) -> str:
         """
-            The passages that answer the query best, in one source or in all of them: limit at most, fewer (or none)
-            when the reranker finds the others do not answer. drop=False keeps them, ranked (to measure the threshold)
+            What the base holds, for the model: one line per source, with its files of each kind and its biggest
+            folders. Without it, the model knows neither that a project is indexed, nor which path to filter on
+        """
+        lines: list[str] = []
+        for source in self.sources():
+            outline: dict = self.__index.outline(source["name"])
+            kinds: str = ", ".join(f"{count} {kind}" for kind, count in outline["kinds"].items())
+            shown: list[str] = sorted(folder for folder, _ in outline["folders"][:CATALOG_FOLDERS])
+            more: int = len(outline["folders"]) - len(shown)
+            lines.append(f"- {source['name']} ({source['files']} fichiers : {kinds}) : dossiers {', '.join(shown)}"
+                         + (f", et {more} autres" if more > 0 else ""))
+        return "\n".join(lines)
+
+    def search(self, query: str, source: str | None = None, limit: int | None = None, *,
+               path: str | None = None, kind: str | None = None, drop: bool = True) -> Found:
+        """
+            The passages that answer the query best, in one source or in all of them, in the files of a path and of a
+            kind only when they are given: limit at most, fewer (or none) when the reranker finds the others do not
+            answer. drop=False keeps them, ranked (to measure the threshold)
         """
         start: float = time.perf_counter()
         limit = limit or self.__results
+        where: Filter = Filter(source, path or None, frozenset({kind}) if kind else frozenset())
+        files: int | None = len(self.__index.matching(where)) if where.on_files else None
         vector: list[float] | None = None
         model: str | None = None
         if self.__embedder is not None:
@@ -119,7 +154,7 @@ class Knowledge:
                 log.warning(f"[rag] searching by keywords only: {e.message}")
         reranker: Reranker | None = self.__reranker
         # The reranker reads its whole pool whatever the limit: the passages it puts first may be far down the index's list
-        candidates: list[Hit] = self.__index.search(query, vector, model, max(limit, reranker.pool) if reranker else limit, source)
+        candidates: list[Hit] = self.__index.search(query, vector, model, max(limit, reranker.pool) if reranker else limit, where)
         retrieved: float = time.perf_counter()
 
         hits: list[Hit] = candidates[:limit]
@@ -127,8 +162,10 @@ class Knowledge:
         dropped: int = 0
         if reranker is not None and candidates:
             try:
-                # The path tells what a passage is about as much as its text: "AgentPPO/model.py" for "the networks of PPO"
-                scores: list[float] = reranker.score(query, [f"{hit.path}\n{hit.text}" for hit in candidates])
+                # Where a passage is tells what it is about as much as its text: "auth/login.py › def check_password"
+                # for "how users log in"
+                scores: list[float] = reranker.score(query, [f"{header(hit.path, brief(hit.context))}\n{hit.text}"
+                                                             for hit in candidates])
             except RerankError as e:
                 log.warning(f"[rag] not reranking: {e.message}")
             else:
@@ -144,6 +181,9 @@ class Knowledge:
             RAG_RETRIEVED,
             query=query,
             source=source,
+            path=where.path,
+            kind=kind,
+            files=files,
             mode="hybrid" if vector is not None else "keyword",
             reranker=reranker.model if reranked else None,
             candidates=len(candidates),
@@ -153,13 +193,16 @@ class Knowledge:
             rerank=round(end - retrieved, 3) if reranked else None,
             duration=round(end - start, 3)
         )
-        return Found(hits, len(candidates))
+        return Found(hits, len(candidates), files)
 
-    def index(self, root: str, name: str | None = None) -> dict:
+    def index(self, root: str, name: str | None = None, exclude: list[str] | None = None) -> dict:
         """
             Index a folder as a source, or bring it up to date: only the files that changed are read again,
             and the ones gone are forgotten. What was done is told to the bus; a Ctrl+C leaves the files
-            done so far indexed (each one is saved whole). NOTE: Raisable (OSError, sqlite3.Error)
+            done so far indexed (each one is saved whole). exclude, the patterns of paths left out (see
+            rag.index.path_matches), is kept with the source: given, it replaces the patterns it had; None keeps them.
+            The files made by a program are left out too (rag.ingest.generated), and named in RAG_INDEXED.
+            NOTE: Raisable (OSError, sqlite3.Error)
         """
         start: float = time.perf_counter()
         root = os.path.realpath(root)
@@ -168,13 +211,14 @@ class Knowledge:
         self.__bus.dispatch(RAG_INDEXING, source=source, root=root, files=len(paths))
 
         embedder: Embedder | None = self.__embedder
-        self.__index.begin(source, root, embedder.model if embedder else None)
+        patterns: list[str] = self.__index.begin(source, root, embedder.model if embedder else None, VERSION, exclude)
         known: dict[str, tuple[str, bool]] = self.__index.files(source)
 
         seen: set[str] = set()
-        # The files to save, with their passages: embedded together once there are enough of them
-        work: list[tuple[str, str, list]] = []
-        counts: dict[str, int] = {"updated": 0, "unchanged": 0, "skipped": 0, "chunks": 0, "embedded": 0}
+        # The files to save, with their passages and their contexts: embedded together once there are enough of them
+        work: list[tuple[str, str, list, list[str]]] = []
+        counts: dict[str, int] = {"updated": 0, "unchanged": 0, "skipped": 0, "excluded": 0, "chunks": 0, "embedded": 0}
+        made: list[dict] = []
         warning: str | None = None
 
         def flush() -> None:
@@ -185,14 +229,16 @@ class Knowledge:
             vectors: list[list[float]] | None = None
             if embedder is not None:
                 try:
-                    vectors = embedder.documents([f"{path}\n{chunk.text}" for path, _, chunks in work for chunk in chunks])
+                    vectors = embedder.documents([f"{header(path, context)}\n{chunk.text}" for path, _, chunks, found in work
+                                                  for chunk, context in zip(chunks, found)])
                 except EmbedError as e:
                     # The rest of the folder is indexed by keywords: a later /index embeds it (the files are not "embedded")
                     log.warning(f"[rag] not embedding the rest of {source}: {e.message}")
                     embedder, warning = None, e.message
             taken: int = 0
-            for path, digest, chunks in work:
-                self.__index.put(source, path, digest, chunks, vectors[taken:taken + len(chunks)] if vectors else None)
+            for path, digest, chunks, found in work:
+                self.__index.put(source, path, digest, chunks, vectors[taken:taken + len(chunks)] if vectors else None,
+                                 found)
                 taken += len(chunks)
                 counts["updated"] += 1
                 counts["chunks"] += len(chunks)
@@ -201,7 +247,15 @@ class Knowledge:
 
         for number, path in enumerate(paths, 1):
             relative: str = "/" + os.path.relpath(path, root).replace(os.sep, "/")
+            # Not read at all: what was indexed of it before is forgotten with the files gone
+            if any(path_matches(relative, pattern) for pattern in patterns):
+                counts["excluded"] += 1
+                continue
             loaded: tuple[str, str] | None = load(path)
+            reason: str | None = generated(loaded[0], self.__generated) if loaded else None
+            if reason is not None:
+                made.append({"path": relative, "reason": reason})
+                loaded = None
             chunks = split(loaded[0]) if loaded else []
             if not chunks:
                 counts["skipped"] += 1
@@ -213,7 +267,7 @@ class Knowledge:
                 if before is not None and before[0] == digest and (before[1] or embedder is None):
                     counts["unchanged"] += 1
                 else:
-                    work.append((relative, digest, chunks))
+                    work.append((relative, digest, chunks, contexts(relative, loaded[0], chunks)))
                     if sum(len(item[2]) for item in work) >= FLUSH_CHUNKS:
                         flush()
             if number % PROGRESS_EVERY == 0:
@@ -226,7 +280,7 @@ class Knowledge:
 
         result: dict = {
             "source": source, "root": root, "files": len(seen), **counts, "removed": len(gone), "warning": warning,
-            "duration": round(time.perf_counter() - start, 3)
+            "exclude": patterns, "generated": made, "duration": round(time.perf_counter() - start, 3)
         }
         self.__bus.dispatch(RAG_INDEXED, **result)
         return result

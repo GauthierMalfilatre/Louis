@@ -44,12 +44,12 @@ TOOL_CALL_ENDED   = "tool.call.ended"     # data: name, producer, ok (False if i
 # Nothing is embedded when the embedding model does not answer: the sources are still searched by keywords
 RAG_INDEXING       = "rag.indexing"         # data: source, root, files (found in the folder)
 RAG_INDEX_PROGRESS = "rag.index.progress"   # data: source, done, total (files)
-RAG_INDEXED        = "rag.indexed"          # data: source, root, files, updated, unchanged, removed, skipped, chunks (added), embedded (of them), warning (why the rest was not embedded, or None), duration
-RAG_SOURCES        = "rag.sources"          # data: sources: [{name, root, files, chunks, embedded, model, updated_at}]
+RAG_INDEXED        = "rag.indexed"          # data: source, root, files, updated, unchanged, removed, skipped, excluded (by the patterns), exclude (the patterns of the source), generated: [{path, reason}] (made by a program, left out), chunks (added), embedded (of them), warning (why the rest was not embedded, or None), duration
+RAG_SOURCES        = "rag.sources"          # data: sources: [{name, root, files, chunks, embedded, model, updated_at, exclude (its patterns)}]
 RAG_FORGOTTEN      = "rag.forgotten"        # data: source, chunks (removed)
 # A look-up: the index found candidates, the reranker (when it could) read them again, ranked them by its score (0 to 1)
 # and dropped those under its threshold. Without it, score is the fusion of the index and nothing is dropped
-RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), mode ("hybrid": keywords and meaning, "keyword"), reranker (its model, None if it did not rerank), candidates (found by the index), dropped (under the threshold), hits: [{source, path, start, end, score, fused (the score of the index, None if not reranked)}], rerank (seconds, None), duration (seconds, all of it)
+RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), path and kind (the filters on the files, None: none), files (how many the filters kept, None without them), mode ("hybrid": keywords and meaning, "keyword"), reranker (its model, None if it did not rerank), candidates (found by the index), dropped (under the threshold), hits: [{source, path, start, end, score, fused (the score of the index, None if not reranked)}], rerank (seconds, None), duration (seconds, all of it)
 
 APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), commands: [{name, usage, description}]
 APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
