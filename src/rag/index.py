@@ -1,0 +1,283 @@
+##
+## EPITECH PROJECT, 2026
+## SENSAI
+## File description:
+## Index: the passages of the sources the user indexed, searched by keywords (SQLite FTS5) and by meaning (vectors)
+##
+## One SQLite file, as the sessions have theirs. A source is a folder indexed under a name, its files are
+## cut into passages (chunks), and each passage has its vector when the embedding model answered.
+## A search runs both ways and merges them (reciprocal rank fusion): the keywords find the exact name of a function,
+## the vectors find what a question means without using its words.
+##
+from dataclasses import dataclass
+from rag.chunker import Chunk
+from session.database import now
+import numpy as np
+import os
+import re
+import sqlite3
+
+SCHEMA: str = """
+CREATE TABLE IF NOT EXISTS sources (
+    name       TEXT PRIMARY KEY,
+    root       TEXT NOT NULL,
+    model      TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS files (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    source   TEXT NOT NULL REFERENCES sources(name) ON DELETE CASCADE,
+    path     TEXT NOT NULL,
+    hash     TEXT NOT NULL,
+    embedded INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (source, path)
+);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    start_line INTEGER NOT NULL,
+    end_line   INTEGER NOT NULL,
+    text       TEXT NOT NULL,
+    vector     BLOB
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
+
+-- rowid is the id of the chunk. Porter stems the words: "parsing" finds "parse"
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, path, tokenize = 'porter unicode61');
+"""
+
+# The rank of a passage counts for 1 / (RRF + rank) in each list it is in: the usual constant of the fusion
+RRF: int = 60
+# Passages taken from each list, per passage asked for, before they are merged
+POOL: int = 5
+# Words of a question searched by keywords at most, and those too common to tell a passage from another
+QUERY_WORDS: int = 16
+STOPWORDS: frozenset[str] = frozenset(
+    "a an the of to in on at for and or is are be do does how what why which with from by as it this that i you "
+    "le la les un une des de du et ou en dans sur pour par avec est sont que qui quoi comment pourquoi ce cette".split()
+)
+
+@dataclass(frozen=True, slots=True)
+class Hit:
+    """ A passage found: where it is (the source, the path from its root, the lines) and its text """
+    source: str
+    path  : str
+    start : int
+    end   : int
+    text  : str
+    score : float
+
+def pack(vector: list[float]) -> bytes:
+    """ A vector as it is saved: unit length (a dot product is then a cosine), 32 bits per number """
+    array: np.ndarray = np.asarray(vector, dtype=np.float32)
+    norm: float = float(np.linalg.norm(array))
+    return (array / norm if norm else array).tobytes()
+
+class Index:
+    """ An index in a SQLite file, created when something is first written to it: searching never creates one """
+    def __init__(self, path: str):
+        """ Open the index if its file exists """
+        self.__path  : str                           = path
+        self.__conn  : sqlite3.Connection | None     = None
+        # The vectors of the sources of one embedding model, loaded on the first search and dropped by any change
+        self.__matrix: tuple[str, np.ndarray, np.ndarray, np.ndarray] | None = None
+        if os.path.exists(path):
+            self.__open()
+
+    @property
+    def path(self) -> str:
+        """ Get the path of the index file """
+        return self.__path
+
+    @property
+    def empty(self) -> bool:
+        """ Check if nothing is indexed """
+        return self.__conn is None or self.__conn.execute("SELECT 1 FROM chunks LIMIT 1").fetchone() is None
+
+    def close(self) -> None:
+        """ Close the file """
+        if self.__conn is not None:
+            self.__conn.close()
+            self.__conn = None
+
+    def sources(self) -> list[dict]:
+        """ The sources, with how many files, passages and vectors each has """
+        if self.__conn is None:
+            return []
+        rows = self.__conn.execute(
+            "SELECT s.name, s.root, s.model, s.updated_at,"
+            " (SELECT COUNT(*) FROM files f WHERE f.source = s.name) AS files,"
+            " (SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.source = s.name) AS chunks,"
+            " (SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id"
+            "   WHERE f.source = s.name AND c.vector IS NOT NULL) AS embedded"
+            " FROM sources s ORDER BY s.name"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def files(self, source: str) -> dict[str, tuple[str, bool]]:
+        """ The files of a source: for each path, the hash of what was indexed and whether it has its vectors """
+        if self.__conn is None:
+            return {}
+        rows = self.__conn.execute("SELECT path, hash, embedded FROM files WHERE source = ?", (source,)).fetchall()
+        return {row["path"]: (row["hash"], bool(row["embedded"])) for row in rows}
+
+    def begin(self, source: str, root: str, model: str | None) -> None:
+        """
+            Start (or go on with) a source. Its vectors belong to one embedding model: with another one,
+            the old vectors are of no use, and its files are embedded again. Without a model (none answers), they stay
+        """
+        db: sqlite3.Connection = self.__open()
+        row = db.execute("SELECT model FROM sources WHERE name = ?", (source,)).fetchone()
+        with db:
+            if row is None:
+                db.execute("INSERT INTO sources(name, root, model, updated_at) VALUES (?, ?, ?, ?)",
+                           (source, root, model, now()))
+            else:
+                if model and row["model"] and row["model"] != model:
+                    db.execute("UPDATE chunks SET vector = NULL WHERE file_id IN (SELECT id FROM files WHERE source = ?)",
+                               (source,))
+                    db.execute("UPDATE files SET embedded = 0 WHERE source = ?", (source,))
+                db.execute("UPDATE sources SET root = ?, model = COALESCE(?, model), updated_at = ? WHERE name = ?",
+                           (root, model, now(), source))
+        self.__matrix = None
+
+    def put(self, source: str, path: str, digest: str, chunks: list[Chunk], vectors: list[list[float]] | None) -> None:
+        """ Save a file of a source, in place of what was indexed of it: all its passages, or none """
+        db: sqlite3.Connection = self.__open()
+        with db:
+            self.__delete(db, source, path)
+            file_id: int = db.execute(
+                "INSERT INTO files(source, path, hash, embedded) VALUES (?, ?, ?, ?)",
+                (source, path, digest, int(vectors is not None))
+            ).lastrowid
+            for i, chunk in enumerate(chunks):
+                chunk_id: int = db.execute(
+                    "INSERT INTO chunks(file_id, start_line, end_line, text, vector) VALUES (?, ?, ?, ?, ?)",
+                    (file_id, chunk.start, chunk.end, chunk.text, pack(vectors[i]) if vectors else None)
+                ).lastrowid
+                db.execute("INSERT INTO chunks_fts(rowid, text, path) VALUES (?, ?, ?)", (chunk_id, chunk.text, path))
+        self.__matrix = None
+
+    def drop(self, source: str, path: str) -> None:
+        """ Forget a file of a source, gone from its folder """
+        db: sqlite3.Connection = self.__open()
+        with db:
+            self.__delete(db, source, path)
+        self.__matrix = None
+
+    def forget(self, source: str) -> int:
+        """ Forget a whole source: the number of passages removed, 0 if there is no such source """
+        if self.__conn is None:
+            return 0
+        db: sqlite3.Connection = self.__conn
+        count: int = db.execute(
+            "SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.source = ?", (source,)
+        ).fetchone()[0]
+        with db:
+            db.execute("DELETE FROM chunks_fts WHERE rowid IN"
+                       " (SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.source = ?)", (source,))
+            db.execute("DELETE FROM sources WHERE name = ?", (source,))
+        self.__matrix = None
+        return count
+
+    def search(self, query: str, vector: list[float] | None, model: str | None, limit: int,
+               source: str | None = None) -> list[Hit]:
+        """
+            The passages that answer best: by keywords, and by meaning when the vector of the question is given
+            (from the embedding model). Only the vectors of that model are compared, those of another one mean nothing
+        """
+        if self.__conn is None:
+            return []
+        pool: int = limit * POOL
+        scores: dict[int, float] = {}
+        lists: list[list[int]] = [self.__by_keywords(query, pool, source)]
+        if vector is not None and model:
+            lists.append(self.__by_meaning(vector, model, pool, source))
+        for ranked in lists:
+            for rank, chunk_id in enumerate(ranked):
+                scores[chunk_id] = scores.get(chunk_id, 0.0) + 1 / (RRF + rank + 1)
+        best: list[int] = sorted(scores, key=scores.get, reverse=True)[:limit]
+        if not best:
+            return []
+        rows = self.__conn.execute(
+            "SELECT c.id, f.source, f.path, c.start_line, c.end_line, c.text FROM chunks c"
+            " JOIN files f ON f.id = c.file_id WHERE c.id IN (%s)" % ",".join("?" * len(best)), best
+        ).fetchall()
+        by_id: dict[int, sqlite3.Row] = {row["id"]: row for row in rows}
+        return [Hit(row["source"], row["path"], row["start_line"], row["end_line"], row["text"], round(scores[i], 4))
+                for i in best if (row := by_id.get(i)) is not None]
+
+    def __by_keywords(self, query: str, pool: int, source: str | None) -> list[int]:
+        """ The ids of the passages holding the words of the question, the best match (BM25) first """
+        words: list[str] = []
+        for word in re.findall(r"\w+", query.lower()):
+            if word not in STOPWORDS and word not in words:
+                words.append(word)
+        if not words:
+            return []
+        match: str = " OR ".join(f'"{word}"' for word in words[:QUERY_WORDS])
+        where: str = " AND f.source = ?" if source else ""
+        rows = self.__conn.execute(
+            "SELECT c.id FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN files f ON f.id = c.file_id"
+            f" WHERE chunks_fts MATCH ?{where} ORDER BY bm25(chunks_fts, 1.0, 0.3) LIMIT ?",
+            (match, source, pool) if source else (match, pool)
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def __by_meaning(self, vector: list[float], model: str, pool: int, source: str | None) -> list[int]:
+        """ The ids of the passages whose vector is the closest to the one of the question (cosine), best first """
+        loaded = self.__load(model)
+        if loaded is None:
+            return []
+        ids, sources, matrix = loaded
+        question: np.ndarray = np.asarray(vector, dtype=np.float32)
+        norm: float = float(np.linalg.norm(question))
+        if not norm or question.shape[0] != matrix.shape[1]:
+            return []
+        scores: np.ndarray = matrix @ (question / norm)
+        if source:
+            scores = np.where(sources == source, scores, -np.inf)
+        top: np.ndarray = np.argpartition(-scores, min(pool, len(scores)) - 1)[:pool]
+        top = top[np.argsort(-scores[top])]
+        return [int(ids[i]) for i in top if np.isfinite(scores[i])]
+
+    def __load(self, model: str) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """ The ids, sources and vectors of every passage embedded by this model, kept until the index changes """
+        if self.__matrix is not None and self.__matrix[0] == model:
+            return self.__matrix[1:]
+        rows = self.__conn.execute(
+            "SELECT c.id, f.source, c.vector FROM chunks c JOIN files f ON f.id = c.file_id"
+            " JOIN sources s ON s.name = f.source WHERE c.vector IS NOT NULL AND s.model = ?", (model,)
+        ).fetchall()
+        # One model gives one length: a row of another one is a broken row
+        size: int = len(rows[0]["vector"]) if rows else 0
+        rows = [row for row in rows if len(row["vector"]) == size]
+        if not rows:
+            return None
+        self.__matrix = (
+            model,
+            np.array([row["id"] for row in rows], dtype=np.int64),
+            np.array([row["source"] for row in rows]),
+            np.vstack([np.frombuffer(row["vector"], dtype=np.float32) for row in rows])
+        )
+        return self.__matrix[1:]
+
+    @staticmethod
+    def __delete(db: sqlite3.Connection, source: str, path: str) -> None:
+        """ Remove a file and its passages (the search table has no cascade), inside the transaction of the caller """
+        row = db.execute("SELECT id FROM files WHERE source = ? AND path = ?", (source, path)).fetchone()
+        if row is None:
+            return
+        db.execute("DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE file_id = ?)", (row[0],))
+        db.execute("DELETE FROM files WHERE id = ?", (row[0],))
+
+    def __open(self) -> sqlite3.Connection:
+        """ The connection, the file and its tables created if needed """
+        if self.__conn is None:
+            self.__conn = sqlite3.connect(self.__path)
+            self.__conn.row_factory = sqlite3.Row
+            self.__conn.execute("PRAGMA foreign_keys = ON")
+            self.__conn.executescript(SCHEMA)
+        return self.__conn

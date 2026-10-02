@@ -12,6 +12,21 @@ __pycache__/
 # Environment
 .env
 .venv/
+venv/
 
-# DB
+# Database
 *.db
+*.db-journal
+
+# Monitoring: the traces of the calls, and their dashboard
+*.jsonl
+louis.dashboard.html
+
+# Export: the sessions written by /export
+exports/
+
+# Test 
+test/
+
+# Claude
+.claude/
