@@ -39,8 +39,9 @@ class Describer:
     def __init__(self, uri: str, model: str, context: int, keepalive: str = "30m", predict: int = 80,
                  timeout: float = 300.0):
         """
-            Init the describer. context is the num_ctx of the chat (the same, or Ollama reloads the model between
-            the chat and the indexing), predict the tokens an answer may take: its time is mostly them
+            Init the describer. context is its num_ctx: the chat's when it is the chat model (another one would make
+            Ollama reload it between the chat and the indexing), a small one for a model of its own. predict is the
+            tokens an answer may take: its time is mostly them
         """
         self.__uri      : str   = uri
         self.__model    : str   = model

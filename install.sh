@@ -130,5 +130,12 @@ if [[ -n "${models:-}" ]] \
     warn "The embedding model $EMBED is not downloaded yet (for the knowledge base): ollama pull $EMBED"
 fi
 
+# Optional too: the model that describes the code of the sources indexed with --describe (empty: the chat model)
+DESCRIBE="$("$VENV/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from config.settings import settings as s; print(s.get("rag.describe.model") or "")' "$REPO/src")"
+if [[ -n "${models:-}" && -n "$DESCRIBE" ]] \
+    && ! awk -v model="$DESCRIBE" 'NR > 1 && ($1 == model || $1 == model ":latest") { found = 1 } END { exit !found }' <<<"$models"; then
+    warn "The model $DESCRIBE is not downloaded yet (it describes the code for /index --describe): ollama pull $DESCRIBE"
+fi
+
 info "Done! Type 'louis' in any directory to start it there."
 info "louis runs from $REPO: keep this folder, and run install.sh again when requirements.txt changes."

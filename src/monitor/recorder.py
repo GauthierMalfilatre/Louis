@@ -38,7 +38,7 @@ VERSION: int = 1
 RUN_SETTINGS: tuple[str, ...] = (
     "chat.context", "chat.predict", "chat.stream", "chat.keepalive", "chat.tools.maxdepth", "guard.enabled",
     "rag.enabled", "rag.rerank.enabled", "rag.rerank.model", "rag.rerank.pool", "rag.rerank.min_score",
-    "rag.rerank.max_chars"
+    "rag.rerank.max_chars", "rag.embed.gpu"
 )
 
 # Characters kept of each text: enough to know what it was about

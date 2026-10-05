@@ -6,6 +6,7 @@ Louis peut chercher dans de la documentation et des exemples de code que tu lui 
 
 ```bash
 ollama pull nomic-embed-text            # une fois : le modèle qui lit le sens des passages (274 Mo)
+ollama pull qwen3:4b-instruct           # pour --describe seulement : le modèle qui décrit le code (~2,5 Go)
 
 louis --index ~/docs/python --name python   # indexe un gros dossier, sans lancer le chat (Ctrl+C : ce qui est fait est gardé)
 louis                                       # puis, dans une session :
@@ -107,23 +108,23 @@ louis --index ~/projet --name api --describe   # long la première fois : une re
 - La description est lue avec le passage par les vecteurs, les mots-clés et le reranker. Le modèle de chat, lui, lit le code : une description peut se tromper, le code non.
 - Seuls les fichiers de code sont décrits (un document dit déjà ce qu'il fait avec des mots). Le choix est gardé avec la source, comme les `--exclude`.
 - Chaque description est gardée (table `descriptions`, par un hash du modèle, du chemin et du passage) : un passage qui n'a pas changé n'est jamais redécrit, même quand la source est redécoupée ou que `--describe` est coupé puis remis. Un Ctrl+C ne perd rien de ce qui est déjà décrit.
-- Le temps d'une description, c'est surtout ce que le modèle écrit : la réponse est courte (une phrase, `rag.describe.predict` = 80 tokens au plus). Les requêtes d'un même fichier commencent par les mêmes lignes (les consignes, le fichier, son plan) et le passage vient en dernier : Ollama ne relit pas ce début d'une requête à l'autre. Mesuré : ~7 s par passage avec qwen3:8b sur un GPU de portable, contre ~13 s avant ces deux réglages.
-- Sans réponse du modèle (Ollama arrêté), l'indexation continue sans descriptions ; relancer `/index` écrit celles qui manquent.
-- `rag.describe.model` donne un autre modèle d'Ollama pour les écrire (par défaut celui du chat, déjà chargé : en changer fait recharger le GPU).
-- Pendant l'indexation, le modèle de chat et celui des vecteurs sont chargés ensemble : sur un GPU de 6 Go, Ollama met alors une partie du modèle de chat sur le CPU (vu avec `/api/ps` : 4,3 Go sur 7,2 en VRAM), et une description prend ~27 s au lieu de ~7. Une piste : calculer les vecteurs sur le CPU (petit modèle) pour laisser tout le GPU aux descriptions.
+- Sans réponse du modèle (Ollama arrêté), l'indexation continue sans descriptions ; relancer `/index` écrit celles qui manquent. Changer de modèle (`rag.describe.model`) fait redécrire la source au prochain `/index` ; revenir à un modèle déjà utilisé reprend ses descriptions du cache.
 
-Mesuré sur le même projet (181 passages de code décrits, ~45 min à cause du partage du GPU), avec les filtres idéaux ; sans filtre, mêmes chiffres :
+**Le modèle qui décrit.** Le temps d'une description, c'est surtout ce que le modèle écrit (mesuré avec les compteurs d'Ollama : ~0,7 s pour lire le prompt, le reste pour écrire la cinquantaine de tokens de la réponse). La réponse est donc courte (une phrase, `rag.describe.predict` = 80 tokens au plus), et les requêtes d'un même fichier commencent par les mêmes lignes (les consignes, le fichier, son plan) : Ollama ne relit pas ce début d'une requête à l'autre. Surtout, le modèle doit tenir **tout entier** dans le GPU : qwen3:8b avec le contexte du chat (12 288 tokens) fait 7,2 Go, seuls 4,3 Go tiennent sur un GPU de 6 Go, et Ollama fait tourner le reste sur le CPU (~8,5 tokens/s). Par défaut, c'est donc `qwen3:4b-instruct` qui décrit, avec un petit contexte à lui (`rag.describe.context` = 4 096 : un passage et le plan de son fichier) : 3,2 Go, tout dans le GPU. Il doit répondre sans réfléchir d'abord : un modèle « instruct », pas « thinking » (`qwen3:4b` en est un : il écrit son raisonnement à la place de la réponse, et `think: false` n'y change rien). `rag.describe.model` à `None` reprend le modèle du chat.
 
-| Seuil `rag.rerank.min_score` | Sans descriptions : hit@4 / hors sujet sans passage | Avec descriptions : hit@4 / hors sujet sans passage |
-| - | - | - |
-| 0.01 | 0.77 / 3 sur 6 | **0.86** / 3 sur 6 |
-| 0.02 | 0.77 / 4 sur 6 | **0.82** / 3 sur 6 |
-| 0.05 (défaut) | 0.77 / 5 sur 6 | 0.73 / 5 sur 6 |
-| 0.2 | 0.64 / 6 sur 6 | 0.73 / 6 sur 6 |
+**Les vecteurs.** Ceux des questions sont calculés sur le CPU (`rag.embed.gpu`, ~30 ms par question, les mêmes vecteurs à 0,999996 près) : pendant le chat, le GPU reste au modèle de chat. Ceux des passages, des centaines à la fois, vont toujours sur le GPU à l'indexation : 219 passages en 7,8 s, contre 129 s sur le CPU. Ollama déplace le modèle une fois de l'un à l'autre (la première question après un `/index` prend ~1 s).
+
+Mesuré sur le même projet (181 passages de code décrits, GPU de 6 Go, seuil par défaut 0.05), avec les filtres idéaux ; sans filtre, mêmes chiffres :
+
+| | hit@4 | hit@20 | Hors sujet sans passage | Temps par passage | Projet entier |
+| - | - | - | - | - | - |
+| Sans descriptions | 0.77 | 0.91 | 5 sur 6 | – | – |
+| Décrit par qwen3:8b | 0.73 | 0.95 | 5 sur 6 | 8 à 18 s | 25 à 45 min |
+| **Décrit par qwen3:4b-instruct** (défaut) | **0.82** | **0.95** | **5 sur 6** | **~2 s** | **~6 min** |
 
 - **Le rappel monte** : hit@20 0.91 → 0.95. Une question en français sur du code écrit en anglais (« carburant » face à `fuel`), absente des 20 candidats, passe au rang 1.
-- **Le classement s'améliore** : sans seuil, hit@4 0.77 → 0.86. La question sur les touches du clavier passe du rang 20 au rang 3, celle sur les réseaux d'un module nommé au rang 1.
-- **Mais les scores se resserrent** : plusieurs bonnes réponses sont maintenant dans les 4 premières avec un score entre 0.01 et 0.05, et le seuil par défaut les écarte (hit@4 0.73). Avec des sources décrites, un seuil plus bas garde ces réponses, au prix de passages rendus à plus de questions hors sujet : à 0.02, une bonne réponse de plus que sans descriptions, deux questions hors sujet de plus qui reçoivent des passages. 6 questions hors sujet, c'est peu pour trancher : à mesurer sur ses propres sources.
+- **Le classement aussi**, au seuil par défaut : avec qwen3:4b-instruct, quatre questions gagnent des places (le calcul de la cible de deux variantes d'un algorithme, l'exploration par bruit, le choix du moteur d'un agent, les réseaux d'un module nommé), une en perd (les touches du clavier, du rang 3 au rang 14).
+- Les descriptions de qwen3:8b resserraient les scores : plusieurs bonnes réponses passaient sous le seuil de 0.05 (hit@4 0.73 à 0.05, 0.86 à 0.01). Celles de qwen3:4b-instruct gardent le seuil par défaut utilisable (0.82 de 0.02 à 0.1). Sur 22 questions, ce sont des écarts d'une ou deux questions : à mesurer sur ses propres sources.
 
 ## Mesurer
 

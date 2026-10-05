@@ -43,17 +43,26 @@ settings: dict[str] = {
     "rag.embed.query_prefix"   : "search_query: ",
     "rag.embed.document_prefix": "search_document: ",
     "rag.embed.batch"      : 32,
+    # The questions embedded on the GPU too: off, on the CPU (a question takes ~30 ms, the same vectors). On a GPU of a few
+    # GB, every MB the embedding model leaves is one more for the chat model. The passages of /index always go to the GPU:
+    # hundreds at once, ~50 times faster there
+    "rag.embed.gpu"        : False,
     # Passages search_knowledge gives back by default
     "rag.results"          : 4,
     # A long file with fewer distinct lines than this share was made by a program (a grid of settings, a dump): it is not
     # indexed, its passages would all look alike and take the places of the others. 0: only those marked "@generated"...
     # To leave out other files of a folder: /index <dossier> [<nom>] --exclude "<motif>" (kept for its next /index)
     "rag.index.generated_ratio": 0.10,
-    # Descriptions: for a source indexed with --describe, the chat model writes what each passage of code does, in one
+    # Descriptions: for a source indexed with --describe, a model of Ollama writes what each passage of code does, in one
     # sentence of plain words searched with it ("lit les touches du clavier" for code that only says K_LEFT). One
-    # request per passage at indexing, ~5-10s each on a laptop GPU, kept: a passage that did not change is not described
-    # again. model: another one of Ollama (None: the chat model, already loaded); predict: the tokens of an answer at most
-    "rag.describe.model"   : None,
+    # request per passage at indexing, kept: a passage that did not change is not described again.
+    # model: a small one that fits whole in the GPU writes them several times faster than the chat model (measured on
+    # 6 GB: ~1.5s a passage with qwen3:4b-instruct, 8 to 18s with qwen3:8b, of which a part runs on the CPU). It must
+    # answer without thinking first: an "instruct" model, not a "thinking" one (qwen3:4b is one). None: the chat model.
+    # context: its num_ctx when it is not the chat model (a passage and the outline of its file); predict: the tokens of
+    # an answer at most
+    "rag.describe.model"   : "qwen3:4b-instruct",
+    "rag.describe.context" : 4096,
     "rag.describe.predict" : 80,
     # Reranking: the passages the search found are read again with the question by a cross-encoder (ONNX on the CPU,
     # by fastembed: installed with the guard, or by requirements-rerank.txt), the best first, and those under

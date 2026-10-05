@@ -99,7 +99,8 @@ class Knowledge:
             settings.get("rag.embed.model", "nomic-embed-text"),
             settings.get("rag.embed.query_prefix", ""),
             settings.get("rag.embed.document_prefix", ""),
-            settings.get("rag.embed.batch", 32)
+            settings.get("rag.embed.batch", 32),
+            settings.get("rag.embed.gpu", False)
         )
         reranker: Reranker | None = Reranker(
             settings.get("rag.rerank.model", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"),
@@ -107,10 +108,15 @@ class Knowledge:
             settings.get("rag.rerank.min_score", 0.0),
             settings.get("rag.rerank.max_chars", 0)
         ) if settings.get("rag.rerank.enabled", False) else None
+        chat: str = f"{settings['chat.model.name']}:{settings['chat.model.parameters']}"
+        model: str = settings.get("rag.describe.model") or chat
         describer: Describer = Describer(
             settings["chat.uri"],
-            settings.get("rag.describe.model") or f"{settings['chat.model.name']}:{settings['chat.model.parameters']}",
-            settings.get("chat.context", 12288),
+            model,
+            # The chat model keeps the context of the chat (another one would make Ollama reload it); another model
+            # has its own, small: a prompt is one passage and the outline of its file, and the less context, the more
+            # of the model fits in the GPU
+            settings.get("chat.context", 12288) if model == chat else settings.get("rag.describe.context", 4096),
             settings.get("chat.keepalive", "30m"),
             settings.get("rag.describe.predict", 80)
         )
@@ -240,7 +246,7 @@ class Knowledge:
 
         embedder: Embedder | None = self.__embedder
         patterns, described = self.__index.begin(source, root, embedder.model if embedder else None, VERSION, exclude,
-                                                 describe)
+                                                 describe, self.__describer.model if self.__describer else None)
         describer: Describer | None = self.__describer if described else None
         known: dict[str, tuple[str, bool]] = self.__index.files(source)
 

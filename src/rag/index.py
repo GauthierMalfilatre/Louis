@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS sources (
     updated_at TEXT NOT NULL,
     exclude    TEXT,
     chunker    INTEGER,
-    describe   INTEGER
+    describe   INTEGER,
+    describer  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS files (
@@ -68,11 +69,11 @@ CREATE INDEX IF NOT EXISTS idx_descriptions_source ON descriptions(source);
 
 # The columns added since the first index files: added to an older file when it is opened, its rows kept
 # (sources.exclude: the patterns left out of a folder, JSON; sources.chunker: the version of the cutting its passages
-# were made with; sources.describe: whether the chat model describes its passages of code; chunks.context: where a
-# passage is in its file, "class Agent › def run"; chunks.description: what it does, written by the chat model)
+# were made with; sources.describe: whether a model describes its passages of code, sources.describer: which one;
+# chunks.context: where a passage is in its file, "class Agent › def run"; chunks.description: what it does)
 COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("sources", "exclude", "TEXT"), ("sources", "chunker", "INTEGER"), ("sources", "describe", "INTEGER"),
-    ("chunks", "context", "TEXT"), ("chunks", "description", "TEXT")
+    ("sources", "describer", "TEXT"), ("chunks", "context", "TEXT"), ("chunks", "description", "TEXT")
 )
 
 # The rank of a passage counts for 1 / (RRF + rank) in each list it is in: the usual constant of the fusion
@@ -212,36 +213,42 @@ class Index:
         return {row["path"]: (row["hash"], bool(row["embedded"])) for row in rows}
 
     def begin(self, source: str, root: str, model: str | None, chunker: int = 0,
-              exclude: list[str] | None = None, describe: bool | None = None) -> tuple[list[str], bool]:
+              exclude: list[str] | None = None, describe: bool | None = None,
+              describer: str | None = None) -> tuple[list[str], bool]:
         """
             Start (or go on with) a source, and give what it keeps from one indexing to the next: the patterns of paths
             left out of it (exclude when given, they replace those it had) and whether its code is described (describe
             when given). Its vectors belong to one embedding model: with another one, the old vectors are of no use,
             and its files are embedded again. Without a model (none answers), they stay. Its passages were cut by one
-            version of the chunker, and described or not: when either changes, all its files are read again
+            version of the chunker, described or not, by one describer (the model writing the descriptions): when any
+            of them changes, all its files are read again
         """
         db: sqlite3.Connection = self.__open()
-        row = db.execute("SELECT model, exclude, chunker, describe FROM sources WHERE name = ?", (source,)).fetchone()
+        row = db.execute("SELECT model, exclude, chunker, describe, describer FROM sources WHERE name = ?",
+                         (source,)).fetchone()
         patterns: list[str] = ([pattern for pattern in exclude if pattern.strip()] if exclude is not None
                                else json.loads(row["exclude"] or "[]") if row is not None else [])
         described: bool = describe if describe is not None else bool(row["describe"]) if row is not None else False
+        # Who wrote the descriptions matters only while there are some
+        writer: str | None = describer if described else None
         with db:
             if row is None:
-                db.execute("INSERT INTO sources(name, root, model, updated_at, exclude, chunker, describe)"
-                           " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                           (source, root, model, now(), json.dumps(patterns), chunker, int(described)))
+                db.execute("INSERT INTO sources(name, root, model, updated_at, exclude, chunker, describe, describer)"
+                           " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                           (source, root, model, now(), json.dumps(patterns), chunker, int(described), writer))
             else:
                 if model and row["model"] and row["model"] != model:
                     db.execute("UPDATE chunks SET vector = NULL WHERE file_id IN (SELECT id FROM files WHERE source = ?)",
                                (source,))
                     db.execute("UPDATE files SET embedded = 0 WHERE source = ?", (source,))
-                if (row["chunker"] or 0) != chunker or bool(row["describe"]) != described:
+                if ((row["chunker"] or 0) != chunker or bool(row["describe"]) != described
+                        or (described and row["describer"] != writer)):
                     # No hash matches any more: every file is cut again, and embedded again (its descriptions, if any,
-                    # come from the cache when its passages did not change)
+                    # come from the cache when its passages and their describer did not change)
                     db.execute("UPDATE files SET hash = '' WHERE source = ?", (source,))
                 db.execute("UPDATE sources SET root = ?, model = COALESCE(?, model), updated_at = ?, exclude = ?,"
-                           " chunker = ?, describe = ? WHERE name = ?",
-                           (root, model, now(), json.dumps(patterns), chunker, int(described), source))
+                           " chunker = ?, describe = ?, describer = ? WHERE name = ?",
+                           (root, model, now(), json.dumps(patterns), chunker, int(described), writer, source))
         self.__matrix = None
         return patterns, described
 
