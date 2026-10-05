@@ -12,19 +12,23 @@
 ## reranker reads each of those passages with the question, puts the best first and leaves out the near-misses
 ## (rag/reranker.py). Without the reranker (turned off, not installed), the order of the index is kept, and nothing is left out.
 ## A search may be kept to some files, by their path or their kind (code, doc, config, data): the model chooses, from
-## what catalog() tells it the base holds
+## what catalog() tells it the base holds.
+## A source may ask for its passages of code to be described by the chat model at indexing (/index --describe): the
+## description is searched with the passage (rag/describer.py)
 ##
 from dataclasses import dataclass, replace
-from rag.chunker import split, VERSION
+from rag.chunker import Chunk, split, VERSION
 from rag.context import contexts, header, brief
+from rag.describer import Describer, DescribeError
 from rag.embedder import Embedder, EmbedError
-from rag.index import Index, Hit, Filter, path_matches
+from rag.index import Index, Hit, Filter, path_matches, kind_of
 from rag.ingest import scan, load, generated, GENERATED_RATIO
 from rag.reranker import Reranker, RerankError
 from events.event_bus import EventBus
-from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_RETRIEVED
+from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_RETRIEVED, RAG_DESCRIBE_PROGRESS
 from config.settings import settings as default_settings
 from logger.logger import log
+import hashlib
 import os
 import re
 import time
@@ -44,6 +48,17 @@ def source_name(root: str, name: str | None = None) -> str:
     """ The name of a source: the one given, or the name of its folder, cut to what a command can type """
     return re.sub(r"[^\w.-]+", "-", (name or os.path.basename(os.path.normpath(root)) or "root")).strip("-") or "root"
 
+def passage(path: str, context: str, description: str, text: str, reranked: bool = False) -> str:
+    """
+        A passage as the embeddings and the reranker read it: where it is, what it does when it was described, its
+        text. The reranker reads a shorter context: each character of it is one of the passage less (rag/context.py)
+    """
+    return "\n".join(part for part in (header(path, brief(context) if reranked else context), description, text) if part)
+
+def describable(path: str) -> bool:
+    """ Whether the passages of a file are described: its code only (a document already says what it does in words) """
+    return kind_of(path) == "code" and not path.endswith(".ipynb")
+
 @dataclass(frozen=True, slots=True)
 class Found:
     """
@@ -61,17 +76,20 @@ class Knowledge:
         Without the embedding model (Ollama stopped, model not downloaded), it goes on by keywords alone
     """
     def __init__(self, bus: EventBus, index: Index, embedder: Embedder | None, results: int = 4,
-                 reranker: Reranker | None = None, generated_ratio: float = GENERATED_RATIO):
+                 reranker: Reranker | None = None, generated_ratio: float = GENERATED_RATIO,
+                 describer: Describer | None = None):
         """
             Init the knowledge base on an index, embedding with embedder (or not at all), reranking with reranker (or
-            not). A file with fewer distinct lines than generated_ratio is not indexed (0: only the marked ones)
+            not). A file with fewer distinct lines than generated_ratio is not indexed (0: only the marked ones).
+            describer writes what the passages of code do, for the sources that ask for it
         """
-        self.__bus      : EventBus        = bus
-        self.__index    : Index           = index
-        self.__embedder : Embedder | None = embedder
-        self.__results  : int             = results
-        self.__reranker : Reranker | None = reranker
-        self.__generated: float           = generated_ratio
+        self.__bus      : EventBus          = bus
+        self.__index    : Index             = index
+        self.__embedder : Embedder | None   = embedder
+        self.__results  : int               = results
+        self.__reranker : Reranker | None   = reranker
+        self.__generated: float             = generated_ratio
+        self.__describer: Describer | None  = describer
 
     @classmethod
     def from_settings(cls, settings: dict[str], bus: EventBus) -> "Knowledge":
@@ -89,8 +107,15 @@ class Knowledge:
             settings.get("rag.rerank.min_score", 0.0),
             settings.get("rag.rerank.max_chars", 0)
         ) if settings.get("rag.rerank.enabled", False) else None
+        describer: Describer = Describer(
+            settings["chat.uri"],
+            settings.get("rag.describe.model") or f"{settings['chat.model.name']}:{settings['chat.model.parameters']}",
+            settings.get("chat.context", 12288),
+            settings.get("chat.keepalive", "30m"),
+            settings.get("rag.describe.predict", 80)
+        )
         return cls(bus, Index(rag_path()), embedder, settings.get("rag.results", 4), reranker,
-                   settings.get("rag.index.generated_ratio", GENERATED_RATIO))
+                   settings.get("rag.index.generated_ratio", GENERATED_RATIO), describer)
 
     @property
     def empty(self) -> bool:
@@ -163,8 +188,8 @@ class Knowledge:
         if reranker is not None and candidates:
             try:
                 # Where a passage is tells what it is about as much as its text: "auth/login.py › def check_password"
-                # for "how users log in"
-                scores: list[float] = reranker.score(query, [f"{header(hit.path, brief(hit.context))}\n{hit.text}"
+                # for "how users log in"; its description says it in the words of the question
+                scores: list[float] = reranker.score(query, [passage(hit.path, hit.context, hit.description, hit.text, True)
                                                              for hit in candidates])
             except RerankError as e:
                 log.warning(f"[rag] not reranking: {e.message}")
@@ -195,12 +220,15 @@ class Knowledge:
         )
         return Found(hits, len(candidates), files)
 
-    def index(self, root: str, name: str | None = None, exclude: list[str] | None = None) -> dict:
+    def index(self, root: str, name: str | None = None, exclude: list[str] | None = None,
+              describe: bool | None = None) -> dict:
         """
             Index a folder as a source, or bring it up to date: only the files that changed are read again,
             and the ones gone are forgotten. What was done is told to the bus; a Ctrl+C leaves the files
             done so far indexed (each one is saved whole). exclude, the patterns of paths left out (see
             rag.index.path_matches), is kept with the source: given, it replaces the patterns it had; None keeps them.
+            describe too: whether the chat model describes its passages of code (slow: one request per passage, but
+            each description is kept, a passage that did not change is never described again).
             The files made by a program are left out too (rag.ingest.generated), and named in RAG_INDEXED.
             NOTE: Raisable (OSError, sqlite3.Error)
         """
@@ -211,15 +239,20 @@ class Knowledge:
         self.__bus.dispatch(RAG_INDEXING, source=source, root=root, files=len(paths))
 
         embedder: Embedder | None = self.__embedder
-        patterns: list[str] = self.__index.begin(source, root, embedder.model if embedder else None, VERSION, exclude)
+        patterns, described = self.__index.begin(source, root, embedder.model if embedder else None, VERSION, exclude,
+                                                 describe)
+        describer: Describer | None = self.__describer if described else None
         known: dict[str, tuple[str, bool]] = self.__index.files(source)
 
         seen: set[str] = set()
-        # The files to save, with their passages and their contexts: embedded together once there are enough of them
-        work: list[tuple[str, str, list, list[str]]] = []
-        counts: dict[str, int] = {"updated": 0, "unchanged": 0, "skipped": 0, "excluded": 0, "chunks": 0, "embedded": 0}
+        # The files to save, with their passages, contexts and descriptions: embedded together once there are enough
+        work: list[tuple[str, str, list[Chunk], list[str], list[str]]] = []
+        counts: dict[str, int] = {"updated": 0, "unchanged": 0, "skipped": 0, "excluded": 0, "chunks": 0, "embedded": 0,
+                                  "described": 0, "reused": 0}
         made: list[dict] = []
         warning: str | None = None
+        describe_warning: str | None = None
+        describing: float = 0.0
 
         def flush() -> None:
             """ Embed the files waiting, and save them """
@@ -229,21 +262,59 @@ class Knowledge:
             vectors: list[list[float]] | None = None
             if embedder is not None:
                 try:
-                    vectors = embedder.documents([f"{header(path, context)}\n{chunk.text}" for path, _, chunks, found in work
-                                                  for chunk, context in zip(chunks, found)])
+                    vectors = embedder.documents([passage(path, context, description, chunk.text)
+                                                  for path, _, chunks, found, said in work
+                                                  for chunk, context, description in zip(chunks, found, said)])
                 except EmbedError as e:
                     # The rest of the folder is indexed by keywords: a later /index embeds it (the files are not "embedded")
                     log.warning(f"[rag] not embedding the rest of {source}: {e.message}")
                     embedder, warning = None, e.message
             taken: int = 0
-            for path, digest, chunks, found in work:
+            for path, digest, chunks, found, said in work:
                 self.__index.put(source, path, digest, chunks, vectors[taken:taken + len(chunks)] if vectors else None,
-                                 found)
+                                 found, said)
                 taken += len(chunks)
                 counts["updated"] += 1
                 counts["chunks"] += len(chunks)
                 counts["embedded"] += len(chunks) if vectors else 0
             work.clear()
+
+        def describe_file(path: str, chunks: list[Chunk], found: list[str]) -> tuple[list[str], bool]:
+            """
+                What each passage of a file does: from the cache, or asked to the chat model (the file's requests in a
+                row). And whether all of them are: a file left short (the model stopped answering) is read again by the
+                next /index, its passages already described coming from the cache
+            """
+            nonlocal describer, describe_warning, describing
+            if not described or not describable(path):
+                return [""] * len(chunks), True
+            # What every request of the file starts with, after the instructions: Ollama reads it once for all of them
+            outline: str = "\n".join(dict.fromkeys(f"- {brief(context)}" for context in found if context))
+            said: list[str] = []
+            asked: int = 0
+            for chunk, context in zip(chunks, found):
+                key: str = hashlib.sha1(f"{describer.model}\n{path}\n{context}\n{chunk.text}".encode("utf-8")).hexdigest()
+                description: str | None = self.__index.described(key)
+                if description is not None:
+                    counts["reused"] += 1
+                elif describer is not None:
+                    began: float = time.perf_counter()
+                    try:
+                        description = describer.describe(path, outline, (chunk.start, chunk.end), brief(context), chunk.text)
+                    except DescribeError as e:
+                        # The rest is indexed without descriptions: a later /index writes them (nothing is kept of them)
+                        log.warning(f"[rag] not describing the rest of {source}: {e.message}")
+                        describer, describe_warning = None, e.message
+                    describing += time.perf_counter() - began
+                    if description:
+                        self.__index.remember(source, key, description)
+                        counts["described"] += 1
+                        asked += 1
+                said.append(description or "")
+            if asked:
+                self.__bus.dispatch(RAG_DESCRIBE_PROGRESS, source=source, path=path, described=counts["described"],
+                                    reused=counts["reused"], seconds=round(describing, 1))
+            return said, all(said)
 
         for number, path in enumerate(paths, 1):
             relative: str = "/" + os.path.relpath(path, root).replace(os.sep, "/")
@@ -267,7 +338,11 @@ class Knowledge:
                 if before is not None and before[0] == digest and (before[1] or embedder is None):
                     counts["unchanged"] += 1
                 else:
-                    work.append((relative, digest, chunks, contexts(relative, loaded[0], chunks)))
+                    found: list[str] = contexts(relative, loaded[0], chunks)
+                    said, whole = describe_file(relative, chunks, found)
+                    # Saved without its hash when some of its passages lack their description: the next /index reads it
+                    # again, as a file without its vectors (what was described is in the cache)
+                    work.append((relative, digest if whole else "", chunks, found, said))
                     if sum(len(item[2]) for item in work) >= FLUSH_CHUNKS:
                         flush()
             if number % PROGRESS_EVERY == 0:
@@ -280,7 +355,8 @@ class Knowledge:
 
         result: dict = {
             "source": source, "root": root, "files": len(seen), **counts, "removed": len(gone), "warning": warning,
-            "exclude": patterns, "generated": made, "duration": round(time.perf_counter() - start, 3)
+            "exclude": patterns, "generated": made, "describe": described, "describe_warning": describe_warning,
+            "describe_seconds": round(describing, 1), "duration": round(time.perf_counter() - start, 3)
         }
         self.__bus.dispatch(RAG_INDEXED, **result)
         return result

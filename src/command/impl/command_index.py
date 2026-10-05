@@ -16,8 +16,9 @@ class IndexCommand(Command):
             "index",
             description="indexe un dossier de documentation ou de code dans la base de connaissances (sans argument : "
                         "les sources). --exclude laisse de côté des fichiers, et le reste aux /index suivants "
-                        "(--exclude \"\" n'exclut plus rien)",
-            usage="[<dossier> [<nom>] [--exclude <motif>]...]"
+                        "(--exclude \"\" n'exclut plus rien). --describe fait décrire chaque passage de code par le "
+                        "modèle (lent la première fois), --no-describe l'arrête",
+            usage="[<dossier> [<nom>] [--exclude <motif>]... [--describe | --no-describe]]"
         )
 
     def handle(self, app, arguments: str) -> None:
@@ -34,9 +35,13 @@ class IndexCommand(Command):
         words: list[str] = []
         # None: the patterns the source already has are kept. Given, they replace them ("" alone: none any more)
         exclude: list[str] | None = None
+        # None: the source keeps what it had (kept with it, as its patterns)
+        describe: bool | None = None
         rest = iter(tokens)
         for token in rest:
-            if token == "--exclude" or token.startswith("--exclude="):
+            if token in ("--describe", "--no-describe"):
+                describe = token == "--describe"
+            elif token == "--exclude" or token.startswith("--exclude="):
                 pattern: str | None = token.partition("=")[2] if "=" in token else next(rest, None)
                 if pattern is None:
                     self.error(app, "usage", "Usage : --exclude <motif>, par exemple --exclude \"config/*_grid.yml\".")
@@ -45,8 +50,9 @@ class IndexCommand(Command):
             else:
                 words.append(token)
         if not words:
-            if exclude is not None:
-                self.error(app, "usage", "Usage : /index <dossier> [<nom>] --exclude <motif> : le dossier d'abord.")
+            if exclude is not None or describe is not None:
+                self.error(app, "usage", "Usage : /index <dossier> [<nom>] [--exclude <motif>] [--describe] : "
+                                         "le dossier d'abord.")
                 return
             app.events.dispatch(RAG_SOURCES, sources=knowledge.sources())
             return
@@ -60,7 +66,7 @@ class IndexCommand(Command):
             return
         name: str = source_name(folder, words[1] if len(words) > 1 else None)
         # Everything it tells (start, progress, end) goes through RAG_INDEXING, RAG_INDEX_PROGRESS and RAG_INDEXED
-        knowledge.index(folder, name, exclude)
+        knowledge.index(folder, name, exclude, describe)
         # The model can look it up from now on, without restarting
         app.offer_knowledge()
 

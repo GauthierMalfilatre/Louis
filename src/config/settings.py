@@ -49,6 +49,12 @@ settings: dict[str] = {
     # indexed, its passages would all look alike and take the places of the others. 0: only those marked "@generated"...
     # To leave out other files of a folder: /index <dossier> [<nom>] --exclude "<motif>" (kept for its next /index)
     "rag.index.generated_ratio": 0.10,
+    # Descriptions: for a source indexed with --describe, the chat model writes what each passage of code does, in one
+    # sentence of plain words searched with it ("lit les touches du clavier" for code that only says K_LEFT). One
+    # request per passage at indexing, ~5-10s each on a laptop GPU, kept: a passage that did not change is not described
+    # again. model: another one of Ollama (None: the chat model, already loaded); predict: the tokens of an answer at most
+    "rag.describe.model"   : None,
+    "rag.describe.predict" : 80,
     # Reranking: the passages the search found are read again with the question by a cross-encoder (ONNX on the CPU,
     # by fastembed: installed with the guard, or by requirements-rerank.txt), the best first, and those under
     # min_score left out (0 to 1: 0 keeps them all). Download the model once: cd src && python -m rag.reranker

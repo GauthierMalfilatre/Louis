@@ -12,6 +12,7 @@ from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THI
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_COMPACTED
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
+from events.event_list import RAG_DESCRIBE_PROGRESS
 import json
 import os
 import re
@@ -140,6 +141,7 @@ class CLI(Interface):
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_rag_indexing, RAG_INDEXING)
         bus.subscribe(self.__on_rag_progress, RAG_INDEX_PROGRESS)
+        bus.subscribe(self.__on_rag_described, RAG_DESCRIBE_PROGRESS)
         bus.subscribe(self.__on_rag_indexed, RAG_INDEXED)
         bus.subscribe(self.__on_rag_sources, RAG_SOURCES)
         bus.subscribe(self.__on_rag_forgotten, RAG_FORGOTTEN)
@@ -243,6 +245,12 @@ class CLI(Interface):
         """ How far it is, dim:   … 300/2000 fichiers """
         self.out(f"  … {event.data['done']}/{event.data['total']} fichiers", dim=True)
 
+    def __on_rag_described(self, event: Event) -> None:
+        """ A file described: the model takes seconds a passage, the user sees it moving, dim """
+        data: dict = event.data
+        self.out(f"  … {short_path(data['path'])} décrit ({data['described']} passages décrits, "
+                 f"{data['reused']} repris, {data['seconds']:.0f}s)", dim=True)
+
     def __on_rag_indexed(self, event: Event) -> None:
         """ What the folder gave: the source, its files, its passages, and if the search by meaning works on them """
         data: dict = event.data
@@ -255,6 +263,11 @@ class CLI(Interface):
                          f"{data['warning'] or "aucun modèle d'embedding"}. Relance /index quand il répond.")
         if data.get("excluded"):
             lines.append(f"  {data['excluded']} fichiers exclus par {', '.join(data['exclude'])}.")
+        if data.get("describe"):
+            lines.append(f"  Code décrit : {data['described']} passages par le modèle ({data['describe_seconds']:.0f}s), "
+                         f"{data['reused']} repris des descriptions déjà faites.")
+            if data.get("describe_warning"):
+                lines.append(f"  Le reste sans description : {data['describe_warning']}. Relance /index quand il répond.")
         made: list[dict] = data.get("generated") or []
         if made:
             # Left out without being asked: the user must see which, and how to keep one
@@ -274,8 +287,9 @@ class CLI(Interface):
         for source in event.data["sources"]:
             words: str = "" if source["embedded"] == source["chunks"] else "  (mots-clés seulement)"
             excluded: str = f"  sans {', '.join(source['exclude'])}" if source.get("exclude") else ""
+            described: str = "  (code décrit)" if source.get("describe") else ""
             lines.append(f"  {source['name']:16} {source['files']:>6} fichiers {source['chunks']:>7} passages  "
-                         f"[{short_path(source['root'])}]{words}{excluded}")
+                         f"[{short_path(source['root'])}]{words}{described}{excluded}")
         self.out("\n".join(lines) + "\n")
 
     def __on_rag_forgotten(self, event: Event) -> None:

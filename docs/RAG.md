@@ -13,6 +13,7 @@ louis                                       # puis, dans une session :
 > /index ~/docs/rust rust                   # indexe (ou met à jour) un dossier, sous le nom « rust »
 > /index ~/projet api --exclude "tests" --exclude "*.min.css"   # sans ces fichiers, et aux /index suivants aussi
 > /index ~/projet api --exclude ""          # n'exclut plus rien
+> /index ~/projet api --describe            # le modèle décrit chaque passage de code (lent la première fois)
 > /unindex rust                             # retire une source
 > comment lire un fichier json en python ?  # Louis appelle search_knowledge tout seul
 ```
@@ -31,6 +32,7 @@ louis                                       # puis, dans une session :
 | Choix des fichiers | `rag/ingest.py` | Les dossiers de dépendances et `.git`, les liens, les fichiers binaires, minifiés ou de plus de 1 Mo, les lockfiles et les fichiers de clés (`.env`, `*.pem`...) sont laissés de côté, comme les fichiers **générés par un programme** et ceux des motifs `--exclude` de la source (voir [Fichiers laissés de côté](#fichiers-laissés-de-côté)) |
 | Découpage | `rag/chunker.py` | Des passages d'environ 1 500 caractères, coupés à une ligne vide quand il y en a une, avec 3 lignes de recouvrement |
 | Contexte | `rag/context.py` | Chaque passage reçoit une ligne qui dit où il est dans son fichier : `class Trainer › def run(self)`, les titres d'un document, la clé d'un YAML (voir [Contexte des passages](#contexte-des-passages)) |
+| Description | `rag/describer.py` | Avec `--describe`, le modèle de chat écrit ce que fait chaque passage de code, en une phrase (voir [Descriptions du code](#descriptions-du-code)) |
 | Sens | `rag/embedder.py` | Un vecteur par passage, par un modèle d'embedding d'Ollama (`/api/embed`) |
 | Index | `rag/index.py` | SQLite : le texte en FTS5 (BM25) et les vecteurs en blob. Une recherche fait les deux et fusionne les classements (reciprocal rank fusion) : les mots-clés trouvent le nom exact d'une fonction, les vecteurs trouvent ce que la question veut dire sans ses mots |
 | Reranking | `rag/reranker.py` | Les 20 passages trouvés sont relus **avec la question** par un cross-encoder, qui note de 0 à 1 à quel point chacun y répond : les meilleurs passent devant, ceux sous `rag.rerank.min_score` sont écartés |
@@ -85,7 +87,43 @@ Ce contexte est lu avec le texte du passage par les vecteurs et par les mots-cl�
 
 Changer la façon de découper ou le contexte augmente `rag/chunker.py`, `VERSION` : le prochain `/index` de chaque source relit alors tous ses fichiers, sans rien à faire à la main.
 
-Mesuré sur le même projet (presque tout en Python) : **neutre**. hit@4 0.82 → 0.77 avec les filtres (une question sur 22, dans le bruit), hit@20 identique, un peu moins de passages rendus aux questions hors sujet. Les questions visées ne sont pas corrigées : l'index trouve bien les passages de `def run` quand on demande « la boucle principale », c'est le reranker qui ne relie pas les deux. Le contexte reste pour ce qu'il apporte au modèle (il voit où est chaque passage) et aux documents (les titres), que ce projet ne mesure presque pas. Ce qui corrigerait ces questions : une phrase écrite par un modèle de langage pour chaque passage (« les flèches du clavier commandent les moteurs »), une requête par passage à l'indexation, à envisager plus tard pour le code seulement.
+Mesuré sur le même projet (presque tout en Python) : **neutre**. hit@4 0.82 → 0.77 avec les filtres (une question sur 22, dans le bruit), hit@20 identique, un peu moins de passages rendus aux questions hors sujet. Les questions visées ne sont pas corrigées : l'index trouve bien les passages de `def run` quand on demande « la boucle principale », c'est le reranker qui ne relie pas les deux. Le contexte reste pour ce qu'il apporte au modèle (il voit où est chaque passage) et aux documents (les titres), que ce projet ne mesure presque pas. Ce qui corrige ces questions : une phrase écrite par le modèle pour chaque passage, la section suivante.
+
+## Descriptions du code
+
+Le code dit ce qu'il fait avec des identifiants (`pygame.K_LEFT`, `fuel`, `except KeyboardInterrupt`), les questions avec des mots (« les touches du clavier », « le carburant », « Ctrl+C ») : ni les vecteurs, ni les mots-clés, ni le reranker ne relient les deux. Avec `--describe`, le modèle de chat écrit à l'indexation une phrase pour chaque passage de code, dans les mots de quelqu'un qui le cherche, suivie de cinq mots-clés anglais (`rag/describer.py`) :
+
+```
+Human.py:142-174   Ce code permet à un agent humain de contrôler un environnement en utilisant les touches du clavier,
+                   calcule un score basé sur les récompenses (...). Mots-clés : keyboard input, environment control, (...)
+```
+
+```bash
+louis --index ~/projet --name api --describe   # long la première fois : une requête au modèle par passage de code
+> /index ~/projet api                          # les suivants : seuls les passages qui ont changé sont décrits
+> /index ~/projet api --no-describe            # sans descriptions (elles restent en cache si on revient)
+```
+
+- La description est lue avec le passage par les vecteurs, les mots-clés et le reranker. Le modèle de chat, lui, lit le code : une description peut se tromper, le code non.
+- Seuls les fichiers de code sont décrits (un document dit déjà ce qu'il fait avec des mots). Le choix est gardé avec la source, comme les `--exclude`.
+- Chaque description est gardée (table `descriptions`, par un hash du modèle, du chemin et du passage) : un passage qui n'a pas changé n'est jamais redécrit, même quand la source est redécoupée ou que `--describe` est coupé puis remis. Un Ctrl+C ne perd rien de ce qui est déjà décrit.
+- Le temps d'une description, c'est surtout ce que le modèle écrit : la réponse est courte (une phrase, `rag.describe.predict` = 80 tokens au plus). Les requêtes d'un même fichier commencent par les mêmes lignes (les consignes, le fichier, son plan) et le passage vient en dernier : Ollama ne relit pas ce début d'une requête à l'autre. Mesuré : ~7 s par passage avec qwen3:8b sur un GPU de portable, contre ~13 s avant ces deux réglages.
+- Sans réponse du modèle (Ollama arrêté), l'indexation continue sans descriptions ; relancer `/index` écrit celles qui manquent.
+- `rag.describe.model` donne un autre modèle d'Ollama pour les écrire (par défaut celui du chat, déjà chargé : en changer fait recharger le GPU).
+- Pendant l'indexation, le modèle de chat et celui des vecteurs sont chargés ensemble : sur un GPU de 6 Go, Ollama met alors une partie du modèle de chat sur le CPU (vu avec `/api/ps` : 4,3 Go sur 7,2 en VRAM), et une description prend ~27 s au lieu de ~7. Une piste : calculer les vecteurs sur le CPU (petit modèle) pour laisser tout le GPU aux descriptions.
+
+Mesuré sur le même projet (181 passages de code décrits, ~45 min à cause du partage du GPU), avec les filtres idéaux ; sans filtre, mêmes chiffres :
+
+| Seuil `rag.rerank.min_score` | Sans descriptions : hit@4 / hors sujet sans passage | Avec descriptions : hit@4 / hors sujet sans passage |
+| - | - | - |
+| 0.01 | 0.77 / 3 sur 6 | **0.86** / 3 sur 6 |
+| 0.02 | 0.77 / 4 sur 6 | **0.82** / 3 sur 6 |
+| 0.05 (défaut) | 0.77 / 5 sur 6 | 0.73 / 5 sur 6 |
+| 0.2 | 0.64 / 6 sur 6 | 0.73 / 6 sur 6 |
+
+- **Le rappel monte** : hit@20 0.91 → 0.95. Une question en français sur du code écrit en anglais (« carburant » face à `fuel`), absente des 20 candidats, passe au rang 1.
+- **Le classement s'améliore** : sans seuil, hit@4 0.77 → 0.86. La question sur les touches du clavier passe du rang 20 au rang 3, celle sur les réseaux d'un module nommé au rang 1.
+- **Mais les scores se resserrent** : plusieurs bonnes réponses sont maintenant dans les 4 premières avec un score entre 0.01 et 0.05, et le seuil par défaut les écarte (hit@4 0.73). Avec des sources décrites, un seuil plus bas garde ces réponses, au prix de passages rendus à plus de questions hors sujet : à 0.02, une bonne réponse de plus que sans descriptions, deux questions hors sujet de plus qui reçoivent des passages. 6 questions hors sujet, c'est peu pour trancher : à mesurer sur ses propres sources.
 
 ## Mesurer
 

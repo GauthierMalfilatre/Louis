@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS sources (
     model      TEXT,
     updated_at TEXT NOT NULL,
     exclude    TEXT,
-    chunker    INTEGER
+    chunker    INTEGER,
+    describe   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS files (
@@ -47,19 +48,31 @@ CREATE TABLE IF NOT EXISTS chunks (
     end_line   INTEGER NOT NULL,
     text       TEXT NOT NULL,
     vector     BLOB,
-    context    TEXT
+    context    TEXT,
+    description TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
 
 -- rowid is the id of the chunk. Porter stems the words: "parsing" finds "parse"
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, path, tokenize = 'porter unicode61');
+
+-- What the chat model wrote of a passage, by what it was given (key: a hash of the model, the path and the passage):
+-- a source indexed again, or cut again, does not ask again for the passages that did not change
+CREATE TABLE IF NOT EXISTS descriptions (
+    key        TEXT PRIMARY KEY,
+    source     TEXT NOT NULL,
+    text       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_descriptions_source ON descriptions(source);
 """
 
 # The columns added since the first index files: added to an older file when it is opened, its rows kept
 # (sources.exclude: the patterns left out of a folder, JSON; sources.chunker: the version of the cutting its passages
-# were made with; chunks.context: where a passage is in its file, "class Agent › def run")
+# were made with; sources.describe: whether the chat model describes its passages of code; chunks.context: where a
+# passage is in its file, "class Agent › def run"; chunks.description: what it does, written by the chat model)
 COLUMNS: tuple[tuple[str, str, str], ...] = (
-    ("sources", "exclude", "TEXT"), ("sources", "chunker", "INTEGER"), ("chunks", "context", "TEXT")
+    ("sources", "exclude", "TEXT"), ("sources", "chunker", "INTEGER"), ("sources", "describe", "INTEGER"),
+    ("chunks", "context", "TEXT"), ("chunks", "description", "TEXT")
 )
 
 # The rank of a passage counts for 1 / (RRF + rank) in each list it is in: the usual constant of the fusion
@@ -140,6 +153,8 @@ class Hit:
     fused  : float | None = None
     # Where it is in its file ("class Trainer › def run(self)"), "" when nothing is known of it (rag/context.py)
     context: str = ""
+    # What it does, written by the chat model at indexing, "" when its source is not described (rag/describer.py)
+    description: str = ""
 
 def pack(vector: list[float]) -> bytes:
     """ A vector as it is saved: unit length (a dot product is then a cosine), 32 bits per number """
@@ -179,14 +194,15 @@ class Index:
         if self.__conn is None:
             return []
         rows = self.__conn.execute(
-            "SELECT s.name, s.root, s.model, s.updated_at, s.exclude,"
+            "SELECT s.name, s.root, s.model, s.updated_at, s.exclude, COALESCE(s.describe, 0) AS describe,"
             " (SELECT COUNT(*) FROM files f WHERE f.source = s.name) AS files,"
             " (SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.source = s.name) AS chunks,"
             " (SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id"
             "   WHERE f.source = s.name AND c.vector IS NOT NULL) AS embedded"
             " FROM sources s ORDER BY s.name"
         ).fetchall()
-        return [{**dict(row), "exclude": json.loads(row["exclude"] or "[]")} for row in rows]
+        return [{**dict(row), "exclude": json.loads(row["exclude"] or "[]"), "describe": bool(row["describe"])}
+                for row in rows]
 
     def files(self, source: str) -> dict[str, tuple[str, bool]]:
         """ The files of a source: for each path, the hash of what was indexed and whether it has its vectors """
@@ -196,39 +212,58 @@ class Index:
         return {row["path"]: (row["hash"], bool(row["embedded"])) for row in rows}
 
     def begin(self, source: str, root: str, model: str | None, chunker: int = 0,
-              exclude: list[str] | None = None) -> list[str]:
+              exclude: list[str] | None = None, describe: bool | None = None) -> tuple[list[str], bool]:
         """
-            Start (or go on with) a source, and give the patterns of paths left out of it: exclude when given (they
-            replace those it had), else the ones it had. Its vectors belong to one embedding model: with another one,
-            the old vectors are of no use, and its files are embedded again. Without a model (none answers), they stay.
-            Its passages were cut by one version of the chunker: with another one, all its files are read again
+            Start (or go on with) a source, and give what it keeps from one indexing to the next: the patterns of paths
+            left out of it (exclude when given, they replace those it had) and whether its code is described (describe
+            when given). Its vectors belong to one embedding model: with another one, the old vectors are of no use,
+            and its files are embedded again. Without a model (none answers), they stay. Its passages were cut by one
+            version of the chunker, and described or not: when either changes, all its files are read again
         """
         db: sqlite3.Connection = self.__open()
-        row = db.execute("SELECT model, exclude, chunker FROM sources WHERE name = ?", (source,)).fetchone()
+        row = db.execute("SELECT model, exclude, chunker, describe FROM sources WHERE name = ?", (source,)).fetchone()
         patterns: list[str] = ([pattern for pattern in exclude if pattern.strip()] if exclude is not None
                                else json.loads(row["exclude"] or "[]") if row is not None else [])
+        described: bool = describe if describe is not None else bool(row["describe"]) if row is not None else False
         with db:
             if row is None:
-                db.execute("INSERT INTO sources(name, root, model, updated_at, exclude, chunker) VALUES (?, ?, ?, ?, ?, ?)",
-                           (source, root, model, now(), json.dumps(patterns), chunker))
+                db.execute("INSERT INTO sources(name, root, model, updated_at, exclude, chunker, describe)"
+                           " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                           (source, root, model, now(), json.dumps(patterns), chunker, int(described)))
             else:
                 if model and row["model"] and row["model"] != model:
                     db.execute("UPDATE chunks SET vector = NULL WHERE file_id IN (SELECT id FROM files WHERE source = ?)",
                                (source,))
                     db.execute("UPDATE files SET embedded = 0 WHERE source = ?", (source,))
-                if (row["chunker"] or 0) != chunker:
-                    # No hash matches any more: every file is cut again, and embedded again
+                if (row["chunker"] or 0) != chunker or bool(row["describe"]) != described:
+                    # No hash matches any more: every file is cut again, and embedded again (its descriptions, if any,
+                    # come from the cache when its passages did not change)
                     db.execute("UPDATE files SET hash = '' WHERE source = ?", (source,))
                 db.execute("UPDATE sources SET root = ?, model = COALESCE(?, model), updated_at = ?, exclude = ?,"
-                           " chunker = ? WHERE name = ?", (root, model, now(), json.dumps(patterns), chunker, source))
+                           " chunker = ?, describe = ? WHERE name = ?",
+                           (root, model, now(), json.dumps(patterns), chunker, int(described), source))
         self.__matrix = None
-        return patterns
+        return patterns, described
+
+    def described(self, key: str) -> str | None:
+        """ What the chat model wrote of a passage before, None if it never did """
+        if self.__conn is None:
+            return None
+        row = self.__conn.execute("SELECT text FROM descriptions WHERE key = ?", (key,)).fetchone()
+        return row["text"] if row is not None else None
+
+    def remember(self, source: str, key: str, text: str) -> None:
+        """ Keep what the chat model wrote of a passage: saved at once, a Ctrl+C does not lose it """
+        db: sqlite3.Connection = self.__open()
+        with db:
+            db.execute("INSERT OR REPLACE INTO descriptions(key, source, text) VALUES (?, ?, ?)", (key, source, text))
 
     def put(self, source: str, path: str, digest: str, chunks: list[Chunk], vectors: list[list[float]] | None,
-            contexts: list[str] | None = None) -> None:
+            contexts: list[str] | None = None, descriptions: list[str] | None = None) -> None:
         """
-            Save a file of a source, in place of what was indexed of it: all its passages, or none. The context of a
-            passage is searched by keywords with its text: "run" finds the middle of a function that never says it
+            Save a file of a source, in place of what was indexed of it: all its passages, or none. The context and the
+            description of a passage are searched by keywords with its text: "run" finds the middle of a function that
+            never says it, "clavier" the code that only says K_LEFT
         """
         db: sqlite3.Connection = self.__open()
         with db:
@@ -239,12 +274,15 @@ class Index:
             ).lastrowid
             for i, chunk in enumerate(chunks):
                 context: str = contexts[i] if contexts else ""
+                description: str = descriptions[i] if descriptions else ""
                 chunk_id: int = db.execute(
-                    "INSERT INTO chunks(file_id, start_line, end_line, text, vector, context) VALUES (?, ?, ?, ?, ?, ?)",
-                    (file_id, chunk.start, chunk.end, chunk.text, pack(vectors[i]) if vectors else None, context or None)
+                    "INSERT INTO chunks(file_id, start_line, end_line, text, vector, context, description)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (file_id, chunk.start, chunk.end, chunk.text, pack(vectors[i]) if vectors else None, context or None,
+                     description or None)
                 ).lastrowid
-                db.execute("INSERT INTO chunks_fts(rowid, text, path) VALUES (?, ?, ?)",
-                           (chunk_id, f"{context}\n{chunk.text}" if context else chunk.text, path))
+                searched: str = "\n".join(part for part in (context, description, chunk.text) if part)
+                db.execute("INSERT INTO chunks_fts(rowid, text, path) VALUES (?, ?, ?)", (chunk_id, searched, path))
         self.__matrix = None
 
     def drop(self, source: str, path: str) -> None:
@@ -265,6 +303,7 @@ class Index:
         with db:
             db.execute("DELETE FROM chunks_fts WHERE rowid IN"
                        " (SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.source = ?)", (source,))
+            db.execute("DELETE FROM descriptions WHERE source = ?", (source,))
             db.execute("DELETE FROM sources WHERE name = ?", (source,))
         self.__matrix = None
         return count
@@ -328,12 +367,12 @@ class Index:
         if not best:
             return []
         rows = self.__conn.execute(
-            "SELECT c.id, f.source, f.path, c.start_line, c.end_line, c.text, c.context FROM chunks c"
+            "SELECT c.id, f.source, f.path, c.start_line, c.end_line, c.text, c.context, c.description FROM chunks c"
             " JOIN files f ON f.id = c.file_id WHERE c.id IN (%s)" % ",".join("?" * len(best)), best
         ).fetchall()
         by_id: dict[int, sqlite3.Row] = {row["id"]: row for row in rows}
         return [Hit(row["source"], row["path"], row["start_line"], row["end_line"], row["text"], round(scores[i], 4),
-                    context=row["context"] or "")
+                    context=row["context"] or "", description=row["description"] or "")
                 for i in best if (row := by_id.get(i)) is not None]
 
     def __by_keywords(self, query: str, pool: int, source: str | None, files: list[int] | None) -> list[int]:
