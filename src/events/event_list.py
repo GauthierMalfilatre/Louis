@@ -10,7 +10,7 @@ THINKING_DISABLED = "chat.thinking.disabled"   # data: none
 
 # The conversation, as it goes: the app never prints, the interfaces show these their own way
 CHAT_TURN_STARTED = "chat.turn.started"   # data: none (the model starts answering a message of the user)
-CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length", "refused"), message (None when done or cancelled)
+CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length", "refused", "empty"), message (None when done or cancelled)
 CHAT_TEXT         = "chat.text"           # data: text (a piece of the reply, as the model writes it)
 CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" if it only calls tools), tools (their names)
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
@@ -58,7 +58,8 @@ APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
 
 # A tool asks before acting: the interface shows the request, and answers with the same id.
 # Nobody answering means no: without an interface to ask the user, a tool never writes
-TOOL_BEGFOR_PERMISSION = "tool.permission.begfor"   # data: id, tool, summary (one sentence), preview (a diff, or "")
+# every_time: never granted by an "always" given before, the user is asked again (a share makes a link public)
+TOOL_BEGFOR_PERMISSION = "tool.permission.begfor"   # data: id, tool, summary (one sentence), preview (a diff, or ""), every_time
 TOOL_GRANT_PERMISSION  = "tool.permission.grant"    # data: id, granted
 
 # What the commands tell the user. The data is raw and JSON-friendly (full texts, raw paths): each
@@ -67,6 +68,15 @@ SESSION_CREATED = "session.created"   # data: user, persistent (saved from the f
 SESSION_SAVED   = "session.saved"     # data: id (the current session is in the database, from its first message on)
 SESSION_LIST    = "session.list"      # data: user, sessions: [{id, first_message, cwd, here, current, created_at}]
 SESSION_RESUMED = "session.resumed"   # data: id, user, messages (count), last_question, last_answer
+
+# A session written to a file by /export: id is None for a session never saved (the anonymous user's). With
+# --artifact, files the model wrote alone: files are their paths (None for a whole session)
+EXPORT_DONE     = "export.done"       # data: format ("json"...), path (absolute), id, messages (count, as exported), files, artifacts (count of files)
+
+# Public links (/share, /shares, /unshare): a share is the document as it was then, its sensitive data masked
+SHARE_CREATED   = "share.created"     # data: token, url, kind ("session" or "artifact"), id (the session), title, masked (texts changed)
+SHARE_LIST      = "share.list"        # data: user, shares: [{token, url, kind, session_id, title, created_at}] (newest first)
+SHARE_REVOKED   = "share.revoked"     # data: token, url
 
 COMMAND_UNKNOWN = "command.unknown"   # data: name, commands: [{name, usage, description}]
 COMMAND_ERROR   = "command.error"     # data: command, reason (a short code), message (one sentence), details...

@@ -24,7 +24,7 @@ ERRORS_DRIFT : float = 0.05
 RECENT  : timedelta = timedelta(days=1)
 BASELINE: timedelta = timedelta(days=7)
 # The ends of a turn where the user got no answer
-FAILED_TURNS: frozenset[str] = frozenset({"error", "loop", "rounds", "length"})
+FAILED_TURNS: frozenset[str] = frozenset({"error", "loop", "rounds", "length", "empty"})
 # Past this span, the series go by day instead of by hour
 HOURLY_SPAN: timedelta = timedelta(days=3)
 # The alerts shown: the most recent ones, the others are in the table of the configurations

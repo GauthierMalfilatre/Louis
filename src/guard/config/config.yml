@@ -10,7 +10,7 @@ models:
   #   OLLAMA_CONTEXT_LENGTH=12288 OLLAMA_KEEP_ALIVE=30m ollama serve
   - type: main
     engine: ollama
-    model: qwen3:8b
+    model: qwen3.5:9b
     parameters:
       base_url: http://localhost:11434/v1
       # A judge answers Yes or No at once: thinking first, qwen3 takes ~30s per check instead of ~4s
