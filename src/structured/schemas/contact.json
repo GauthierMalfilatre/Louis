@@ -1,0 +1,14 @@
+{
+  "title": "Contact",
+  "description": "Les coordonnées d'une personne trouvées dans un texte (signature de mail, carte de visite)",
+  "type": "object",
+  "properties": {
+    "nom": {"type": "string", "minLength": 1},
+    "entreprise": {"type": ["string", "null"]},
+    "poste": {"type": ["string", "null"]},
+    "email": {"type": ["string", "null"], "format": "email"},
+    "telephone": {"type": ["string", "null"]}
+  },
+  "required": ["nom", "entreprise", "poste", "email", "telephone"],
+  "additionalProperties": false
+}

@@ -1,0 +1,23 @@
+{
+  "title": "Tâches",
+  "description": "Les tâches d'un texte (notes, compte rendu, mail) : quoi faire, qui, priorité et échéance",
+  "type": "object",
+  "properties": {
+    "taches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "titre": {"type": "string", "minLength": 1, "description": "Ce qu'il faut faire, en quelques mots"},
+          "responsable": {"type": ["string", "null"], "description": "Qui s'en charge, null si personne n'est nommé"},
+          "priorite": {"type": "integer", "minimum": 1, "maximum": 5, "description": "1 : peut attendre, 5 : urgent"},
+          "echeance": {"type": ["string", "null"], "format": "date", "description": "AAAA-MM-JJ, null si aucune date"}
+        },
+        "required": ["titre", "responsable", "priorite", "echeance"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["taches"],
+  "additionalProperties": false
+}
