@@ -10,13 +10,13 @@ from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import APP_STARTED, APP_STOPPED, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_THINKING
-from events.event_list import CHAT_CONTEXT, CHAT_COMPACTED, STRUCTURED_REPLY, GUARD_TRIGGERED
+from events.event_list import CHAT_CONTEXT, CHAT_COMPACTED, CHAT_NUDGED, STRUCTURED_REPLY, GUARD_TRIGGERED, MODEL_CALL
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
 from events.event_list import SESSION_CREATED, SESSION_SAVED, SESSION_LIST, SESSION_RESUMED
 from events.event_list import EXPORT_DONE, SHARE_CREATED, SHARE_LIST, SHARE_REVOKED, SCHEMA_LIST
 from events.event_list import COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_DESCRIBE_PROGRESS, RAG_INDEXED, RAG_SOURCES
-from events.event_list import RAG_FORGOTTEN
+from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
 from export.render_html import MARKDOWN, render
 from session.database import Database, now
 from share import store
@@ -38,6 +38,7 @@ import socket
 import sqlite3
 import sys
 import threading
+import time
 
 HOST: str = "127.0.0.1"
 # The port of share.base_url when it is empty: the links of /share lead to louis --web by default
@@ -109,6 +110,25 @@ def tool_result(name: str, result: str | None, ok: bool | None, duration: float 
     return {"status": "ok" if ok else "failed", "summary": result_summary(name, result, bool(ok)),
             "duration": duration, "result": shown}
 
+def stats(calls: list[dict]) -> dict | None:
+    """
+        What the requests of a turn to the model cost (the replies of MODEL_CALL, with their latency): the tokens it
+        wrote and read, how fast it wrote, when the first word came, and the seconds lost loading the model
+    """
+    if not calls:
+        return None
+    written: int = sum(call["completion_tokens"] for call in calls)
+    generation: float = sum(call["generation"] for call in calls)
+    return {
+        "calls"  : len(calls),
+        "tokens" : written,
+        "prompt" : sum(call["prompt_tokens"] for call in calls),
+        "speed"  : round(written / generation, 1) if generation > 0 else None,
+        "ttft"   : calls[0]["ttft"],
+        "load"   : round(sum(call["load"] for call in calls), 2),
+        "latency": round(sum(call["latency"] for call in calls), 2),
+    }
+
 def history_items(history: list[dict]) -> list[dict]:
     """
         A resumed session as a page shows it (export.document.conversation): what the user said, the replies of the
@@ -163,7 +183,8 @@ class WebInterface(Interface):
         self.__ids  : itertools.count = itertools.count(1)
         self.__state: dict = {
             "user": None, "persistent": False, "session": None, "sessions": [], "model": None, "think": False,
-            "commands": [], "context": None, "busy": False, "turn": False, "asking": False, "closed": False,
+            "commands": [], "context": None, "busy": False, "turn": False, "started": None, "asking": False,
+            "closed": False,
         }
         # The messages of the pages, and their answer to the permission being asked (its id, None when none is)
         self.__inputs : queue.Queue = queue.Queue()
@@ -182,6 +203,7 @@ class WebInterface(Interface):
         self.__thinking     : int | None = None
         self.__progress     : int | None = None
         self.__running      : list[tuple[int, str]] = []
+        self.__calls        : list[dict] = []      # The requests to the model of the turn, summed up at its end
 
         self.__database: str | None = database
         self.__host    : str        = host
@@ -250,6 +272,11 @@ class WebInterface(Interface):
         bus.subscribe(self.__on_context, CHAT_CONTEXT)
         bus.subscribe(self.__on_compacted, CHAT_COMPACTED)
         bus.subscribe(self.__on_structured, STRUCTURED_REPLY)
+        bus.subscribe(self.__on_model_call, MODEL_CALL)
+        bus.subscribe(lambda event: self.__add(
+            kind="note", text="Louis avait annoncé une action sans la faire : il est relancé pour la faire."
+        ), CHAT_NUDGED)
+        bus.subscribe(self.__on_retrieved, RAG_RETRIEVED)
         bus.subscribe(self.__on_tool_started, TOOL_CALL_STARTED)
         bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
@@ -281,7 +308,7 @@ class WebInterface(Interface):
         with self.__lock:
             # A message sent meanwhile is taken at once: Louis never looks free in between
             if self.__inputs.empty():
-                self.__emit({"type": "state", "state": {"busy": False, "turn": False, "asking": False}})
+                self.__emit({"type": "state", "state": {"busy": False, "turn": False, "started": None, "asking": False}})
         message: tuple[str, bool] | None = self.__inputs.get()
         if message is None:
             raise EOFError
@@ -486,7 +513,9 @@ class WebInterface(Interface):
         """ The model answers: unlike a command (/think...), the pages show Louis at work until the turn ends """
         self.__text = self.__thinking = None
         self.__running = []
-        self.__set(turn=True)
+        self.__calls = []
+        # When it started, for the pages to count the seconds (a page opened meanwhile too)
+        self.__set(turn=True, started=time.time())
 
     def __on_thinking(self, event: Event) -> None:
         """ What the model thinks before replying (/think), as it comes """
@@ -520,7 +549,11 @@ class WebInterface(Interface):
         for identifier, _ in self.__running:
             self.__patch(identifier, status="cancelled")
         self.__running = []
-        self.__set(turn=False)
+        summary: dict | None = stats(self.__calls)
+        if summary is not None:
+            self.__add(kind="stats", **summary)
+        self.__calls = []
+        self.__set(turn=False, started=None)
         match event.data["reason"]:
             case "done":
                 pass
@@ -551,6 +584,25 @@ class WebInterface(Interface):
         attempts: int = event.data["attempts"]
         self.__add(kind="text", text=text, html=markdown(text), done=True,
                    meta=f"schéma {event.data['schema']}{f', {attempts} essais' if attempts > 1 else ''}")
+
+    def __on_model_call(self, event: Event) -> None:
+        """ A request to the model that gave a reply: what it cost, summed up under the reply at the end of the turn """
+        reply: dict | None = event.data["reply"]
+        if event.data["status"] == "ok" and reply is not None:
+            self.__calls.append({**reply, "latency": event.data["latency"]})
+
+    def __on_retrieved(self, event: Event) -> None:
+        """ What the knowledge base gave, under the search_knowledge call that looked it up, as references """
+        found: tuple[int, str] | None = next((call for call in reversed(self.__running) if call[1] == "search_knowledge"),
+                                             None)
+        if found is None:
+            return
+        data: dict = event.data
+        self.__patch(found[0], sources={
+            "mode": data["mode"], "reranker": data["reranker"],
+            "hits": [{"source": hit["source"], "path": hit["path"], "start": hit["start"], "end": hit["end"],
+                      "score": round(hit["score"], 2)} for hit in data["hits"]],
+        })
 
     def __on_tool_started(self, event: Event) -> None:
         self.__close_thinking()

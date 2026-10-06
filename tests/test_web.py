@@ -14,7 +14,8 @@ from events.event import Event
 from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_RESUMED, CHAT_TURN_STARTED, CHAT_TURN_ENDED
 from events.event_list import CHAT_TEXT, CHAT_REPLY, TOOL_CALL_STARTED, TOOL_CALL_ENDED, RAG_INDEXED
-from interface.web import WebInterface, history_items
+from events.event_list import MODEL_CALL, RAG_RETRIEVED, CHAT_NUDGED
+from interface.web import WebInterface, history_items, stats
 from logger.logger import log_event
 from session.database import Database
 from session.user import User
@@ -122,6 +123,40 @@ def test_only_a_reply_shows_louis_answering(served):
     assert snapshot(web)["state"]["turn"] is True
     bus.dispatch(CHAT_TURN_ENDED, reason="cancelled", message=None)
     assert snapshot(web)["state"]["turn"] is False
+
+def reply(written: int, generation: float, ttft: float | None = 0.5, load: float = 0.0) -> dict:
+    """ A Reply of the model as MODEL_CALL gives it """
+    return {"content": "", "tool_calls": [], "cut": False, "prompt_tokens": 1000, "completion_tokens": written,
+            "ttft": ttft, "load": load, "prompt_eval": 0.1, "generation": generation, "done": "stop"}
+
+def test_stats_sum_up_the_requests_of_a_turn():
+    assert stats([]) is None
+    summed: dict = stats([{**reply(100, 2.0, load=7.5), "latency": 10.0}, {**reply(60, 2.0, ttft=0.2), "latency": 2.5}])
+    assert summed == {"calls": 2, "tokens": 160, "prompt": 2000, "speed": 40.0, "ttft": 0.5, "load": 7.5, "latency": 12.5}
+    assert stats([{**reply(0, 0.0, ttft=None), "latency": 0.3}])["speed"] is None
+
+def test_a_turn_ends_with_its_references_and_its_cost(served):
+    web, bus = served
+    started(bus)
+    bus.dispatch(CHAT_TURN_STARTED)
+    assert snapshot(web)["state"]["started"] is not None
+    bus.dispatch(TOOL_CALL_STARTED, name="search_knowledge", arguments={"query": "json"}, producer="model")
+    bus.dispatch(RAG_RETRIEVED, query="json", mode="hybrid", reranker=None, hits=[
+        {"source": "docs", "path": "/json.md", "start": 1, "end": 11, "score": 0.0328, "fused": None}
+    ])
+    bus.dispatch(TOOL_CALL_ENDED, name="search_knowledge", producer="model", ok=True, result="[1] docs /json.md", duration=0.1)
+    bus.dispatch(MODEL_CALL, status="ok", latency=3.0, reply=reply(120, 3.0))
+    bus.dispatch(MODEL_CALL, status="error", error="Cannot reach", latency=0.1, reply=None)
+    bus.dispatch(CHAT_REPLY, content="Je vais le faire.", tools=[])
+    bus.dispatch(CHAT_NUDGED)
+    bus.dispatch(CHAT_TURN_ENDED, reason="done", message=None)
+
+    shown: dict = snapshot(web)
+    tool, text, note, cost = shown["log"]
+    assert tool["sources"]["hits"] == [{"source": "docs", "path": "/json.md", "start": 1, "end": 11, "score": 0.03}]
+    assert (text["kind"], note["kind"]) == ("text", "note")
+    assert (cost["kind"], cost["calls"], cost["tokens"], cost["speed"]) == ("stats", 1, 120, 40.0)
+    assert shown["state"]["started"] is None and shown["state"]["turn"] is False
 
 def test_the_sidebar_asks_the_sessions_first(served):
     web, bus = served

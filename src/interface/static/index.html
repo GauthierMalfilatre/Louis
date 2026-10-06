@@ -814,6 +814,40 @@
 
   /* ---------- Louis: what the app tells, beyond the replies ---------- */
 
+  /* The purple glow at the top, as three waves rippling slowly behind the conversation: each one flows sideways at
+     its own pace (the middle one the other way), and rises and falls a little. Only transforms are animated */
+  :root { --wave-top: 0.055; --wave-edge: 0.035; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --wave-top: 0.09; --wave-edge: 0.055; }
+  }
+  :root[data-theme="dark"] { --wave-top: 0.09; --wave-edge: 0.055; }
+  :root[data-theme="ultravision"] { --wave-top: 0.2; --wave-edge: 0.1; }
+  body { background-image: none; }
+  .waves {
+    position: fixed;
+    inset: 0 0 auto 0;
+    z-index: -1;
+    height: 46vh;
+    overflow: hidden;
+    pointer-events: none;
+    /* Strongest at the top in the middle, as the glow it replaces */
+    -webkit-mask-image: radial-gradient(85% 120% at 50% 0%, #000 45%, transparent 100%);
+    mask-image: radial-gradient(85% 120% at 50% 0%, #000 45%, transparent 100%);
+  }
+  .wave { position: absolute; inset: 0; animation: wave-rise 9s ease-in-out infinite alternate; }
+  .wave svg { display: block; width: 200%; height: 100%; animation: wave-flow 26s linear infinite; will-change: transform; }
+  .wave-2 { animation-duration: 7s; animation-delay: -3s; }
+  .wave-2 svg { animation-duration: 19s; animation-direction: reverse; }
+  .wave-3 { animation-duration: 11s; animation-delay: -6s; }
+  .wave-3 svg { animation-duration: 33s; }
+  #wave-1 stop { stop-color: var(--logo-1); }
+  #wave-2 stop { stop-color: var(--accent-2); }
+  #wave-3 stop { stop-color: var(--accent); }
+  .waves stop[offset="0"] { stop-opacity: var(--wave-top); }
+  .waves stop[offset="1"] { stop-opacity: var(--wave-edge); }
+  @keyframes wave-flow { to { transform: translateX(-50%); } }
+  @keyframes wave-rise { from { transform: translateY(-12px); } to { transform: translateY(10px); } }
+
   .row { padding-left: 10px; }
   .chip {
     display: inline-flex;
@@ -1008,6 +1042,41 @@
   .send.stop { background: var(--text); color: var(--bg); }
   .send.stop:disabled { background: var(--surface-2); color: var(--off); }
 
+  /* Under a reply: why it took one more round, and what it cost */
+  .reply-note { color: var(--muted); font-size: 12.5px; font-style: italic; }
+  .reply-stats { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; cursor: default; }
+  .reply-stats .slow { color: var(--warn); }
+
+  /* The passages the knowledge base gave to a search_knowledge call */
+  .call-sources { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 22px; }
+  .source {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    max-width: 100%;
+    padding: 2px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+  .msg.assistant .source code {
+    min-width: 0;
+    overflow: hidden;
+    padding: 0;
+    background: none;
+    color: var(--text);
+    font-size: 11.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .source .score { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .sources-meta { flex-basis: 100%; color: var(--muted); font-size: 11.5px; }
+
+  #bell[hidden] { display: none; }
+  #bell[aria-pressed="true"] { color: var(--accent); }
+
   @media (max-width: 560px) {
     .chip.model, .gauge-bar { display: none; }
     .call-summary { display: none; }
@@ -1026,6 +1095,27 @@
       </symbol>
     </defs>
   </svg>
+
+  <div class="waves" aria-hidden="true">
+    <div class="wave wave-1">
+      <svg viewBox="0 0 2880 320" preserveAspectRatio="none">
+        <defs><linearGradient id="wave-1" x1="0" y1="0" x2="0" y2="1"><stop offset="0"/><stop offset="1"/></linearGradient></defs>
+        <path d="M0,0V236Q360,176 720,236T1440,236T2160,236T2880,236V0Z" fill="url(#wave-1)"/>
+      </svg>
+    </div>
+    <div class="wave wave-2">
+      <svg viewBox="0 0 2880 320" preserveAspectRatio="none">
+        <defs><linearGradient id="wave-2" x1="0" y1="0" x2="0" y2="1"><stop offset="0"/><stop offset="1"/></linearGradient></defs>
+        <path d="M0,0V206Q180,246 360,206T720,206T1080,206T1440,206T1800,206T2160,206T2520,206T2880,206V0Z" fill="url(#wave-2)"/>
+      </svg>
+    </div>
+    <div class="wave wave-3">
+      <svg viewBox="0 0 2880 320" preserveAspectRatio="none">
+        <defs><linearGradient id="wave-3" x1="0" y1="0" x2="0" y2="1"><stop offset="0"/><stop offset="1"/></linearGradient></defs>
+        <path d="M0,0V176Q360,204 720,176T1440,176T2160,176T2880,176V0Z" fill="url(#wave-3)"/>
+      </svg>
+    </div>
+  </div>
 
   <div class="app">
     <aside class="sidebar" id="sidebar" aria-label="Sessions">
@@ -1082,6 +1172,11 @@
         </svg>
         <span class="name" id="model-name"></span>
       </span>
+      <button class="icon-btn" id="bell" type="button" aria-pressed="false" hidden>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 8a6 6 0 1112 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 003.4 0"/>
+        </svg>
+      </button>
       <button class="icon-btn" id="theme" type="button">
         <svg class="on" data-theme="system" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/>
@@ -1165,7 +1260,10 @@
   const THEMES = ["system", "light", "dark", "ultravision"];
   const THEME_NAMES = { system: "système", light: "clair", dark: "sombre", ultravision: "UltraVision" };
   // What belongs to a reply of Louis, grouped under its mark
-  const REPLY = new Set(["text", "thinking", "tool", "permission"]);
+  const REPLY = new Set(["text", "thinking", "tool", "permission", "note", "stats"]);
+  // The dot on the icon of a hidden tab: Louis waits for an answer, or has replied
+  const DOTS = { asking: "#e8a93a", done: "#1f9d55" };
+  const TITLES = { asking: "(!) Louis attend ta réponse", done: "✓ Louis a répondu" };
 
   const $ = (id) => document.getElementById(id);
   const scroller = $("scroller"), logEl = $("log"), form = $("form"), input = $("input");
@@ -1176,6 +1274,8 @@
   const sidebar = $("sidebar"), sessionsEl = $("sessions"), backdrop = $("backdrop"), burger = $("burger");
   const avatar = $("avatar"), who = $("who"), app = document.querySelector(".app");
   const dialog = $("dialog"), systemPrompt = $("system-prompt"), themeBtn = $("theme"), prompt = $("prompt");
+  const bell = $("bell"), favicon = document.querySelector('link[rel="icon"]');
+  const ICON = favicon.href;
 
   /* ---------- Theme: system, light, dark or UltraVision, kept for the next visit ---------- */
 
@@ -1274,6 +1374,8 @@
       case "tool": return drawTool(item);
       case "permission": return drawPermission(item);
       case "card": return drawCard(item);
+      case "stats": return drawStats(item);
+      case "note": return el("div", "reply-note", item.text);
       case "progress": return drawProgress(item);
       default: return drawNotice(item);
     }
@@ -1323,11 +1425,46 @@
     }
     head.title = item.name;
     node.append(head);
+    if (item.sources?.hits.length) node.append(drawSources(item.sources));
     if (item.result && item.result.trim()) {
       const details = el("details", "call-result");
       details.append(el("summary", "", "Résultat"), el("pre", "", item.result));
       node.append(details);
     }
+    return node;
+  }
+
+  const number = (value, digits = 0) => value.toLocaleString("fr-FR", { maximumFractionDigits: digits });
+  const seconds = (value) => `${number(value, value < 10 ? 1 : 0)} s`;
+
+  // What the knowledge base gave: each passage and where it is. Its score only when the reranker gave it, from 0 to 1:
+  // without it, the score is the fusion of the index, which tells the order and nothing more
+  function drawSources(sources) {
+    const box = el("div", "call-sources");
+    sources.hits.forEach((hit, rank) => {
+      const chip = el("span", "source");
+      chip.append(el("span", "", hit.source), el("code", "", `${hit.path}:${hit.start}-${hit.end}`));
+      if (sources.reranker) {
+        chip.append(el("span", "score", hit.score.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })));
+      }
+      chip.title = `${hit.source} · ${hit.path}, lignes ${hit.start} à ${hit.end} · ${rank + 1}${rank ? "e" : "er"} passage`;
+      box.append(chip);
+    });
+    const how = [sources.mode === "hybrid" ? "par mots-clés et par le sens" : "par mots-clés seulement"];
+    if (sources.reranker) how.push(`reclassé par ${sources.reranker}`);
+    box.append(el("span", "sources-meta", how.join(" · ")));
+    return box;
+  }
+
+  // What the requests of the turn cost: written tokens, speed, first token, and the model loading when it was slow
+  function drawStats(item) {
+    const parts = [`${number(item.tokens)} tokens`];
+    if (item.speed) parts.push(`${number(item.speed)} tok/s`);
+    if (item.ttft !== null && item.ttft !== undefined) parts.push(`1er token en ${seconds(item.ttft)}`);
+    const node = el("div", "reply-stats", parts.join(" · "));
+    if (item.load >= 1) node.append(" · ", el("span", "slow", `chargement du modèle ${seconds(item.load)}`));
+    node.title = `${item.calls} requête${item.calls > 1 ? "s" : ""} au modèle · ${number(item.prompt)} tokens lus · `
+      + `${seconds(item.latency)} au total`;
     return node;
   }
 
@@ -1677,12 +1814,21 @@
     return last.kind === "tool" && last.status === "running";
   }
 
+  // The seconds since the model started answering: "12 s", "1 min 05"
+  function elapsed() {
+    const info = state.info;
+    if (!info.turn || !info.started) return "";
+    const total = Math.max(0, Math.floor(Date.now() / 1000 - info.started));
+    return total < 60 ? `${total} s` : `${Math.floor(total / 60)} min ${String(total % 60).padStart(2, "0")}`;
+  }
+
   let busyWord = BUSY[0];
+  let ticks = 0;
   setInterval(() => {
-    busyWord = BUSY[Math.floor(Math.random() * BUSY.length)];
-    const line = pending?.querySelector(".thinking");
-    if (line && !pending.hidden) line.textContent = `${busyWord}…`;
-  }, BUSY_EVERY);
+    ticks += 1;
+    if (ticks % (BUSY_EVERY / 1000) === 0) busyWord = BUSY[Math.floor(Math.random() * BUSY.length)];
+    if (state.info.turn) update();
+  }, 1000);
 
   function update() {
     const info = state.info;
@@ -1691,14 +1837,14 @@
     const answering = busy && !!info.turn && !info.asking;
     if (!busy) state.stopping = false;
     pending.hidden = !answering || moving();
-    pending.querySelector(".thinking").textContent = `${busyWord}…`;
+    pending.querySelector(".thinking").textContent = `${busyWord}… ${elapsed()}`.trim();
     prompt.classList.toggle("busy", answering);
 
     let key, label;
     if (info.closed) [key, label] = ["closed", "Louis s'est arrêté"];
     else if (!state.connected) [key, label] = [state.ever ? "reconnecting" : "connecting", state.ever ? "Reconnexion…" : "Connexion…"];
     else if (info.asking) [key, label] = ["asking", "Ta réponse est attendue"];
-    else if (busy) [key, label] = ["busy", state.stopping ? "Arrêt…" : "Louis travaille…"];
+    else if (busy) [key, label] = ["busy", state.stopping ? "Arrêt…" : `Louis travaille… ${elapsed()}`.trim()];
     else [key, label] = ["ready", "Prêt"];
     statusEl.dataset.state = key;
     statusEl.title = label;
@@ -1756,10 +1902,13 @@
         dirty.clear();
         renderAll();
         return;
-      case "state":
+      case "state": {
+        const was = { asking: !!state.info.asking, turn: !!state.info.turn };
         Object.assign(state.info, op.state);
+        watch(was);
         renderInfo();
         return;
+      }
       case "add": {
         const item = op.item;
         state.log.push(item);
@@ -1804,6 +1953,70 @@
     if (state.info.closed) source.close();  // Louis stopped for good
     update();
   };
+
+  /* ---------- A hidden tab: the title, the dot on the icon, and a notification if the user wants them ---------- */
+
+  const canNotify = "Notification" in window && window.isSecureContext;
+  let notifyOn = false;
+  try { notifyOn = localStorage.getItem("louis-notify") === "on"; } catch {}
+
+  function dotted(color) {
+    const svg = decodeURIComponent(ICON.slice(ICON.indexOf(",") + 1));
+    const dot = `<circle cx="25.5" cy="6.5" r="6" fill="${color}" stroke="#fff" stroke-width="1.5"/>`;
+    return `data:image/svg+xml,${encodeURIComponent(svg.replace("</svg>", `${dot}</svg>`))}`;
+  }
+
+  function attention(kind) {
+    document.title = TITLES[kind] ?? "Louis";
+    favicon.href = kind ? dotted(DOTS[kind]) : ICON;
+  }
+
+  function notify(title, body) {
+    if (!canNotify || !notifyOn || Notification.permission !== "granted") return;
+    try {
+      const shown = new Notification(title, { body, tag: "louis" });
+      shown.onclick = () => { window.focus(); shown.close(); };
+    } catch {}
+  }
+
+  // Louis asks a permission, or is done, while the tab is hidden: the app waits for the user, who must know it
+  function watch(was) {
+    const info = state.info;
+    if (!document.hidden) return;
+    if (info.asking && !was.asking) {
+      const asked = [...state.log].reverse().find((item) => item.kind === "permission" && item.status === "pending");
+      attention("asking");
+      notify(TITLES.asking, asked?.summary ?? "");
+    } else if (was.turn && !info.turn) {
+      const last = [...state.log].reverse().find((item) => item.kind === "text" || item.kind === "notice");
+      const text = (last?.text ?? "").replace(/\s+/g, " ").trim();
+      attention("done");
+      notify(TITLES.done, text.length > 140 ? `${text.slice(0, 139)}…` : text);
+    } else if (was.asking && !info.asking) {
+      attention(null);
+    }
+  }
+
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) attention(null); });
+
+  function applyBell() {
+    const on = canNotify && notifyOn && Notification.permission === "granted";
+    bell.hidden = !canNotify;
+    bell.setAttribute("aria-pressed", String(on));
+    bell.title = canNotify && Notification.permission === "denied"
+      ? "Notifications bloquées par le navigateur : autorise-les dans les réglages du site"
+      : on ? "Notifications activées quand l'onglet est caché (clique pour les couper)"
+      : "Me notifier quand Louis attend ma réponse ou a fini, onglet caché";
+    bell.setAttribute("aria-label", bell.title);
+  }
+
+  bell.addEventListener("click", async () => {
+    if (notifyOn && Notification.permission === "granted") notifyOn = false;
+    else notifyOn = (await Notification.requestPermission()) === "granted";
+    try { localStorage.setItem("louis-notify", notifyOn ? "on" : "off"); } catch {}
+    applyBell();
+  });
+  applyBell();
 
   /* ---------- What the page sends ---------- */
 
