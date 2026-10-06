@@ -24,7 +24,7 @@ ERRORS_DRIFT : float = 0.05
 RECENT  : timedelta = timedelta(days=1)
 BASELINE: timedelta = timedelta(days=7)
 # The ends of a turn where the user got no answer
-FAILED_TURNS: frozenset[str] = frozenset({"error", "loop", "rounds", "length", "empty"})
+FAILED_TURNS: frozenset[str] = frozenset({"error", "loop", "rounds", "length", "empty", "invalid"})
 # Past this span, the series go by day instead of by hour
 HOURLY_SPAN: timedelta = timedelta(days=3)
 # The alerts shown: the most recent ones, the others are in the table of the configurations
@@ -110,6 +110,16 @@ def turns_stats(turns: list[dict]) -> dict:
         "p50"         : percentile(answered, 0.50),
         "p95"         : percentile(answered, 0.95),
         "rounds"      : mean([turn.get("rounds", 0) for turn in turns]),
+    }
+
+def structured_stats(replies: list[dict]) -> dict:
+    """ The replies asked as JSON: how many matched their schema, how many at once, and the replies they took """
+    valid: list[dict] = [reply for reply in replies if reply.get("valid")]
+    return {
+        "replies"       : len(replies),
+        "valid_rate"    : ratio(len(valid), len(replies)),
+        "first_try_rate": ratio(sum(1 for reply in valid if reply.get("attempts") == 1), len(replies)),
+        "attempts"      : mean([reply.get("attempts", 1) for reply in replies]),
     }
 
 def tools_stats(tools: list[dict]) -> list[dict]:
@@ -319,6 +329,7 @@ def summarize(records: list[dict], *, days: float | None = None, by: str | None 
         "turns": turns_stats(turns),
         "tools": {"calls": len(tools), "errors": sum(1 for tool in tools if not tool.get("ok"))},
         "guard": sum(1 for record in records if record["type"] == "guard"),
+        "structured": structured_stats([record for record in records if record["type"] == "structured"]),
         "series": series(records, start, end, by),
         "configurations": rows,
         # The first one is where the period starts, not a change

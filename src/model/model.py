@@ -72,9 +72,14 @@ class OllamaModel:
             *,
             think: bool = False,
             on_text: Callable | None = None,
-            on_thinking: Callable | None = None
+            on_thinking: Callable | None = None,
+            schema: dict | None = None
         ) -> Reply:
-        """ Send a conversation to the model, and returning its reply. Images are a list of path """
+        """
+            Send a conversation to the model, and returning its reply. Images are a list of path.
+            With a JSON Schema, Ollama only lets the model write JSON that matches it (format): no tool is offered then,
+            a call would be no such JSON
+        """
         payload: dict[str] = {
             "model": self.__model,
             "messages": messages,
@@ -94,7 +99,9 @@ class OllamaModel:
         if self.thinking:
             payload["think"] = think
 
-        if tools and self.tools:
+        if schema is not None:
+            payload["format"] = schema
+        elif tools and self.tools:
             payload["tools"] = tools
 
         names: set[str] = {tool["function"]["name"] for tool in payload.get("tools") or []}

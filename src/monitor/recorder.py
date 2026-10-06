@@ -12,6 +12,7 @@
 ##   guard   a rail of the guard changed a message
 ##   rag     one look-up in the knowledge base: its query, how it searched, what it found, how long it took
 ##   turn    one message of the user answered: how it ended, how long the whole answer took, what it cost
+##   structured  a reply asked as JSON (/json, --ask): its schema, whether it matched, after how many replies
 ## The records of a turn share its id. The long texts are cut: the whole conversation is in the database and the log.
 ## A tool that asks the user waits for the answer: the duration of the call and the latency of the turn count that
 ## time, waited tells how much of it was the user's (the metrics take it out)
@@ -22,7 +23,7 @@ from events.event import Event
 from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, GUARD_TRIGGERED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
-from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, RAG_RETRIEVED
+from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, RAG_RETRIEVED, STRUCTURED_REPLY
 from config.settings import settings as default_settings
 from logger.logger import log, scrub
 import hashlib
@@ -135,6 +136,7 @@ class Recorder:
         bus.subscribe(self.__on_answered, TOOL_GRANT_PERMISSION)
         bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
+        bus.subscribe(self.__on_structured, STRUCTURED_REPLY)
         bus.subscribe(self.__on_retrieved, RAG_RETRIEVED)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
         return self
@@ -259,6 +261,18 @@ class Recorder:
         )
         if self.__turn is not None:
             self.__turn.guard += 1
+
+    def __on_structured(self, event: Event) -> None:
+        """ A reply asked as JSON: its schema, whether it matched, after how many replies, and why not """
+        self.__write(
+            "structured",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            schema=event.data["schema"],
+            valid=event.data["valid"],
+            attempts=event.data["attempts"],
+            errors=[text(error, RESULT_CHARS) for error in event.data["errors"]]
+        )
 
     def __on_retrieved(self, event: Event) -> None:
         """

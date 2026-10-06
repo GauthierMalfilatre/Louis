@@ -84,6 +84,35 @@ cd src && python -m monitor ../louis.traces.jsonl -o /tmp/dashboard.html --open
 
 Le résumé s'affiche dans le terminal, et `louis.dashboard.html` (une page autonome, sans serveur) s'ouvre dans le navigateur. En haut, les **dérives** : chaque nouveau prompt ou modèle est comparé à celui qu'il remplace, et les dernières 24 h à la semaine d'avant. Une alerte apparaît au-delà de ±30 % de latence médiane, ±30 % de tokens par appel ou ±5 points de taux d'erreur, avec au moins 5 appels de chaque côté. Un prompt modifié hier qui double la latence apparaît donc en tête, avec la hausse des tokens qui l'explique.
 
+## Réponses structurées (JSON)
+
+Louis peut répondre en JSON qui respecte un **schéma JSON** (un formulaire : les champs, leurs types, ceux qui sont obligatoires), au lieu de texte. Ollama empêche le modèle d'écrire autre chose, puis Louis vérifie la réponse et la redemande avec l'erreur si elle ne correspond pas (`structured.attempts` fois au plus). Une réponse qui ne correspond toujours pas n'est jamais renvoyée : c'est une erreur. Dans ce mode, le modèle n'a pas d'outils : ce qu'il doit lire est dans la question.
+
+Les schémas sont cherchés par leur nom dans `schemas/` du dossier courant, puis dans ceux de Louis (`src/structured/schemas/` : `todo`, `resume`, `contact`). On peut aussi donner le chemin d'un fichier.
+
+Dans la conversation :
+
+```
+> /schemas
+> /json contact Gauthier Malfilatre, développeur chez Sensai, gauthier.m@sensai.dev
+{
+  "nom": "Gauthier Malfilatre",
+  "entreprise": "Sensai",
+  "poste": "développeur",
+  "email": "gauthier.m@sensai.dev",
+  "telephone": null
+}
+```
+
+Depuis un script : la sortie est **seulement** le JSON, le texte envoyé par un pipe est ajouté à la question, les erreurs vont sur stderr.
+
+```bash
+cat compte-rendu.txt | louis --schema todo --ask "Extrais les tâches" > taches.json
+louis --schema ./mon_schema.json --ask "..." | jq '.champ'
+```
+
+Code de retour : `0` réponse valide, `1` réponse invalide ou modèle injoignable, `2` schéma introuvable ou invalide. Le tableau de bord (`louis --dashboard`) montre la part des réponses valides, et celles valides du premier coup.
+
 ## Notes
 
 - Le script d'installation vérifie automatiquement la version de Python (au moins Python 3.12).
