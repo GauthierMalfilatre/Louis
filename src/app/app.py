@@ -19,7 +19,12 @@ from tool.impl.file.tool_write import WriteTool
 from tool.impl.file.tool_search import SearchTool
 from tool.impl.file.tool_mkdir import MkdirTool
 from tool.impl.web.tool_websearch import InternetTool
+from tool.impl.git.tool_git import GitTool
+from tool.impl.git.tool_pr import PullRequestTool
+from tool.impl.exec.tool_run import RunTool, available as sandbox_available
+from tool.impl.rag.tool_knowledge import KnowledgeTool
 from tool.permission import PermissionManager
+from rag.knowledge import Knowledge
 from guard.guard import Guard
 from guard.verdict import Verdict
 from tool.seen_files import SeenFiles
@@ -27,7 +32,7 @@ from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND
 from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
-from config.prompt import NUDGE_PROMPT
+from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT
 from session.user import User
 from session.session import Session
 from command.command import CommandTree
@@ -38,6 +43,11 @@ from command.impl.command_resume import ResumeCommand
 from command.impl.command_json import JsonCommand
 from command.impl.command_schemas import SchemasCommand
 from structured.reply import instruction, checked, retry, shown
+from command.impl.command_export import ExportCommand
+from command.impl.command_share import ShareCommand
+from command.impl.command_shares import SharesCommand
+from command.impl.command_unshare import UnshareCommand
+from command.impl.command_index import IndexCommand, UnindexCommand
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -76,7 +86,8 @@ SAME_CALLS : int = 2
 MAX_REFUSED: int = 3
 REPEATED_CALL: str = (
     "Erreur : tu as déjà fait exactement cet appel 2 fois pour cette demande. N'en refais pas un troisième : "
-    "utilise ce que tu sais déjà, lis une autre partie, ou réponds à l'utilisateur."
+    "utilise ce que tu sais déjà, lis une autre partie, ou réponds à l'utilisateur. S'il n'a pas marché, dis-lui "
+    "ce qui a échoué : ne dis jamais avoir fait ce qui n'a pas été fait."
 )
 # The model sometimes asks for dozens of calls at once, often the same ones again (a list gone wrong): the first
 # MAX_CALLS different ones are kept, the others never made. And the results of a round, never cut by the window, must
@@ -90,6 +101,12 @@ IGNORED_CALLS: str = (
 NO_ROOM: str = (
     "Erreur : les résultats de ta réponse prennent déjà trop de place dans le contexte : cet appel n'a pas été fait. "
     "Refais-le dans ta prochaine réponse."
+)
+EMPTY_MESSAGE: str = "Louis n'a rien répondu, deux fois : le modèle a sans doute appelé un outil qui n'existe pas ici. "
+# Why, when the session called tools this version of Louis does not have: the model calls them again
+GONE_TOOLS: str = (
+    "Cette session a utilisé des outils absents de cette version de Louis (une autre branche ?), et le modèle les "
+    "appelle encore : {tools}. Lance Louis depuis une version qui les a, ou repars d'une session neuve avec /clear."
 )
 LOOP_MESSAGE: str = (
     "Louis tournait en rond (les mêmes appels d'outils, encore et encore) : arrêté. Reformule ou découpe la demande."
@@ -129,11 +146,23 @@ class App:
             .register(SearchTool())\
             .register(MkdirTool())\
             .register(InternetTool())\
+            .register(GitTool())\
+            .register(PullRequestTool())\
+
+        # Code runs in a container: no docker, or the setting off, and the model is not offered the tool
+        if settings.get("sandbox.enabled", True) and sandbox_available():
+            self.__toolManager.register(RunTool())
 
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
         # What the model sees of the session: cut down before it overflows the context, instead of Ollama cutting it
         self.__window: ContextWindow = ContextWindow(settings.get("chat.context", 12288), self.__toolManager.all())
+
+        # What the user indexed, looked up by the model with search_knowledge. Nothing is read or created on the disk
+        # before something is indexed, and the tool is only offered while there is something to look up
+        self.__knowledge: Knowledge | None = Knowledge.from_settings(settings, self.__bus) if settings.get("rag.enabled", False) else None
+        self.__knowledge_tool: KnowledgeTool = KnowledgeTool()
+        self.offer_knowledge()
         # The files read in another session are not in the history of this one: they must be read again to be edited
         self.__seen_files: SeenFiles = SeenFiles()
         self.__bus.subscribe(self.__on_session_changed, SESSION_CREATED, SESSION_RESUMED)
@@ -144,7 +173,13 @@ class App:
             .register(ResumeCommand())\
             .register(JsonCommand())\
             .register(SchemasCommand())\
+            .register(ExportCommand())\
+            .register(ShareCommand())\
+            .register(SharesCommand())\
+            .register(UnshareCommand())\
             .register(ToggleThinkCommand())\
+            .register(IndexCommand())\
+            .register(UnindexCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -241,14 +276,22 @@ class App:
         if event.name == SESSION_RESUMED:
             self.__estimate_context()
 
+    def __history(self) -> list[dict]:
+        """
+            The session as it is sent, without the empty replies saved before they were kept out: read again, they
+            lead the model to more of them
+        """
+        return [message for message in self.session.history
+                if message["role"] != "assistant" or message["content"].strip() or message.get("tool_calls")]
+
     def __estimate_context(self) -> None:
         """ Tell how full the context is with the current session, as it will be sent, before the model measures it """
-        messages, _ = self.__window.view(self.session.history)
+        messages, _ = self.__window.view(self.__history())
         self.__bus.dispatch(CHAT_CONTEXT, used=self.__window.tokens(messages), size=self.__window.size, estimated=True)
 
     def __view(self) -> list[dict]:
         """ The session as the model sees it: its old tool results cut down, and told, once the context fills up """
-        messages, cut = self.__window.view(self.session.history)
+        messages, cut = self.__window.view(self.__history())
         if cut:
             used: int = self.__window.tokens(messages)
             log.info(f"[app] context cut down: {cut['results']} tool results, {cut['dropped']} messages left out, "
@@ -256,6 +299,11 @@ class App:
             self.__bus.dispatch(CHAT_COMPACTED, **cut, used=used, size=self.__window.size)
             self.__bus.dispatch(CHAT_CONTEXT, used=used, size=self.__window.size, estimated=True)
         return messages
+
+    @property
+    def settings(self) -> dict[str]:
+        """ Get the settings Louis runs with, for the tools to read theirs """
+        return self.__settings
 
     @property
     def permissions(self) -> PermissionManager:
@@ -266,6 +314,24 @@ class App:
     def seen_files(self) -> SeenFiles:
         """ Get the files the model has read or written in this session, for edit_file to check """
         return self.__seen_files
+
+    @property
+    def knowledge(self) -> Knowledge | None:
+        """ Get the knowledge base the user indexed, None if it is turned off (rag.enabled) """
+        return self.__knowledge
+
+    def offer_knowledge(self) -> None:
+        """ Offer search_knowledge to the model while something is indexed, and withdraw it when nothing is any more """
+        if self.__knowledge is None:
+            return
+        name: str = self.__knowledge_tool.name
+        if self.__knowledge.empty == self.__toolManager.has(name):
+            if self.__knowledge.empty:
+                self.__toolManager.unregister(name)
+            else:
+                self.__toolManager.register(self.__knowledge_tool)
+            self.__window.set_tools(self.__toolManager.all())
+            log.info(f"[app] {name} {'withdrawn' if self.__knowledge.empty else 'offered'}")
 
     def run(self) -> int:
         """ Run the application: answer the messages of the user, until the input ends or Ctrl+C there """
@@ -375,6 +441,7 @@ class App:
         # The calls of the last reply not answered yet: each of them must get an answer, even if cancelled
         pending: list[ToolCall] = []
         nudged: bool = False
+        emptied: bool = False
         # A reply can only be checked whole: with the guard, it is shown once checked, not as it is written
         stream: Callable | None = None if self.__guard else lambda chunk: self.__bus.dispatch(CHAT_TEXT, text=chunk)
         self.__refused.clear()
@@ -412,7 +479,25 @@ class App:
                 reply.tool_calls = calls
                 if self.__guard is not None and reply.content:
                     self.__screen(question, reply)
+                # Nothing to read and no call: the model called a tool it is not offered, or wrote nothing. Never
+                # saved, and asked again once with the tools it has: the user is never left without an answer
+                if not reply.content.strip() and not reply.tool_calls:
+                    if emptied:
+                        log.warning("[app] empty reply again: the turn ends")
+                        gone: list[str] = sorted({call["function"]["name"] for message in self.session.history
+                                                  for call in message.get("tool_calls") or []
+                                                  if not self.__toolManager.has(call["function"]["name"])})
+                        why: str = GONE_TOOLS.format(tools=", ".join(gone)) if gone else "Reformule ta demande."
+                        self.__bus.dispatch(CHAT_TURN_ENDED, reason="empty", message=EMPTY_MESSAGE + why)
+                        return
+                    emptied = True
+                    log.warning("[app] empty reply (a call to a tool it is not offered?): asking again")
+                    names: str = ", ".join(schema["function"]["name"] for schema in self.__toolManager.all())
+                    self.session.add("user", EMPTY_PROMPT.format(tools=names))
+                    continue
                 self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
+                # What Ollama counted of the prompt: the window measures its estimate on it, to cut in time
+                self.__window.measured(reply.prompt_tokens)
                 # Without the counts of Ollama (a reply cut short), the last known value stays
                 if reply.tokens:
                     self.__bus.dispatch(
@@ -453,7 +538,7 @@ class App:
                     else:
                         made[key] += 1
                     result: str = self.__call(call, refused=reason, most=min(MAX_RESULT, room))
-                    room -= share(result, self.__window.size)
+                    room -= share(result, self.__window.size, self.__window.ratio)
                     if ignored and len(pending) == 1:
                         result += IGNORED_CALLS.format(ignored)
                     self.session.add("tool", result, tool_name=call.name)
@@ -555,6 +640,21 @@ class App:
             log.info(f"[guard] {call.name} refused {REFUSED_CALLS} times: withdrawn until the next message")
         return verdict.content
 
+    def __screen_result(self, call: ToolCall, result: str) -> str:
+        """
+            Put what a tool read outside the project (the knowledge base: documents nobody here wrote) through the
+            tool result rails before the model reads it: the passages that give it orders taken out, the sensitive data
+            masked. Whoever asked for the call. A guard that cannot check gives nothing: an unchecked result is never read
+        """
+        if self.__guard is None or not self.__guard.screens_result(call.name):
+            return result
+        try:
+            return self.__guard.check_tool_result(call.name, result).content
+        except Exception as e:
+            log.exception(f"[guard] the check of the result of {call.name} failed")
+            return (f"Erreur : le garde-fou n'a pas pu vérifier le résultat de '{call.name}' ({type(e).__name__}), "
+                    "il ne t'est pas donné.")
+
     def __call(self, call: ToolCall, producer: str = "model", *, refused: str | None = None,
                most: float = MAX_RESULT) -> str:
         """
@@ -578,6 +678,7 @@ class App:
         else:
             try:
                 result = tool.handle(self, **call.arguments)
+                result = self.__screen_result(call, result if isinstance(result, str) else str(result))
             except Exception as e:
                 log.exception(f"[tool] {call.name} failed")
                 result = (f"Erreur : l'outil '{call.name}' a échoué ({type(e).__name__} : {e}). "
@@ -585,7 +686,7 @@ class App:
         result = result if isinstance(result, str) else str(result)
         # Never more than its share of the context: a whole big file would push the rest of the conversation out
         if refused is None:
-            result = capped(result, self.__window.size, most)
+            result = capped(result, self.__window.size, most, self.__window.ratio)
         # Unknown, crashed, or it could not do it (a text not found, a permission refused...): not ok
         ok: bool = not failed(result)
         duration: float = time.perf_counter() - start

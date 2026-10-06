@@ -86,8 +86,13 @@ class OllamaModel:
             "stream": settings.get("chat.stream", True),
             # Without it, Ollama unloads the model after 5 minutes idle, and reloads it on the next message
             "keep_alive": settings.get("chat.keepalive", "30m"),
-            # Must stay the same on every request: a different num_ctx makes Ollama reload the model
-            "options": {"num_ctx": settings.get("chat.context", 12288), "num_predict": settings.get("chat.predict", -1)}
+            # Must stay the same on every request: a different num_ctx makes Ollama reload the model. After the sampling
+            # options, for them never to change it
+            "options": {
+                **settings.get("chat.options", {}),
+                "num_ctx": settings.get("chat.context", 12288),
+                "num_predict": settings.get("chat.predict", -1)
+            }
         }
 
         # The thinking is not shown: left on, it is a silent wait before every reply and tool call

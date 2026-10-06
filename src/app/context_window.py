@@ -4,11 +4,14 @@
 ## File description:
 ## Context window: what the model sees of a session, cut down before it overflows
 ##
-from config.prompt import NUDGE_PROMPT
+from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT
 import json
 
-# Characters of the history (as JSON, with the tools) for a token of qwen3: measured on Ollama, 3.91 to 3.93
+# Characters of the history (as JSON, with the tools) for a token of qwen3: measured on Ollama, 3.91 to 3.93. On text
+# only: logs, numbers or JSON take far more tokens (a log of louis: 2.2), so the window follows what Ollama counts
 CHARS_PER_TOKEN: float = 3.9
+# The fewest characters a token may stand for, whatever Ollama counted: a wrong count never empties the context
+MIN_CHARS_PER_TOKEN: float = 1.5
 
 # Past this share of the context, the old tool results are cut down, until it is back under TARGET: the rest is left
 # for the reply (a whole file written by write_file), and the cut is done seldom, a block at a time
@@ -49,13 +52,13 @@ def stub(content: str) -> str:
         "relance l'outil si tu en as encore besoin.]"
     ])
 
-def share(text: str, size: int) -> float:
-    """ The share of a context of size tokens that text takes """
-    return tokens(len(text)) / size
+def share(text: str, size: int, ratio: float = CHARS_PER_TOKEN) -> float:
+    """ The share of a context of size tokens that text takes, at ratio characters a token """
+    return len(text) / ratio / size
 
-def capped(result: str, size: int, most: float = MAX_RESULT) -> str:
+def capped(result: str, size: int, most: float = MAX_RESULT, ratio: float = CHARS_PER_TOKEN) -> str:
     """ A tool result cut to a share of a context of size tokens, at the end of a line, with a word on the rest """
-    room: int = round(size * most * CHARS_PER_TOKEN)
+    room: int = round(size * most * ratio)
     if len(result) <= room:
         return result
     cut: int = result.rfind("\n", 0, room)
@@ -83,19 +86,46 @@ class ContextWindow:
         # system prompt and the request being answered)
         self.__stubbed: int = 0
         self.__hidden : int = 1
+        # Characters for a token, as Ollama counted the last request: under CHARS_PER_TOKEN when the context holds
+        # dense text, where the estimate would let it overflow without cutting anything
+        self.__ratio  : float = CHARS_PER_TOKEN
+        # The characters of the last messages view gave, with the tools: what Ollama counted next
+        self.__sent   : int = 0
 
     @property
     def size(self) -> int:
         """ The tokens the model sees at once """
         return self.__size
 
+    def set_tools(self, tools: list[dict]) -> None:
+        """ The tools sent in every request changed: they take their room in the context from now on """
+        self.__fixed = len(json.dumps(tools, ensure_ascii=False))
+
+    @property
+    def ratio(self) -> float:
+        """ The characters a token stands for, as last measured """
+        return self.__ratio
+
     def reset(self) -> None:
-        """ Another session: nothing of it is cut yet """
+        """ Another session: nothing of it is cut yet, nor measured """
         self.__stubbed, self.__hidden = 0, 1
+        self.__ratio, self.__sent = CHARS_PER_TOKEN, 0
+
+    def measured(self, prompt_tokens: int) -> None:
+        """
+            Ollama counted the prompt of the last request: the estimate follows it. Never fewer tokens than
+            CHARS_PER_TOKEN gives, the context is only ever cut sooner for it
+        """
+        if prompt_tokens > 0 and self.__sent > 0:
+            self.__ratio = max(MIN_CHARS_PER_TOKEN, min(CHARS_PER_TOKEN, self.__sent / prompt_tokens))
+
+    def __count(self, characters: int) -> int:
+        """ The tokens of characters of the history, at the ratio measured """
+        return round(characters / self.__ratio)
 
     def tokens(self, messages: list[dict]) -> int:
         """ The tokens of these messages, sent with the tools """
-        return tokens(self.__fixed + sum(size_of(message) for message in messages))
+        return self.__count(self.__fixed + sum(size_of(message) for message in messages))
 
     def view(self, history: list[dict]) -> tuple[list[dict], dict | None]:
         """
@@ -106,17 +136,19 @@ class ContextWindow:
         last: int = max((i for i, message in enumerate(history) if message["role"] == "assistant"), default=len(history))
         # The request being answered is never left out (the nudge is no request)
         request: int = max(
-            (i for i, message in enumerate(history) if message["role"] == "user" and message["content"] != NUDGE_PROMPT),
+            (i for i, message in enumerate(history) if message["role"] == "user" and message["content"] != NUDGE_PROMPT
+             and not message["content"].startswith(EMPTY_PROMPT.split("{")[0])),
             default=len(history)
         )
         messages: list[dict | None] = [self.__shown(message, i, request) for i, message in enumerate(history)]
         used: int = self.__fixed + sum(size_of(message) for message in messages if message is not None)
-        if tokens(used) <= self.__size * TRIGGER:
+        if self.__count(used) <= self.__size * TRIGGER:
+            self.__sent = used
             return [message for message in messages if message is not None], None
 
         target: float = self.__size * TARGET
         results: int = 0
-        while tokens(used) > target and self.__stubbed < last:
+        while self.__count(used) > target and self.__stubbed < last:
             i: int = self.__stubbed
             self.__stubbed += 1
             if messages[i] is None or messages[i]["role"] != "tool" or len(history[i]["content"]) < STUB_MIN_CHARS:
@@ -129,7 +161,7 @@ class ContextWindow:
         dropped: int = 0
         # Still too long: the oldest messages go, a whole exchange or round of calls at a time (a reply of the model
         # with the results of its calls), the oldest turns first, then the first rounds of this one
-        while tokens(used) > target and self.__hidden < last:
+        while self.__count(used) > target and self.__hidden < last:
             end: int = next(i for i in range(self.__hidden + 1, last + 1) if history[i]["role"] != "tool")
             for i in range(self.__hidden, end):
                 if messages[i] is not None and i != request and history[i]["role"] != "system":
@@ -138,6 +170,7 @@ class ContextWindow:
                     dropped += 1
             self.__hidden = end
         cut: dict | None = {"results": results, "dropped": dropped} if results or dropped else None
+        self.__sent = used
         return [message for message in messages if message is not None], cut
 
     def __shown(self, message: dict, index: int, request: int) -> dict | None:

@@ -20,6 +20,7 @@ from monitor.recorder import Recorder, traces_path
 from monitor.report import report
 from model.model_exception import ModelException
 from structured.schema import load, SchemaError
+from rag.cli import index_folder
 import argparse
 import json
 
@@ -33,6 +34,8 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--schema", type=str, help="with --ask: name or file of the JSON Schema the reply must match")
     parser.add_argument("--ask", type=str, help="with --schema: answer this question with JSON only, print it and quit "
                                                  "(text piped in is added to the question)")
+    parser.add_argument("--index", type=str, default=None, metavar="FOLDER", help="index a folder of documentation or code in the knowledge base, and quit")
+    parser.add_argument("--name", type=str, default=None, help="the name of the source --index makes (default: the name of the folder)")
 
     args: argparse.Namespace = parser.parse_args()
     if (args.schema is None) != (args.ask is None):
@@ -117,6 +120,9 @@ if __name__ == "__main__":
         sys.exit(report(traces_path(), open_browser=True))
 
     setup_logger()
+    if args.index:
+        sys.exit(index_folder(args.index, args.name))
+
     log.info(f"===== louis started in {os.getcwd()} =====")
     log.debug(f"[app] settings: {settings}")
 

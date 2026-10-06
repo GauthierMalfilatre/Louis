@@ -10,19 +10,23 @@ settings: dict[str] = {
     "chat.stream"          : True,
     "chat.timeout.connect" : 5.0,
     "chat.timeout.response": 600.0,
-    "chat.model.name"      : "qwen3",
-    "chat.model.parameters": "8b",
+    "chat.model.name"      : "qwen3.5",
+    "chat.model.parameters": "9b",
     "chat.uri"             : "http://localhost:11434",
     "chat.tools.maxdepth"  : 40,
     "chat.think"           : False,
     "chat.keepalive"       : "30m",
     # Tokens the model sees at once. 12288 keeps qwen3:8b at ~92% GPU on 8 GB of VRAM:
     # above that it spills onto the CPU, and gets much slower
-    "chat.context"         : 12288,
+    "chat.context"         : 24576,
     # Tokens a reply may take at most: the room the context window leaves it (30 % of chat.context, see
     # app/context_window.py), less a margin for its estimate. Past it, a reply that never ends (a model going round
     # in circles) is cut, instead of overflowing the context. 3072 tokens: a file of about 300 lines for write_file
     "chat.predict"         : 3072,
+    # How the model picks its words: the settings Qwen gives for precise coding. Without them, Ollama uses those of
+    # the model, made for chat (qwen3.5: temperature 1.0, presence_penalty 1.5), with which a third of the edits of
+    # the model could not be applied, in replays of a real session. {} keeps those of the model
+    "chat.options"         : {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "presence_penalty": 0.0},
     # Database of the sessions, in the working directory, unless LOUIS_DB gives another path:
     # the launcher of install.sh points it at the global one
     "db.file"              : "louis.db",
@@ -34,8 +38,39 @@ settings: dict[str] = {
     # giving up on one that does not match its schema
     "structured.dir"       : "schemas",
     "structured.attempts"  : 3,
+    # Where /export writes the sessions, relative to the working directory
+    "export.dir"           : "exports",
+    # Where the public links of /share point to (the server of louis --serve, or the address that reaches it),
+    # unless LOUIS_SHARE_URL gives another
+    "share.base_url"       : "http://localhost:8080",
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
     "guard.enabled"        : False,
+    # Louis signs the commits it makes with a "Co-authored-by" line: the user stays their author. For GitHub to show
+    # Louis on the commits, it must be the noreply address of a GitHub account (Settings > Emails). Empty: no line
+    "git.coauthor"         : "Louis <336655023+louis-sensai@users.noreply.github.com>",
+    # Code the model runs (run_code) goes in a Docker container: no network, no access to the project, read-only disk,
+    # limits on time, memory and processes. The tool is only offered if docker is installed. The images must be pulled
+    # by the user (docker pull python:3.13-alpine alpine:latest golang:alpine rust:alpine gcc:latest): the container never
+    # reaches the network to get them, nor the libraries a program would want (go, rust, c, c++: standard library only)
+    "sandbox.enabled"      : True,
+    # Bytes of the output of the code the model sees, for each of stdout and stderr: the rest is cut
+    "sandbox.output"       : 4000,
+    # What differs from the profile of a language (tool/impl/exec/tool_run.py: python and sh 10 s and 256m, c and c++ 30 s, go and rust
+    # a minute and 1g for their build): its image, timeout (seconds) and memory. {"python": {"image": "python:3.12-slim"}}
+    "sandbox.languages"    : {},
+    # Knowledge base (RAG): the folders the user indexes (/index, louis --index: documentation, examples of code...),
+    # that the model looks up with search_knowledge. It needs no library beyond numpy; the meaning of the passages is
+    # read by an embedding model of Ollama (ollama pull nomic-embed-text), without it the search is by keywords only.
+    # The index is in the working directory, unless LOUIS_RAG gives another path (the launcher of install.sh: the global one)
+    "rag.enabled"          : True,
+    "rag.file"             : "louis.rag.db",
+    "rag.embed.model"      : "nomic-embed-text",
+    # nomic-embed-text wants to be told which side of the search a text is; another model may want none
+    "rag.embed.query_prefix"   : "search_query: ",
+    "rag.embed.document_prefix": "search_document: ",
+    "rag.embed.batch"      : 32,
+    # Passages search_knowledge gives back by default
+    "rag.results"          : 4,
 
 }
