@@ -22,7 +22,6 @@ from monitor.report import report
 from model.model_exception import ModelException
 from structured.schema import load, SchemaError
 from rag.cli import index_folder
-from urllib.parse import urlsplit
 import argparse
 import json
 
@@ -33,10 +32,8 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--user", type=str, default=ANONYMOUS, help=f"user name, whose sessions are saved (not {ANONYMOUS}'s)")
     parser.add_argument("--plain", action="store_true", help="plain terminal output, without the curses window")
     parser.add_argument("--web", action="store_true", help="chat from a browser instead of the terminal; it also serves the public links of /share")
-    parser.add_argument("--lan", action="store_true", help="with --web: open Louis to the phones of your network (Wi-Fi): it shows the address to open with a QR code, and a phone pairs once with a code")
-    parser.add_argument("--host", type=str, default=None, help=f"with --web: the address to listen on (default: {HOST}, this computer only; 0.0.0.0 with --lan). Beyond this computer, a phone pairs with a code first")
+    parser.add_argument("--host", type=str, default=None, help=f"with --web: the address to listen on (default: {HOST}, this computer only; 0.0.0.0 opens Louis to the network, without a password)")
     parser.add_argument("--port", type=int, default=None, help=f"with --web: the port to listen on (default: {PORT})")
-    parser.add_argument("--url", type=str, default=None, help="with --web: the address a proxy serves Louis at, to open it on a phone (tailscale serve: https://pc.tailnet.ts.net); the links of /share use it")
     parser.add_argument("--dashboard", action="store_true", help="write the metrics of the recorded calls, open them, and quit")
     parser.add_argument("--schema", type=str, help="with --ask: name or file of the JSON Schema the reply must match")
     parser.add_argument("--ask", type=str, help="with --schema: answer this question with JSON only, print it and quit "
@@ -49,10 +46,8 @@ def parse() -> argparse.Namespace:
     args: argparse.Namespace = parser.parse_args()
     if (args.schema is None) != (args.ask is None):
         parser.error("--schema and --ask go together: louis --schema <schema> --ask \"<question>\"")
-    if not args.web and (args.host is not None or args.port is not None or args.url is not None or args.lan):
-        parser.error("--lan, --host, --port and --url go with --web: louis --web --lan")
-    if args.url is not None and urlsplit(args.url).scheme not in ("http", "https"):
-        parser.error("--url takes the whole address, with https://: louis --web --url https://pc.tailnet.ts.net")
+    if not args.web and (args.host is not None or args.port is not None):
+        parser.error("--host and --port go with --web: louis --web --port 8080")
     if args.port is not None and not 0 <= args.port <= 65535:
         parser.error("--port takes a port between 0 and 65535 (0: any free one)")
     return args
@@ -69,13 +64,13 @@ def open_user(username: str) -> tuple[Database | None, User]:
     log.info(f"[session] database: {db.path}")
     return db, User.get_or_create(db, username)
 
-def serve(host: str, port: int, url: str | None = None) -> WebInterface | None:
+def serve(host: str, port: int) -> WebInterface | None:
     """
         The web interface, listening already: None if it can not (the port is taken...). The links of /share lead to
         it, unless the setting or LOUIS_SHARE_URL say where else
     """
     try:
-        web: WebInterface = WebInterface(host, port, database_path(), url)
+        web: WebInterface = WebInterface(host, port, database_path())
     except OSError as e:
         log.error(f"[web] cannot listen on {host}:{port}: {e}")
         sys.stderr.write(f"louis : impossible d'écouter sur {host}:{port} : {e.strerror or e}\n")
@@ -84,8 +79,8 @@ def serve(host: str, port: int, url: str | None = None) -> WebInterface | None:
         settings["share.base_url"] = web.url
     return web
 
-def run(system_prompt: str, username: str, plain: bool = False, web: tuple[str, int, str | None] | None = None) -> int:
-    """ Run the main programm by creating the Application and running it, in a browser with web (host, port, url) """
+def run(system_prompt: str, username: str, plain: bool = False, web: tuple[str, int] | None = None) -> int:
+    """ Run the main programm by creating the Application and running it, in a browser with web (host, port) """
 
     db: Database | None = None
     try:
@@ -165,9 +160,7 @@ if __name__ == "__main__":
     if args.ask is not None:
         sys.exit(ask(args.prompt, args.user, args.schema, args.ask))
 
-    # --lan: every address of this computer, its Wi-Fi among them
-    host: str = args.host or ("0.0.0.0" if args.lan else HOST)
-    web: tuple[str, int, str | None] | None = (host, PORT if args.port is None else args.port, args.url) if args.web else None
+    web: tuple[str, int] | None = (args.host or HOST, PORT if args.port is None else args.port) if args.web else None
     exitcode = run(args.prompt, args.user, args.plain, web)
 
     sys.exit(exitcode)
