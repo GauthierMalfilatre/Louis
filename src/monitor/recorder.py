@@ -37,8 +37,9 @@ VERSION: int = 1
 
 # The settings that change the latency or the tokens of a reply: kept with each run, to explain a drift
 RUN_SETTINGS: tuple[str, ...] = (
-    "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth",
-    "guard.enabled", "rag.enabled"
+    "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth", "guard.enabled",
+    "rag.enabled", "rag.rerank.enabled", "rag.rerank.model", "rag.rerank.pool", "rag.rerank.min_score",
+    "rag.rerank.max_chars", "rag.embed.gpu"
 )
 
 # Characters kept of each text: enough to know what it was about
@@ -274,16 +275,32 @@ class Recorder:
         )
 
     def __on_retrieved(self, event: Event) -> None:
-        """ A look-up in the knowledge base: the query (cleaned as any text), the paths it found, not their text """
+        """
+            A look-up in the knowledge base: the query (cleaned as any text), the paths it found with their scores, not
+            their text. With the reranker, its score and the index's (fused) both: what the reranker changed, how much
+            it dropped, and how long it took, to tune its threshold and its pool
+        """
+        data: dict = event.data
         self.__write(
             "rag",
             turn=self.__turn.id if self.__turn else None,
             session=self.__session,
-            query=text(event.data["query"], INPUT_CHARS),
-            source=event.data["source"],
-            mode=event.data["mode"],
-            hits=[f"{hit['source']} {hit['path']}:{hit['start']}-{hit['end']}" for hit in event.data["hits"]],
-            duration=event.data["duration"]
+            query=text(data["query"], INPUT_CHARS),
+            source=data["source"],
+            # Whether the model filters, and how: what its description and its size change
+            path=data.get("path"),
+            kind=data.get("kind"),
+            after=data.get("after"),
+            files=data.get("files"),
+            mode=data["mode"],
+            reranker=data.get("reranker"),
+            candidates=data.get("candidates"),
+            dropped=data.get("dropped", 0),
+            hits=[f"{hit['source']} {hit['path']}:{hit['start']}-{hit['end']}" for hit in data["hits"]],
+            scores=[hit["score"] for hit in data["hits"]],
+            fused=[hit.get("fused") for hit in data["hits"]] if data.get("reranker") else None,
+            rerank=data.get("rerank"),
+            duration=data["duration"]
         )
 
     def __on_turn_ended(self, event: Event) -> None:

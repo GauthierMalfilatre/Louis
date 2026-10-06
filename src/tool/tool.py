@@ -41,6 +41,10 @@ class Tool:
         """ Get the schema of the tool """
         return self.__schema
 
+    def describe(self, desc: str) -> None:
+        """ Change the description of the tool, when what it can reach changed (what the knowledge base holds) """
+        self.__schema["function"]["description"] = desc
+
     @abstractmethod
     def handle(self, app, **kwargs):
         """ The handler of the tool class """

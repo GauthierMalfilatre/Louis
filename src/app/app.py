@@ -321,17 +321,25 @@ class App:
         return self.__knowledge
 
     def offer_knowledge(self) -> None:
-        """ Offer search_knowledge to the model while something is indexed, and withdraw it when nothing is any more """
+        """
+            Offer search_knowledge to the model while something is indexed, and withdraw it when nothing is any more.
+            Its description lists what the base holds, made again here after each change: the model looks up only
+            what it knows is there
+        """
         if self.__knowledge is None:
             return
         name: str = self.__knowledge_tool.name
-        if self.__knowledge.empty == self.__toolManager.has(name):
-            if self.__knowledge.empty:
+        if self.__knowledge.empty:
+            if self.__toolManager.has(name):
                 self.__toolManager.unregister(name)
-            else:
+                log.info(f"[app] {name} withdrawn")
+        else:
+            self.__knowledge_tool.refresh(self.__knowledge.catalog())
+            if not self.__toolManager.has(name):
                 self.__toolManager.register(self.__knowledge_tool)
-            self.__window.set_tools(self.__toolManager.all())
-            log.info(f"[app] {name} {'withdrawn' if self.__knowledge.empty else 'offered'}")
+                log.info(f"[app] {name} offered")
+        # The description may have grown or shrunk: the room the tools take in the context with it
+        self.__window.set_tools(self.__toolManager.all())
 
     def run(self) -> int:
         """ Run the application: answer the messages of the user, until the input ends or Ctrl+C there """
