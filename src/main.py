@@ -29,6 +29,8 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--dashboard", action="store_true", help="write the metrics of the recorded calls, open them, and quit")
     parser.add_argument("--index", type=str, default=None, metavar="FOLDER", help="index a folder of documentation or code in the knowledge base, and quit")
     parser.add_argument("--name", type=str, default=None, help="the name of the source --index makes (default: the name of the folder)")
+    parser.add_argument("--exclude", action="append", default=None, metavar="PATTERN", help="with --index: leave out the files of this pattern ('config/*_grid.yml', 'tests'), kept for the next ones; --exclude '' leaves out nothing any more")
+    parser.add_argument("--describe", action=argparse.BooleanOptionalAction, default=None, help="with --index: the chat model describes each passage of code, searched with it (slow the first time), kept for the next ones; --no-describe stops it")
 
     return parser.parse_args()
 
@@ -74,7 +76,7 @@ if __name__ == "__main__":
 
     setup_logger()
     if args.index:
-        sys.exit(index_folder(args.index, args.name))
+        sys.exit(index_folder(args.index, args.name, args.exclude, args.describe))
 
     log.info(f"===== louis started in {os.getcwd()} =====")
     log.debug(f"[app] settings: {settings}")

@@ -27,6 +27,12 @@ exports/
 
 # Test 
 test/
+docs/rag_eval.json
+test-louis/
+test-louis/*
+src/before.json
+src/after.json
+/tmp/after-*.json
 
 # Claude
 .claude/

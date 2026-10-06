@@ -1,0 +1,4 @@
+# Optional: the reranking of the knowledge base (settings "rag.rerank.enabled"): a cross-encoder in ONNX, on the CPU, no torch.
+# fastembed comes with requirements-guard.txt too (NeMo needs it). Then download the model once:  cd src && python -m rag.reranker
+-r requirements.txt
+fastembed==0.8.1

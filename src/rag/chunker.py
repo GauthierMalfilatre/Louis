@@ -11,6 +11,9 @@ from dataclasses import dataclass
 MAX_CHARS: int = 1500
 # Lines repeated at the start of the next passage, so a sentence or a signature cut in two is whole in one of them
 OVERLAP_LINES: int = 3
+# Bumped when the passages of a file change (where they are cut, what is kept with them): the sources indexed with
+# an older version are read again whole by their next /index (Index.begin). 2: each passage has its context
+VERSION: int = 2
 
 @dataclass(frozen=True, slots=True)
 class Chunk:
