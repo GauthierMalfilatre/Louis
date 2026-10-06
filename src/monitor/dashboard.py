@@ -312,6 +312,11 @@ function renderKpis(s) {
     ["Answers", fmt.count(s.turns.turns), "median " + fmt.seconds(s.turns.p50) + " · " + fmt.percent(s.turns.failure_rate) + " failed"],
     ["Tool calls", fmt.count(s.tools.calls), fmt.percent(s.tools.calls ? s.tools.errors / s.tools.calls : null) + " could not do it"],
   ];
+  // Only once JSON replies were asked (/json, louis --ask): most runs never do
+  if (s.structured && s.structured.replies) {
+    tiles.push(["JSON replies", fmt.percent(s.structured.valid_rate) + " valid",
+      fmt.count(s.structured.replies) + " asked · " + fmt.percent(s.structured.first_try_rate) + " at once"]);
+  }
   document.getElementById("kpis").replaceChildren(...tiles.map(([label, value, sub]) =>
     el("div", { class: "card kpi" }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }),
       el("div", { class: "sub", text: sub }))));

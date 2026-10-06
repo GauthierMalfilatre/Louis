@@ -57,6 +57,7 @@ def finding(item: dict) -> str:
 def text(summary: dict, alerts: list[dict], path: str) -> str:
     """ The summary of all the calls, and the drift alerts, for the terminal """
     calls, turns, tools = summary["calls"], summary["turns"], summary["tools"]
+    structured: dict = summary.get("structured") or {"replies": 0}
     lines: list[str] = [
         f"Louis monitoring · {path}",
         f"  {when(summary['start'])} → {when(summary['end'])} · {summary['runs']} run{'s' if summary['runs'] != 1 else ''}",
@@ -66,6 +67,8 @@ def text(summary: dict, alerts: list[dict], path: str) -> str:
         f"  tokens/call  {count(calls['prompt_tokens']):>7}   prompt · {count(calls['completion_tokens'])} reply · "
         f"{f'{calls['speed']:.1f}' if calls['speed'] else '–'} tok/s",
         f"  tool calls   {count(tools['calls']):>7}   could not do it {percent(tools['errors'] / tools['calls'] if tools['calls'] else None)}",
+        *([f"  json replies {count(structured['replies']):>7}   valid {percent(structured['valid_rate'])} · "
+           f"at once {percent(structured['first_try_rate'])}"] if structured["replies"] else []),
         "",
         "Drift",
     ]
