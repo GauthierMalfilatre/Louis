@@ -1049,6 +1049,30 @@
   .greeting { font-weight: 600; letter-spacing: -0.01em; }
   .brand-name { font-size: 17px; font-weight: 600; letter-spacing: 0; }
 
+  /* Finding a session by what it talked about */
+  .find {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 12px 2px;
+    padding: 7px 11px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--surface);
+    color: var(--muted);
+    transition: border-color 0.15s;
+  }
+  .find[hidden] { display: none; }
+  /* The children of the sidebar keep its width while it folds: this one, less its margins */
+  .sidebar > .find { min-width: calc(268px - 24px); }
+  .find:focus-within { border-color: var(--accent); }
+  .find input { flex: 1; min-width: 0; padding: 0; border: 0; outline: none; background: none; color: var(--text); font: inherit; font-size: 13.5px; }
+  .find input::placeholder { color: var(--muted); }
+  .session .meta.summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* The sentence of the scribe, under the greeting, when it comes */
+  .lead.written { animation: fade-in 0.6s ease-out both; }
+
   /* The last session, to take it up again from the empty page */
   .resume {
     display: inline-flex;
@@ -1240,6 +1264,12 @@
           </svg>
         </button>
       </div>
+      <div class="find" id="find" hidden>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>
+        </svg>
+        <input type="search" id="find-input" placeholder="Retrouver une session…" aria-label="Retrouver une session" autocomplete="off">
+      </div>
       <div class="sessions" id="sessions"></div>
       <div class="side-foot">
         <span class="avatar" id="avatar" aria-hidden="true"></span>
@@ -1408,6 +1438,7 @@
   const gauge = $("gauge"), gaugeFill = $("gauge-fill"), gaugeText = $("gauge-text");
   const menuEl = $("menu"), menuList = $("menu-list");
   const sidebar = $("sidebar"), sessionsEl = $("sessions"), backdrop = $("backdrop"), burger = $("burger");
+  const findBox = $("find"), findInput = $("find-input");
   const avatar = $("avatar"), who = $("who"), app = document.querySelector(".app");
   const dialog = $("dialog"), systemPrompt = $("system-prompt"), themeBtn = $("theme"), prompt = $("prompt");
   const bell = $("bell"), favicon = document.querySelector('link[rel="icon"]');
@@ -1917,7 +1948,8 @@
     const title = session.title.length > 48 ? `${session.title.slice(0, 47)}…` : session.title;
     const text = el("span", "resume-text");
     text.append(el("span", "resume-title", `On reprend « ${title} » ?`),
-      el("span", "resume-meta", `Session #${session.id}, commencée ${ago(session.created_at)}`));
+      el("span", "resume-meta", session.summary ? `${session.summary} · ${ago(session.created_at)}`
+        : `Session #${session.id}, commencée ${ago(session.created_at)}`));
     button.append(text);
     button.addEventListener("click", () => sendText(`/resume ${session.id}`, false));
     return button;
@@ -1942,7 +1974,8 @@
     const title = el("h1", "greeting");
     const named = info.user && info.persistent;
     title.append(named ? `${hello}, ` : hello, el("span", "name", named ? info.user : ""), end);
-    const lead = el("p", "lead", line);
+    // The sentence of the scribe when it came, from the last session and the changes of the project
+    const lead = el("p", "lead", info.welcome || line);
     const last = lastSession();
     const suggestions = el("div", "suggestions");
     for (const text of suggested()) {
@@ -1957,7 +1990,8 @@
     if (last) box.append(resumeButton(last));
     box.append(suggestions, tip);
     // What it shows, to draw it again only when that changes: its entrance is not played at each event
-    box.dataset.key = JSON.stringify([hello, info.user, info.persistent, last?.id, suggested()]);
+    box.dataset.key = JSON.stringify([hello, info.user, info.persistent, last?.id, last?.summary, suggested()]);
+    box.dataset.lead = lead.textContent;
     if (info.user && !info.persistent) {
       box.append(el("p", "note", "Session non enregistrée : lance louis --web --user <nom> pour garder tes sessions."));
     }
@@ -2000,6 +2034,15 @@
     const empty = logEl.querySelector(".empty");
     const next = empty && emptyState();
     if (next && next.dataset.key !== empty.dataset.key) empty.replaceWith(next);
+    else if (next && next.dataset.lead !== empty.dataset.lead) {
+      // Only the sentence of the scribe came: it fades in, the rest stays still
+      const lead = empty.querySelector(".lead");
+      lead.textContent = next.dataset.lead;
+      lead.classList.remove("written");
+      void lead.offsetWidth;
+      lead.classList.add("written");
+      empty.dataset.lead = next.dataset.lead;
+    }
     renderSessions();
     if (!menuEl.hidden) refreshMenu(false);
     update();
@@ -2033,6 +2076,14 @@
       sessionsEl.append(note);
       return;
     }
+    findBox.hidden = !info.sessions.length;
+    if (found) {
+      if (found.sessions.length) sessionsEl.append(el("div", "group-title", found.mode === "meaning" ? "Les plus proches" : "Par les mots"));
+      else sessionsEl.append(el("p", "side-note", "Aucune session ne parle de ça."));
+      found.sessions.forEach((session) => sessionsEl.append(sessionButton(session, true)));
+      update();
+      return;
+    }
     if (!info.sessions.length) {
       sessionsEl.append(el("p", "side-note", "Tes sessions s'enregistrent dès ton premier message."));
       return;
@@ -2044,18 +2095,58 @@
         title = label;
         sessionsEl.append(el("div", "group-title", label));
       }
-      const button = el("button", "session");
-      button.type = "button";
-      button.setAttribute("aria-current", String(session.id === info.session));
-      button.dataset.here = String(session.here);
-      const at = parseDate(session.created_at);
-      const when = at ? at.toLocaleString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "";
-      button.append(el("span", "title", session.title), el("span", "meta", session.here ? `#${session.id} · ${when}` : `#${session.id} · ${session.cwd}`));
-      button.title = session.here ? "" : `Session d'un autre dossier (${session.cwd}) : lance louis depuis lui pour la reprendre`;
-      button.addEventListener("click", () => openSession(session));
-      sessionsEl.append(button);
+      sessionsEl.append(sessionButton(session, false));
     }
   }
+
+  // A session of the sidebar: its title (the scribe's), and when it started, or what it is about among the results
+  function sessionButton(session, result) {
+    const button = el("button", "session");
+    button.type = "button";
+    button.setAttribute("aria-current", String(session.id === state.info.session));
+    button.dataset.here = String(session.here);
+    const at = parseDate(session.created_at);
+    const when = at ? at.toLocaleString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "";
+    const meta = !session.here ? `#${session.id} · ${session.cwd}`
+      : result && session.summary ? session.summary : `#${session.id} · ${result ? day(session.created_at).toLowerCase() : when}`;
+    button.append(el("span", "title", session.title), el("span", `meta${result ? " summary" : ""}`, meta));
+    button.title = !session.here ? `Session d'un autre dossier (${session.cwd}) : lance louis depuis lui pour la reprendre`
+      : session.summary ?? "";
+    button.addEventListener("click", () => openSession(session));
+    return button;
+  }
+
+  // The search box: the sessions about what is typed, asked to the server as it is typed (it reads them beside Louis,
+  // even while he answers). found: its last results, null when nothing is typed
+  let found = null;
+  let finding = 0;
+  let findTimer = 0;
+
+  findInput.addEventListener("input", () => {
+    clearTimeout(findTimer);
+    const query = findInput.value.trim();
+    if (query.length < 2) {
+      found = null;
+      renderSessions();
+      return;
+    }
+    findTimer = setTimeout(async () => {
+      const asked = ++finding;
+      try {
+        const res = await fetch(`/api/sessions?q=${encodeURIComponent(query)}`);
+        if (!res.ok || asked !== finding) return;
+        found = await res.json();
+        renderSessions();
+      } catch {}
+    }, 250);
+  });
+  findInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !findInput.value) return;
+    e.stopPropagation();
+    findInput.value = "";
+    found = null;
+    renderSessions();
+  });
 
   function openSession(session) {
     closeDrawer();

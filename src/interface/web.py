@@ -12,13 +12,18 @@ from events.event_list import APP_STARTED, APP_STOPPED, THINKING_ENABLED, THINKI
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_THINKING
 from events.event_list import CHAT_CONTEXT, CHAT_COMPACTED, CHAT_NUDGED, STRUCTURED_REPLY, GUARD_TRIGGERED, MODEL_CALL
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
-from events.event_list import SESSION_CREATED, SESSION_SAVED, SESSION_LIST, SESSION_RESUMED
+from events.event_list import SESSION_CREATED, SESSION_SAVED, SESSION_LIST, SESSION_RESUMED, SESSION_FOUND
+from events.event_list import SESSION_DESCRIBED, APP_WELCOME
 from events.event_list import EXPORT_DONE, SHARE_CREATED, SHARE_LIST, SHARE_REVOKED, SCHEMA_LIST
 from events.event_list import COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_DESCRIBE_PROGRESS, RAG_INDEXED, RAG_SOURCES
 from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
+from config.settings import settings
 from export.render_html import MARKDOWN, render
 from session.database import Database, now
+from session.scribe import embedder
+from session.search import find
+from utils.project import project
 from share import store
 from logger.logger import log
 from contextlib import closing
@@ -26,7 +31,7 @@ from datetime import datetime, timezone
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 import ipaddress
 import itertools
 import json
@@ -36,7 +41,6 @@ import re
 import signal
 import socket
 import sqlite3
-import subprocess
 import sys
 import threading
 import time
@@ -58,13 +62,6 @@ CHOICES: frozenset[str] = frozenset({"y", "n", "a"})
 WILDCARDS: frozenset[str] = frozenset({"", "0.0.0.0", "::"})
 # The names a page of this computer reaches Louis by, when it only listens there
 LOCAL_NAMES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
-
-# What the empty page suggests to work on: the files changed in git, or else the ones touched last, never those of
-# Louis itself nor of the tools of the project. At most FILES_LOOKED files are looked at, for a big folder
-SKIPPED_DIRS : frozenset[str] = frozenset({"node_modules", "__pycache__", "venv", "dist", "build", "target", "exports"})
-SKIPPED_FILES: re.Pattern = re.compile(r"^louis\.|\.(db|db-journal|log|jsonl|pyc|lock)$")
-FILES_LOOKED : int = 2000
-HINTS        : int = 3
 
 # The chat page loads its fonts and its Markdown libraries from these, nothing else: a reply that slipped a <script>
 # past DOMPurify could not send the conversation anywhere
@@ -167,61 +164,20 @@ def history_items(history: list[dict]) -> list[dict]:
                               **tool_result(call["name"], call.get("result"), call.get("ok"))})
     return items
 
-def kept(path: str) -> bool:
-    """ A file worth suggesting: not Louis's own (its database, its log...), nor hidden """
-    name: str = os.path.basename(path)
-    return not name.startswith(".") and not SKIPPED_FILES.search(name)
-
-def changed_files(cwd: str) -> list[str] | None:
-    """ The files changed or added in git, relative to cwd as git status gives them: None out of a repository """
-    try:
-        status = subprocess.run(["git", "status", "--porcelain", "--", "."], cwd=cwd, capture_output=True, text=True,
-                                timeout=2)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if status.returncode != 0:
-        return None
-    files: list[str] = []
-    for line in status.stdout.splitlines():
-        path: str = line[3:].split(" -> ")[-1].strip('"')
-        # A deleted file is nothing to work on, an untracked folder is not a file
-        if "D" not in line[:2] and kept(path) and os.path.isfile(os.path.join(cwd, path)):
-            files.append(path)
-    return files
-
-def recent_files(cwd: str) -> list[str]:
-    """ The files touched last in cwd, out of hidden folders and those of the tools (venv, node_modules...) """
-    found: list[tuple[float, str]] = []
-    for root, dirs, files in os.walk(cwd):
-        dirs[:] = [folder for folder in dirs if not folder.startswith(".") and folder not in SKIPPED_DIRS]
-        for name in files:
-            path: str = os.path.join(root, name)
-            if kept(path):
-                try:
-                    found.append((os.path.getmtime(path), os.path.relpath(path, cwd)))
-                except OSError:
-                    continue
-            if len(found) >= FILES_LOOKED:
-                break
-        if len(found) >= FILES_LOOKED:
-            break
-    return [path for _, path in sorted(found, reverse=True)[:HINTS]]
-
-def project(cwd: str) -> dict:
-    """ What the empty page suggests from: the name of the folder, and the files changed in git, or touched last """
-    changed: list[str] | None = changed_files(cwd)
-    return {"name": os.path.basename(os.path.abspath(cwd)), "changed": (changed or [])[:HINTS],
-            "recent": [] if changed else recent_files(cwd)}
-
-def sidebar(sessions: list[dict]) -> list[dict]:
-    """ The sessions of SESSION_LIST as the sidebar lists them: the newest first, named by their first message """
-    return [{
+def entry(session: dict) -> dict:
+    """ A session as the sidebar lists it: named by the title of the scribe, or else by its first message """
+    return {
         "id"        : session["id"],
-        "title"     : (session["first_message"] or "").strip().split("\n", 1)[0] or "(vide)",
+        "title"     : session.get("title") or (session.get("first_message") or "").strip().split("\n", 1)[0] or "(vide)",
+        "summary"   : session.get("summary"),
         "created_at": session["created_at"],
         "here"      : session["here"],
         "cwd"       : short_path(session["cwd"]),
-    } for session in reversed(sessions)]
+    }
+
+def sidebar(sessions: list[dict]) -> list[dict]:
+    """ The sessions of SESSION_LIST as the sidebar lists them: the newest first """
+    return [entry(session) for session in reversed(sessions)]
 
 def loopback(host: str) -> bool:
     """ Whether the address only listens on this computer """
@@ -238,6 +194,9 @@ class WebInterface(Interface):
         sent as it comes (Server-Sent Events). A page asks the permissions, and its Stop button cancels what Louis is
         doing as Ctrl+C does in a terminal. The same server gives the pages of the public links of /share (/s/<token>)
     """
+    # The empty page of a new session shows the sentence of the scribe under its greeting
+    welcomes: bool = True
+
     def __init__(self, host: str = HOST, port: int = PORT, database: str | None = None):
         """ Listen on host:port at once (OSError when it is taken), the pages are served once opened """
         super().__init__()
@@ -249,7 +208,8 @@ class WebInterface(Interface):
         self.__ids  : itertools.count = itertools.count(1)
         self.__state: dict = {
             "user": None, "persistent": False, "session": None, "sessions": [], "model": None, "think": False,
-            "commands": [], "context": None, "project": None, "busy": False, "turn": False, "started": None, "asking": False,
+            "commands": [], "context": None, "project": None, "welcome": None, "busy": False, "turn": False,
+            "started": None, "asking": False,
             "closed": False,
         }
         # The messages of the pages, and their answer to the permission being asked (its id, None when none is)
@@ -330,6 +290,10 @@ class WebInterface(Interface):
         bus.subscribe(self.__on_session_saved, SESSION_SAVED)
         bus.subscribe(self.__on_session_resumed, SESSION_RESUMED)
         bus.subscribe(self.__on_session_list, SESSION_LIST)
+        bus.subscribe(self.__on_session_found, SESSION_FOUND)
+        # From the thread of the scribe: only what holds the lock
+        bus.subscribe(self.__on_described, SESSION_DESCRIBED)
+        bus.subscribe(lambda event: self.__set(welcome=event.data["lead"]), APP_WELCOME)
         bus.subscribe(self.__on_turn_started, CHAT_TURN_STARTED)
         bus.subscribe(self.__on_thinking, CHAT_THINKING)
         bus.subscribe(self.__on_text, CHAT_TEXT)
@@ -432,6 +396,26 @@ class WebInterface(Interface):
         signal.pthread_kill(threading.main_thread().ident, signal.SIGUSR1)
         return True
 
+    def search(self, query: str) -> dict | None:
+        """
+            The sessions of the user about query, for the sidebar, read beside the app (it may be answering meanwhile):
+            {"mode", "sessions"}, None for the anonymous user
+        """
+        with self.__lock:
+            name, persistent, current = self.__state["user"], self.__state["persistent"], self.__state["session"]
+        if not persistent or self.__database is None:
+            return None
+        try:
+            with closing(Database(self.__database, readonly=True)) as db:
+                user = db.fetchone("SELECT id FROM users WHERE name = ?", (name,))
+                if user is None:
+                    return {"mode": "words", "sessions": []}
+                found, mode = find(db, user["id"], query, embedder(settings), os.getcwd(), current)
+        except sqlite3.Error as e:
+            log.warning(f"[web] cannot search the sessions: {e}")
+            return None
+        return {"mode": mode, "sessions": [{**entry(session), "score": session["score"]} for session in found]}
+
     def shared(self, token: str) -> dict | None:
         """ The document of a public link, None if there is no such open link """
         if self.__database is None:
@@ -533,18 +517,30 @@ class WebInterface(Interface):
     def __on_session_created(self, event: Event) -> None:
         """ A new session, empty: the pages start over """
         self.__always.clear()
+        # The state first: the empty page is drawn by the reset, with no sentence of the scribe about the session before
+        self.__set(user=event.data["user"], persistent=event.data["persistent"], session=None, project=project(os.getcwd()),
+                   welcome=None)
         self.__reset([])
-        self.__set(user=event.data["user"], persistent=event.data["persistent"], session=None, project=project(os.getcwd()))
         if event.data["custom_prompt"]:
             self.__notice("Nouvelle session avec ton prompt système.")
 
     def __on_session_saved(self, event: Event) -> None:
         """ The session is in the database from its first message on: at the top of the sidebar """
         identifier: int = event.data["id"]
-        entry: dict = {"id": identifier, "title": self.__question.strip().split("\n", 1)[0] or "(vide)",
-                       "created_at": now(), "here": True, "cwd": short_path(os.getcwd())}
-        others: list[dict] = [session for session in self.__state["sessions"] if session["id"] != identifier]
-        self.__set(session=identifier, sessions=[entry] + others)
+        saved: dict = entry({"id": identifier, "first_message": self.__question, "created_at": now(), "here": True,
+                             "cwd": os.getcwd()})
+        with self.__lock:
+            others: list[dict] = [session for session in self.__state["sessions"] if session["id"] != identifier]
+            self.__emit({"type": "state", "state": {"session": identifier, "sessions": [saved] + others}})
+
+    def __on_described(self, event: Event) -> None:
+        """ The title and the summary the scribe wrote of a session, in the sidebar (from the thread of the scribe) """
+        with self.__lock:
+            sessions: list[dict] = [
+                {**session, "title": event.data["title"], "summary": event.data["summary"]}
+                if session["id"] == event.data["id"] else session for session in self.__state["sessions"]
+            ]
+            self.__emit({"type": "state", "state": {"sessions": sessions}})
 
     def __on_session_resumed(self, event: Event) -> None:
         """ The session resumed, shown whole """
@@ -574,6 +570,24 @@ class WebInterface(Interface):
             rows.append(row)
         self.__card(f"Sessions de {event.data['user']}", rows,
                     "Clique sur une session pour la reprendre (celles d'un autre dossier se reprennent depuis lui).")
+
+    def __on_session_found(self, event: Event) -> None:
+        """ /find typed: the sessions found, the closest first, to resume with a click """
+        sessions: list[dict] = event.data["sessions"]
+        if not sessions:
+            self.__notice(f"Aucune session ne parle de « {event.data['query']} ».")
+            return
+        rows: list[dict] = []
+        for session in sessions:
+            where: str = "" if session["here"] else f" · {short_path(session['cwd'])}"
+            row: dict = {"text": session["title"] or one_line(session["first_message"] or "(vide)"),
+                         "meta": " · ".join(part for part in (session["summary"], local(session["created_at"])) if part) + where,
+                         "current": session["current"]}
+            if session["here"] and not session["current"]:
+                row["command"] = f"/resume {session['id']}"
+            rows.append(row)
+        how: str = "par le sens" if event.data["mode"] == "meaning" else "par les mots"
+        self.__card(f"Sessions sur « {event.data['query']} » ({how})", rows)
 
     def __on_turn_started(self, event: Event) -> None:
         """ The model answers: unlike a command (/think...), the pages show Louis at work until the turn ends """
@@ -640,6 +654,8 @@ class WebInterface(Interface):
             parts.append(f"{event.data['results']} anciens résultats d'outils réduits à leurs premières lignes")
         if event.data["dropped"]:
             parts.append(f"{event.data['dropped']} anciens messages mis de côté")
+        if event.data.get("summarized"):
+            parts.append("et je me suis fait un résumé de ce qui en est sorti")
         self.__notice(f"J'ai fait de la place dans ma mémoire : {', '.join(parts)}.")
 
     def __on_structured(self, event: Event) -> None:
@@ -902,6 +918,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.__page()
         elif path == "/api/events":
             self.__events()
+        elif path == "/api/sessions":
+            self.__search()
         else:
             self.__json(404, {"error": "Introuvable."})
 
@@ -969,6 +987,18 @@ class _Handler(BaseHTTPRequestHandler):
             self.__json(202, {})
         else:
             self.__json(409, {"error": "Cette demande n'attend plus de réponse."})
+
+    def __search(self) -> None:
+        """ The sessions about ?q=, for the search box of the sidebar """
+        query: str = (parse_qs(urlsplit(self.path).query).get("q") or [""])[0].strip()
+        if not query or len(query) > 200:
+            self.__json(400, {"error": "Recherche vide."})
+            return
+        found: dict | None = self.__web.search(query)
+        if found is None:
+            self.__json(409, {"error": "Les sessions ne sont gardées qu'avec --user <nom>."})
+        else:
+            self.__json(200, found)
 
     def __page(self) -> None:
         """ The chat page, read at each request """

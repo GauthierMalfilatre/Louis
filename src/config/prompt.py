@@ -70,6 +70,26 @@ Tu n'es pas un simple chatbot : tu as des outils pour explorer et lire le code, 
 - Sois honnête : si tu n'as pas pu vérifier quelque chose, dis-le.
 """
 
+# Asked of the chat model when messages of the conversation no longer fit in its context: what it will read in place of
+# them, after its system prompt (app/context_window.py). Each summary is of the messages just left out, added to the
+# ones before: rewritten each time, a summary loses the oldest facts first
+SUMMARY_PROMPT: str = (
+    "Ces messages viennent de sortir de ta mémoire : résume-les pour toi-même, pour continuer le travail sans les "
+    "relire. Garde ce que l'utilisateur a demandé, ce que tu as appris (les faits, noms, valeurs et extraits utiles des "
+    "fichiers lus, avec leurs chemins), les réponses déjà données, les fichiers modifiés et les décisions. N'invente "
+    "rien : pas d'étape suivante ni d'avis qui ne soient dans les messages. Des puces courtes, 12 au plus, en français. "
+    "Rien d'autre."
+)
+# Asked when the summaries added up grow too long
+MERGE_PROMPT: str = (
+    "Ces résumés de ta conversation sont devenus trop longs : fusionne-les en un seul, deux fois plus court, sans perdre "
+    "les faits (noms, valeurs, chemins), les demandes de l'utilisateur ni les réponses déjà données. Des puces courtes, "
+    "en français. Rien d'autre."
+)
+# Where the summary goes, after the system prompt
+SUMMARY_ASKED: str = "Les premiers messages de cette conversation ne sont plus dans ton contexte : qu'est-ce qu'on s'y est dit ?"
+SUMMARY_TITLE: str = "Voici mon résumé, je m'y fie sans relire les fichiers (sauf s'ils ont pu changer depuis) :\n"
+
 # Sent when the reply of the model is empty, no text and no tool call: Ollama drops the call of a tool the model is
 # not offered (one it saw in an old session, from another version of Louis), and the model believes it acted
 EMPTY_PROMPT: str = (

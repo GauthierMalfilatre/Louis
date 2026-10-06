@@ -11,6 +11,11 @@ class Interface(ABC):
         What the user talks to Louis through: it gives the messages of the user, and shows what happens by
         listening to the events of the app (the conversation, the commands, the permissions to ask...)
     """
+    # What the scribe (session/scribe.py) writes for this interface: the titles and summaries of the sessions, and the
+    # sentence that welcomes the user to a new one. A script that asks one question and quits needs none of it
+    describes: bool = True
+    welcomes : bool = False
+
     def __init__(self) -> "Interface":
         """ Init the class Interface """
         ...

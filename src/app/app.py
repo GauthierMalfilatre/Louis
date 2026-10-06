@@ -28,13 +28,14 @@ from rag.knowledge import Knowledge
 from guard.guard import Guard
 from guard.verdict import Verdict
 from tool.seen_files import SeenFiles
-from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND
+from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND, CHARS_PER_TOKEN
 from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
-from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT
+from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT, SUMMARY_PROMPT, MERGE_PROMPT
 from session.user import User
 from session.session import Session
+from session.scribe import Scribe
 from command.command import CommandTree
 from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
@@ -48,6 +49,7 @@ from command.impl.command_share import ShareCommand
 from command.impl.command_shares import SharesCommand
 from command.impl.command_unshare import UnshareCommand
 from command.impl.command_index import IndexCommand, UnindexCommand
+from command.impl.command_find import FindCommand
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -112,6 +114,14 @@ LOOP_MESSAGE: str = (
     "Louis tournait en rond (les mêmes appels d'outils, encore et encore) : arrêté. Reformule ou découpe la demande."
 )
 
+# What the chat model reads of the messages it sums up when they leave its context: each one cut to these characters
+# (a file read is what it learns from: its facts are often far from its start), and all of them to this share of its
+# context. The summaries added up are merged into a shorter one past SUMMARY_CHARS
+SUMMARY_MESSAGE: int   = 2000
+SUMMARY_RESULT : int   = 6000
+SUMMARY_SHARE  : float = 0.4
+SUMMARY_CHARS  : int   = 3000
+
 # Calls of a tool the guard refuses in a turn before the tool is withdrawn until the next message: the model
 # may redo a call without the sensitive data once, but qwen3 can also ask the same one again and again
 REFUSED_CALLS: int = 2
@@ -156,7 +166,11 @@ class App:
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
         # What the model sees of the session: cut down before it overflows the context, instead of Ollama cutting it
-        self.__window: ContextWindow = ContextWindow(settings.get("chat.context", 12288), self.__toolManager.all())
+        # With chat.compact.summary, what it leaves out is summed up by the model, which reads the summary instead
+        self.__window: ContextWindow = ContextWindow(
+            settings.get("chat.context", 12288), self.__toolManager.all(),
+            self.__summarize if settings.get("chat.compact.summary", True) else None
+        )
 
         # What the user indexed, looked up by the model with search_knowledge. Nothing is read or created on the disk
         # before something is indexed, and the tool is only offered while there is something to look up
@@ -180,6 +194,7 @@ class App:
             .register(ToggleThinkCommand())\
             .register(IndexCommand())\
             .register(UnindexCommand())\
+            .register(FindCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -192,6 +207,10 @@ class App:
         self.__stream: Interface = stream
         # The interface shows what happens (the conversation, the commands...) by listening to the bus
         self.__stream.bind(self.__bus)
+        # The titles and summaries of the sessions, the welcome of a new one: a small model, in its own thread. Started
+        # before the first session, which it welcomes; never for a script that asks one question and quits
+        if settings.get("scribe.model") and stream.describes and (user.db is not None or stream.welcomes):
+            Scribe(settings, self.__bus, user.db.path if user.db is not None else None, user.id, welcome=stream.welcomes)
         self.__bus.dispatch(
             APP_STARTED,
             model=self.__model.model,
@@ -286,7 +305,8 @@ class App:
 
     def __estimate_context(self) -> None:
         """ Tell how full the context is with the current session, as it will be sent, before the model measures it """
-        messages, _ = self.__window.view(self.__history())
+        # An estimate: what it leaves out is summed up by the next request, never here (a /resume does not wait for it)
+        messages, _ = self.__window.view(self.__history(), summarize=False)
         self.__bus.dispatch(CHAT_CONTEXT, used=self.__window.tokens(messages), size=self.__window.size, estimated=True)
 
     def __view(self) -> list[dict]:
@@ -294,11 +314,45 @@ class App:
         messages, cut = self.__window.view(self.__history())
         if cut:
             used: int = self.__window.tokens(messages)
-            log.info(f"[app] context cut down: {cut['results']} tool results, {cut['dropped']} messages left out, "
-                     f"{used} tokens left of {self.__window.size}")
+            log.info(f"[app] context cut down: {cut['results']} tool results, {cut['dropped']} messages left out"
+                     f"{' and summed up' if cut['summarized'] else ''}, {used} tokens left of {self.__window.size}")
             self.__bus.dispatch(CHAT_COMPACTED, **cut, used=used, size=self.__window.size)
             self.__bus.dispatch(CHAT_CONTEXT, used=used, size=self.__window.size, estimated=True)
         return messages
+
+    def __summarize(self, previous: str, left: list[dict]) -> str | None:
+        """
+            The messages left out of the context, summed up by the chat model for itself, after what it summed up before:
+            it reads them after its system prompt, merged into a shorter summary once they grow past SUMMARY_CHARS.
+            None if the model fails: they are then only left out
+        """
+        parts: list[str] = []
+        for message in left:
+            content: str = message.get("content") or ""
+            most: int = SUMMARY_RESULT if message["role"] == "tool" else SUMMARY_MESSAGE
+            text: str = content if len(content) <= most else content[:most] + " […]"
+            who: str = {"user": "Utilisateur", "assistant": "Toi"}.get(message["role"], f"Résultat de {message.get('tool_name') or 'un outil'}")
+            calls: str = ", ".join(
+                f"{call['function']['name']} {json.dumps(call['function'].get('arguments') or {}, ensure_ascii=False)[:200]}"
+                for call in message.get("tool_calls") or []
+            )
+            parts.append(f"{who} : {text}" + (f"\n  (appels : {calls})" if calls else ""))
+        text: str = "\n".join(parts)
+        room: int = int(self.__window.size * SUMMARY_SHARE * CHARS_PER_TOKEN)
+        if len(text) > room:
+            text = "[…]\n" + text[-room:]
+        try:
+            block: str = self.__chat([{"role": "system", "content": SUMMARY_PROMPT},
+                                      {"role": "user", "content": text}], [], None, think=False).content.strip()
+            summary: str = f"{previous}\n{block}".strip()
+            if len(summary) > SUMMARY_CHARS:
+                summary = self.__chat([{"role": "system", "content": MERGE_PROMPT},
+                                       {"role": "user", "content": summary}], [], None, think=False).content.strip()
+        except ModelException as e:
+            log.warning(f"[app] {len(left)} messages left out of the context without a summary: {e.message}")
+            return None
+        log.info(f"[app] {len(left)} messages left out of the context, summed up:\n{summary}")
+        return summary[:SUMMARY_CHARS * 2] or None
 
     @property
     def settings(self) -> dict[str]:
@@ -574,7 +628,7 @@ class App:
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} tours d'appels d'outils.")
 
     def __chat(self, messages: list[dict], tools: list[dict], stream: Callable | None,
-               schema: dict | None = None) -> Reply:
+               schema: dict | None = None, think: bool | None = None) -> Reply:
         """
             Ask the model for its next reply, and tell how the request went (MODEL_CALL), even when it fails or the
             user cancels it: the monitoring records every call, with its latency and its tokens.
@@ -584,7 +638,7 @@ class App:
         start: float = time.perf_counter()
         reply: Reply | None = None
         status, error = "ok", None
-        think: bool = self.think and schema is None
+        think = (self.think and schema is None) if think is None else think
         try:
             reply = self.__model.chat(
                 messages, tools, think=think, on_text=stream,

@@ -16,8 +16,9 @@ from events.event import Event
 from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_RESUMED, CHAT_TURN_STARTED, CHAT_TURN_ENDED
 from events.event_list import CHAT_TEXT, CHAT_REPLY, TOOL_CALL_STARTED, TOOL_CALL_ENDED, RAG_INDEXED
-from events.event_list import MODEL_CALL, RAG_RETRIEVED, CHAT_NUDGED
-from interface.web import WebInterface, history_items, stats, project, tool_object
+from events.event_list import MODEL_CALL, RAG_RETRIEVED, CHAT_NUDGED, SESSION_LIST, SESSION_DESCRIBED, APP_WELCOME
+from interface.web import WebInterface, history_items, stats, tool_object
+from utils.project import project
 from logger.logger import log_event
 from session.database import Database
 from session.user import User
@@ -159,6 +160,44 @@ def test_a_turn_ends_with_its_references_and_its_cost(served):
     assert (text["kind"], note["kind"]) == ("text", "note")
     assert (cost["kind"], cost["calls"], cost["tokens"], cost["speed"]) == ("stats", 1, 120, 40.0)
     assert shown["state"]["started"] is None and shown["state"]["turn"] is False
+
+def test_the_scribe_names_the_sessions_and_welcomes(served):
+    web, bus = served
+    started(bus, persistent=True)
+    bus.dispatch(SESSION_LIST, user="ada", sessions=[{
+        "id": 3, "first_message": "Lis a.py\npuis b.py", "title": None, "summary": None, "cwd": os.getcwd(), "here": True,
+        "current": False, "created_at": "2026-10-06 10:00:00"
+    }])
+    assert snapshot(web)["state"]["sessions"][0]["title"] == "Lis a.py"
+    bus.dispatch(SESSION_DESCRIBED, id=3, title="Lecture de a.py", summary="Tu as lu a.py.")
+    bus.dispatch(APP_WELCOME, lead="On reprend b.py ?")
+    shown: dict = snapshot(web)["state"]
+    assert (shown["sessions"][0]["title"], shown["sessions"][0]["summary"]) == ("Lecture de a.py", "Tu as lu a.py.")
+    assert shown["welcome"] == "On reprend b.py ?"
+    # A new session: the sentence was about the one before
+    bus.dispatch(SESSION_CREATED, user="ada", persistent=True, custom_prompt=False)
+    assert snapshot(web)["state"]["welcome"] is None
+
+def test_the_sidebar_finds_a_session_while_louis_works(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path: str = str(tmp_path / "louis.db")
+    db: Database = Database(path)
+    user: User = User.get_or_create(db, "ada")
+    session = user.new_session(str(tmp_path))
+    session.add("user", "Comment lire un fichier JSON ?")
+    db.execute("UPDATE sessions SET title = 'Lecture de JSON' WHERE id = ?", (session.id,))
+    web: WebInterface = WebInterface("127.0.0.1", 0, path)
+    bus: EventBus = EventBus()
+    web.bind(bus)
+    with web:
+        bus.dispatch(SESSION_CREATED, user="Anonymous", persistent=False, custom_prompt=False)
+        assert request(web, "GET", "/api/sessions?q=json")[0] == 409
+        started(bus, persistent=True)
+        request(web, "POST", "/api/messages", {"text": "un long travail"})
+        status, _, body = request(web, "GET", "/api/sessions?q=json")
+        assert status == 200 and [found["title"] for found in json.loads(body)["sessions"]] == ["Lecture de JSON"]
+        assert request(web, "GET", "/api/sessions?q=")[0] == 400
+    db.close()
 
 def test_the_sidebar_asks_the_sessions_first(served):
     web, bus = served

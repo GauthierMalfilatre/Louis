@@ -18,11 +18,16 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TEXT NOT NULL
 );
 
+-- title, summary: written by the scribe once a reply is done (session/scribe.py); vector: the meaning of both, for /find
 CREATE TABLE IF NOT EXISTS sessions (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    cwd        TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    cwd          TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    title        TEXT,
+    summary      TEXT,
+    vector       BLOB,
+    described_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, id);
 
@@ -52,6 +57,11 @@ CREATE TABLE IF NOT EXISTS shares (
 CREATE INDEX IF NOT EXISTS idx_shares_user ON shares(user_id, created_at);
 """
 
+# Columns added to a table since it was first made: a database of an older version gets them, empty
+ADDED: dict[str, list[tuple[str, str]]] = {
+    "sessions": [("title", "TEXT"), ("summary", "TEXT"), ("vector", "BLOB"), ("described_at", "TEXT")],
+}
+
 def now() -> str:
     """ The current time, in UTC, as it is saved in the database """
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -74,6 +84,11 @@ class Database:
         self.__conn.row_factory = sqlite3.Row
         self.__conn.execute("PRAGMA foreign_keys = ON")
         self.__conn.executescript(SCHEMA)
+        for table, columns in ADDED.items():
+            known: set[str] = {row["name"] for row in self.__conn.execute(f"PRAGMA table_info({table})")}
+            for name, kind in columns:
+                if name not in known:
+                    self.__conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
         # A conversation without a message of the user is never saved: remove the ones older versions left
         self.execute("DELETE FROM sessions WHERE id NOT IN (SELECT session_id FROM messages WHERE role = 'user')")
 

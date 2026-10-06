@@ -64,6 +64,15 @@ Le serveur écoute sur `127.0.0.1` : ce poste seulement. `--host 0.0.0.0` l'ouvr
 
 Il sert aussi les liens publics de `/share` (`/s/<jeton>`) : les liens pointent vers lui tant que `share.base_url` (dans `src/config/settings.py`) est vide, ou vers l'adresse donnée par ce réglage ou par `LOUIS_SHARE_URL` (un proxy, un nom de domaine...).
 
+## Le scribe : titres, résumés, accueil
+
+À côté de la conversation, un petit modèle (`scribe.model`, qwen3:4b-instruct par défaut, le même que `rag.describe.model`) écrit le titre et le résumé de chaque session une fois la réponse finie, et la phrase qui t'accueille sur la page web, d'après ta dernière session et tes changements en cours. Il tourne sur le processeur, dans son propre fil : il ne prend jamais la carte graphique au modèle de la conversation, et Louis ne l'attend jamais. Les sessions d'avant sont décrites quand il n'a rien d'autre à faire.
+
+- **Retrouver une session** : `/find <texte>`, ou la recherche de la barre latérale de `louis --web`, par le sens du titre et du résumé (avec `nomic-embed-text`, le modèle d'embedding du RAG), ou par les mots sans lui.
+- **Résumer au lieu de couper** : quand le contexte est plein, les plus vieux échanges qui en sortent sont résumés par le modèle de la conversation (les demandes, ce qu'il a appris des fichiers lus, les réponses déjà données), et il relit ce résumé à leur place. `chat.compact.summary: False` revient à les couper seulement.
+
+`ollama pull qwen3:4b-instruct` s'il n'est pas déjà là ; `scribe.model: ""` coupe le scribe.
+
 ## Base de connaissances (RAG)
 
 Louis cherche dans la documentation et les exemples de code que tu lui indexes (`/index <dossier>`, ou `louis --index <dossier>`) avec l'outil `search_knowledge`, par mots-clés et par le sens (`ollama pull nomic-embed-text`). Le fonctionnement, le garde-fou qui filtre ce que la base rend, et **où trouver de gros jeux de données de code** sont dans [docs/RAG.md](docs/RAG.md).

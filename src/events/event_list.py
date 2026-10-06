@@ -22,7 +22,7 @@ CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
 CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the model thinks before replying, with /think)
 # The context filled up: the old tool results were cut down to their first lines (the model may ask for them again),
 # and at last the oldest exchanges left out. What is saved of the session stays whole
-CHAT_COMPACTED    = "chat.compacted"      # data: results (cut down this time), dropped (messages left out this time), used, size (tokens)
+CHAT_COMPACTED    = "chat.compacted"      # data: results (cut down this time), dropped (messages left out this time), summarized (the chat model summed up what was left out, chat.compact.summary), used, size (tokens)
 
 # One request to the model, however it went: what the monitoring records. status is "ok", "error" (error tells why) or
 # "cancelled" (Ctrl+C); latency the seconds of the whole request; system the prompt of the session, without the context
@@ -69,7 +69,10 @@ TOOL_GRANT_PERMISSION  = "tool.permission.grant"    # data: id, granted
 # interface lays it out its own way, the CLI as text, a web page as it likes
 SESSION_CREATED = "session.created"   # data: user, persistent (saved from the first message of the user on), custom_prompt
 SESSION_SAVED   = "session.saved"     # data: id (the current session is in the database, from its first message on)
-SESSION_LIST    = "session.list"      # data: user, sessions: [{id, first_message, cwd, here, current, created_at}]
+SESSION_LIST    = "session.list"      # data: user, sessions: [{id, first_message, title, summary (the scribe's, None before), cwd, here, current, created_at}]
+# Sessions found by /find: by the meaning of their title and summary when the embedding model answers, else by words.
+# score: how close (0 to 1, meaning; the share of the words found, words)
+SESSION_FOUND   = "session.found"     # data: user, query, mode ("meaning" or "words"), sessions: [{id, title, summary, first_message, cwd, here, current, created_at, score}]
 SESSION_RESUMED = "session.resumed"   # data: id, user, messages (count), last_question, last_answer, history (the conversation, as export/document.py reads it)
 
 # A session written to a file by /export: id is None for a session never saved (the anonymous user's). With
@@ -82,6 +85,11 @@ SHARE_LIST      = "share.list"        # data: user, shares: [{token, url, kind, 
 SHARE_REVOKED   = "share.revoked"     # data: token, url
 
 SCHEMA_LIST     = "schema.list"       # data: folder (the one of the project), schemas: [{name, description, origin ("projet" or "louis"), path, ok}]
+
+# What the scribe wrote (session/scribe.py). Dispatched from its own thread, a reply never waits for it: a handler of
+# these must be thread-safe, and never draw in a terminal
+SESSION_DESCRIBED = "session.described"   # data: id, title, summary
+APP_WELCOME       = "app.welcome"         # data: lead (one sentence that welcomes the user to the new session, from the last one and the changes of the project)
 
 COMMAND_UNKNOWN = "command.unknown"   # data: name, commands: [{name, usage, description}]
 COMMAND_ERROR   = "command.error"     # data: command, reason (a short code), message (one sentence), details...
