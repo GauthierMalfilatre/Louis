@@ -14,5 +14,7 @@ primp==2.0.1
 referencing==0.37.0
 requests==2.34.2
 rpds-py==2026.9.1
+# The QR code louis --web --lan shows, for a phone to open Louis
+segno==1.6.6
 typing_extensions==4.16.0
 urllib3==2.8.0

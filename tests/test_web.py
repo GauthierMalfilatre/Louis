@@ -362,3 +362,59 @@ def test_behind_a_proxy_its_address_is_let_in(tmp_path):
         # Any other name is still refused
         assert request(web, "GET", "/", headers={"Host": "evil.example"})[0] == 403
         assert request(web, "POST", "/api/stop", {}, {"Origin": "https://evil.example"})[0] == 403
+
+@pytest.fixture
+def lan(tmp_path, monkeypatch):
+    """ Louis open to the network (--lan), its code kept in a folder of the test, on an address of a Wi-Fi """
+    import interface.web as web_module
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(web_module, "lan_address", lambda: "192.168.1.20")
+    web: WebInterface = WebInterface("0.0.0.0", 0, None)
+    bus: EventBus = EventBus()
+    web.bind(bus)
+    with web:
+        started(bus)
+        yield web, tmp_path
+
+def test_a_phone_pairs_with_the_code_before_anything(lan):
+    web, tmp_path = lan
+    code: str = web.code
+    assert web.url.startswith("http://192.168.1.20:") and len(code) == 8
+    # Not paired: the page asks the code, Louis answers nothing, what installs the app is still given
+    status, _, body = request(web, "GET", "/")
+    assert status == 200 and "Associer ce téléphone" in body and "<title>Louis</title>" in body
+    assert request(web, "GET", "/api/sessions?q=json")[0] == 401
+    assert request(web, "POST", "/api/messages", {"text": "rm -rf"})[0] == 401
+    assert request(web, "GET", "/manifest.webmanifest")[0] == 200
+    assert request(web, "GET", "/?code=AAAA-AAAA")[0] == 401
+    # The code of the QR code, or typed in lower case with its dash
+    status, headers, _ = request(web, "GET", f"/?code={code[:4].lower()}-{code[4:].lower()}")
+    assert status == 303 and headers["Location"] == "/" and "HttpOnly" in headers["Set-Cookie"]
+    cookie: str = headers["Set-Cookie"].split(";")[0]
+    # Lax: the app opened from the home screen sends it (Chrome sends no Strict cookie from outside)
+    assert "SameSite=Lax" in headers["Set-Cookie"]
+    status, headers, body = request(web, "GET", "/", headers={"Cookie": cookie})
+    assert status == 200 and "Associer ce téléphone" not in body
+    # Given again with the page: a phone paired with the cookie of before gets the one of now
+    assert headers["Set-Cookie"].startswith(cookie) and "SameSite=Lax" in headers["Set-Cookie"]
+    assert request(web, "POST", "/api/messages", {"text": "Bonjour"}, {"Cookie": cookie})[0] == 202
+    assert request(web, "GET", "/", headers={"Cookie": "louis=forged"})[1].get("Set-Cookie") is None
+    assert "Associer" in request(web, "GET", "/", headers={"Cookie": "louis=forged"})[2]
+
+def test_wrong_codes_are_tried_a_few_times_only(lan):
+    web, _ = lan
+    for _ in range(10):
+        assert request(web, "GET", "/?code=WRONGCOD")[0] == 401
+    # Even the right one, until the wrong ones are old
+    assert request(web, "GET", f"/?code={web.code}")[0] == 429
+
+def test_the_code_stays_the_same_and_is_the_user_s_only(tmp_path, monkeypatch):
+    from interface.web import pairing_code, code_file
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    first: str = pairing_code()
+    assert pairing_code() == first and code_file().stat().st_mode & 0o777 == 0o600
+    assert not set(first) & set("0O1IL")
+
+def test_on_this_computer_alone_no_code_is_asked(served):
+    web, _ = served
+    assert web.code is None and request(web, "GET", "/")[0] == 200

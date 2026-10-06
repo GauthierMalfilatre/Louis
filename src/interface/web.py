@@ -29,15 +29,21 @@ from logger.logger import log
 from contextlib import closing
 from datetime import datetime, timezone
 from functools import partial
+from html import escape
+from http.cookies import SimpleCookie, CookieError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
+import hashlib
+import hmac
+import io
 import ipaddress
 import itertools
 import json
 import os
 import queue
 import re
+import secrets
 import signal
 import socket
 import sqlite3
@@ -75,6 +81,20 @@ WILDCARDS: frozenset[str] = frozenset({"", "0.0.0.0", "::"})
 # The names a page of this computer reaches Louis by, when it only listens there
 LOCAL_NAMES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
+# Louis listening beyond this computer (--lan, --host 0.0.0.0): a phone pairs once with the code of this computer,
+# then a cookie lets it in. The code is kept in the data of the user, the same from one start to the next: delete the
+# file for a new one, every phone then pairs again. Its letters are read on a screen and typed on a phone: no 0/O, 1/I/L
+CODE_ALPHABET: str = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+CODE_LENGTH  : int = 8
+COOKIE       : str = "louis"
+COOKIE_AGE   : int = 365 * 86400
+# Lax, not Strict: the app opened from the home screen of a phone comes "from outside" for Chrome, which then never sends
+# a Strict cookie, and the phone is asked its code at each opening. Lax still keeps it from the requests of other sites
+COOKIE_ATTRIBUTES: str = f"Max-Age={COOKIE_AGE}; Path=/; HttpOnly; SameSite=Lax"
+# Wrong codes from one address: past TRIES within TRIES_WINDOW seconds, it may not try any more until they are older
+TRIES        : int   = 10
+TRIES_WINDOW : float = 600.0
+
 # The chat page loads its fonts and its Markdown libraries from these, nothing else: a reply that slipped a <script>
 # past DOMPurify could not send the conversation anywhere
 PAGE_POLICY: str = (
@@ -85,6 +105,36 @@ PAGE_POLICY: str = (
 # A shared page has no script, and reaches nothing: whatever the session holds stays text
 SHARE_POLICY: str = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'"
 
+# The page of a phone not paired yet: the code typed (the QR code gives it in the address)
+PAIRING_POLICY: str = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; frame-ancestors 'none'"
+PAIRING: str = """<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#fbf8f4"><title>Louis</title>
+<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<style>
+:root{color-scheme:light dark;--bg:#fbf8f4;--surface:#fffdfa;--text:#251e1b;--muted:#76695f;--accent:#7326e8;--border:#e8ddd2;--danger:#c92a5c}
+@media(prefers-color-scheme:dark){:root{--bg:#1a1416;--surface:#241c1e;--text:#f2eae6;--muted:#ab9b94;--accent:#bb8dff;--border:#3d3134;--danger:#ff7aa2}}
+body{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{width:min(100%,340px);padding:24px;text-align:center}
+img{width:72px;height:72px;border-radius:18px}
+h1{margin:16px 0 6px;font:600 22px/1.3 Georgia,serif}
+p{margin:0 0 18px;color:var(--muted)}
+input{box-sizing:border-box;width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);font:600 20px/1.2 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-align:center;text-transform:uppercase}
+input:focus{outline:none;border-color:var(--accent)}
+button{width:100%;margin-top:12px;padding:12px;border:0;border-radius:999px;background:var(--accent);color:var(--bg);font:600 16px system-ui,sans-serif}
+.error{margin:12px 0 0;color:var(--danger)}
+</style></head><body><main>
+<img src="/icons/icon-192.png" alt="">
+<h1>Associer ce téléphone</h1>
+<p>Entre le code que Louis affiche dans le terminal de ton ordinateur, ou scanne son QR code.</p>
+<form method="get" action="/">
+<input name="code" placeholder="XXXX-XXXX" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required autofocus>
+<button type="submit">Associer</button>
+</form>
+__ERROR__
+</main></body></html>"""
+
 NOT_FOUND: str = """<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lien introuvable</title>
@@ -92,6 +142,53 @@ NOT_FOUND: str = """<!doctype html>
 background:#faf9fc;color:#1a1721}@media(prefers-color-scheme:dark){body{background:#131017;color:#ece8f3}}
 main{max-width:420px;padding:24px;text-align:center}h1{font-size:20px;margin:0 0 6px}p{margin:0;opacity:.7}</style>
 </head><body><main><h1>Lien introuvable</h1><p>Ce lien n'existe pas, ou il a été fermé.</p></main></body></html>"""
+
+def code_file() -> Path:
+    """ Where the pairing code is kept: the data of louis of the user (XDG_DATA_HOME), never in a project """
+    base: str = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return Path(base) / "louis" / "web.code"
+
+def pairing_code() -> str:
+    """ The code that pairs a phone with this computer, made the first time, readable by the user only """
+    path: Path = code_file()
+    try:
+        code: str = path.read_text().strip()
+        if len(code) == CODE_LENGTH and all(char in CODE_ALPHABET for char in code):
+            return code
+    except OSError:
+        pass
+    code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(code + "\n")
+    path.chmod(0o600)
+    return code
+
+def shown(code: str) -> str:
+    """ A code as it is read: K7PM-Q2XA """
+    return f"{code[:4]}-{code[4:]}"
+
+def lan_address() -> str | None:
+    """
+        The address of this computer on its network (the Wi-Fi a phone is on): the one a packet to the network would
+        leave by. Nothing is sent. None without a network
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        try:
+            probe.connect(("10.255.255.255", 1))
+            address: str = probe.getsockname()[0]
+        except OSError:
+            return None
+    return None if address.startswith("127.") else address
+
+def qr(text: str) -> str:
+    """ text as a QR code to scan in a terminal, "" without segno """
+    try:
+        import segno
+    except ImportError:
+        return ""
+    out: io.StringIO = io.StringIO()
+    segno.make(text, error="m").terminal(out=out, compact=True, border=2)
+    return out.getvalue()
 
 def markdown(text: str) -> str:
     """ A reply of the model as HTML: the HTML it holds is shown as text, never run """
@@ -250,6 +347,12 @@ class WebInterface(Interface):
         self.__database: str | None = database
         self.__host    : str        = host
         self.__public  : str | None = url.rstrip("/") if url else None
+        # Beyond this computer, a phone pairs first: its cookie is made of the code, a new code turns away every phone
+        self.__code    : str | None = None if loopback(host) else pairing_code()
+        self.__token   : str | None = hmac.new(self.__code.encode(), b"louis-web", hashlib.sha256).hexdigest()[:32] \
+            if self.__code else None
+        self.__tries   : dict[str, list[float]] = {}
+        self.__lan     : str | None = lan_address() if host in WILDCARDS else None
         public: set[str] = {(urlsplit(url).hostname or "").lower()} if url else set()
         self.__names   : frozenset[str] | None = LOCAL_NAMES | {host.lower()} | public if loopback(host) else None
         self.__server  : _Server    = _Server((host, port), partial(_Handler, web=self))
@@ -259,8 +362,48 @@ class WebInterface(Interface):
 
     @property
     def url(self) -> str:
-        """ The address of the pages: the one a proxy serves them at, or the one Louis listens on """
-        return self.__public or self.local
+        """ The address of the pages: the one a proxy serves them at, the one of this computer on its network, or this one """
+        if self.__public:
+            return self.__public
+        return f"http://{self.__lan}:{self.__server.server_port}" if self.__lan else self.local
+
+    @property
+    def code(self) -> str | None:
+        """ The code a phone pairs with, None when Louis only listens on this computer """
+        return self.__code
+
+    def paired(self, cookies: str | None) -> bool:
+        """ Whether a page may use Louis: its cookie, or no code to have (this computer only) """
+        if self.__token is None:
+            return True
+        try:
+            cookie = SimpleCookie(cookies or "").get(COOKIE)
+        except CookieError:
+            return False
+        return cookie is not None and hmac.compare_digest(cookie.value, self.__token)
+
+    @property
+    def cookie(self) -> str | None:
+        """ What lets a paired phone in, given again with each page: a phone paired before gets its attributes of now """
+        return f"{COOKIE}={self.__token}; {COOKIE_ATTRIBUTES}" if self.__token else None
+
+    def pair(self, typed: str, client: str) -> str | None:
+        """
+            The cookie of a phone that typed the right code, else None. Each address may try TRIES wrong codes within
+            TRIES_WINDOW: past them, a right one is refused too (ValueError), until the oldest wrong one is older
+        """
+        now: float = time.monotonic()
+        with self.__lock:
+            tried: list[float] = [moment for moment in self.__tries.get(client, []) if now - moment < TRIES_WINDOW]
+            if len(tried) >= TRIES:
+                raise ValueError("too many tries")
+            code: str = "".join(char for char in typed.upper() if char.isalnum())
+            if self.__code is not None and hmac.compare_digest(code, self.__code):
+                self.__tries.pop(client, None)
+                return self.cookie
+            self.__tries[client] = tried + [now]
+        log.warning(f"[web] wrong pairing code from {client}")
+        return None
 
     @property
     def local(self) -> str:
@@ -286,11 +429,12 @@ class WebInterface(Interface):
             self.__stoppable = True
         self.__thread = threading.Thread(target=self.__server.serve_forever, name="louis-web", daemon=True)
         self.__thread.start()
-        log.info(f"[web] serving on {self.local}{f', reached at {self.__public}' if self.__public else ''}")
-        print(f"Louis est sur {self.local}{f' et {self.__public}' if self.__public else ''} (Ctrl+C pour l'arrêter)", flush=True)
-        if self.__names is None:
-            sys.stderr.write("Attention : l'interface est ouverte au réseau, sans mot de passe : qui l'atteint peut "
-                             "faire agir Louis sur tes fichiers.\n")
+        log.info(f"[web] serving on {self.local}{f', reached at {self.url}' if self.url != self.local else ''}")
+        print(f"Louis est sur {self.url} (Ctrl+C pour l'arrêter)", flush=True)
+        if self.__code:
+            print(f"\nSur ton téléphone, sur le même réseau : scanne ce QR code, ou ouvre {self.url} et entre le code "
+                  f"{shown(self.__code)}. Sans lui, personne d'autre sur le réseau ne peut utiliser Louis.")
+            print(qr(f"{self.url}/?code={self.__code}"), flush=True)
         return self
 
     def __exit__(self, *exception) -> None:
@@ -937,19 +1081,28 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path: str = urlsplit(self.path).path
+        typed: str | None = (parse_qs(urlsplit(self.path).query).get("code") or [None])[0]
         if path.startswith("/s/"):
             # Public, and reached by the address the links give (a proxy...): no check of the host
             self.__share(path.removeprefix("/s/"))
         elif not self.__trusted():
             self.__json(403, {"error": "Adresse refusée."})
+        elif path in FILES:
+            # What installs the app, asked without its cookie by the browser: nothing in it is private
+            self.__file(*FILES[path])
+        elif path == "/" and typed is not None and self.__web.code is not None:
+            self.__pair(typed)
+        elif not self.__web.paired(self.headers.get("Cookie")):
+            if path == "/":
+                self.__pairing()
+            else:
+                self.__json(401, {"error": "Ce téléphone n'est pas associé à Louis : ouvre la page pour entrer le code."})
         elif path == "/":
             self.__page()
         elif path == "/api/events":
             self.__events()
         elif path == "/api/sessions":
             self.__search()
-        elif path in FILES:
-            self.__file(*FILES[path])
         else:
             self.__json(404, {"error": "Introuvable."})
 
@@ -958,6 +1111,9 @@ class _Handler(BaseHTTPRequestHandler):
         # JSON only: another site can not send it here without asking the browser first (CORS), which is refused
         if not self.__trusted() or not self.__same_origin():
             self.__json(403, {"error": "Adresse refusée."})
+            return
+        if not self.__web.paired(self.headers.get("Cookie")):
+            self.__json(401, {"error": "Ce téléphone n'est pas associé à Louis : recharge la page pour entrer le code."})
             return
         if self.headers.get_content_type() != "application/json":
             self.__json(415, {"error": "JSON seulement."})
@@ -1031,14 +1187,38 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self.__json(200, found)
 
+    def __pair(self, typed: str) -> None:
+        """ A code typed, or given by the QR code: the right one pairs the phone, then the page without it in its address """
+        try:
+            cookie: str | None = self.__web.pair(typed, self.client_address[0])
+        except ValueError:
+            self.__pairing("Trop de codes faux : réessaie dans quelques minutes.", 429)
+            return
+        if cookie is None:
+            self.__pairing("Ce n'est pas le bon code. Il est affiché dans le terminal où tourne Louis.", 401)
+            return
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def __pairing(self, error: str | None = None, status: int = 200) -> None:
+        """ The page a phone not paired yet gets, with why the code typed did not pair it """
+        shown_error: str = f'<p class="error">{escape(error)}</p>' if error else ""
+        self.__send(status, PAIRING.replace("__ERROR__", shown_error).encode(), "text/html; charset=utf-8", PAIRING_POLICY)
+
     def __file(self, name: str, content_type: str, keep: int) -> None:
         """ A file of the app: what a phone needs to install it """
         self.__send(200, (STATIC / name).read_bytes(), content_type, PAGE_POLICY if name.endswith(".html") else None,
                     keep=keep)
 
     def __page(self) -> None:
-        """ The chat page, read at each request """
-        self.__send(200, PAGE.read_bytes(), "text/html; charset=utf-8", PAGE_POLICY)
+        """ The chat page, read at each request, with the cookie of the phone given again (a year more, as it is now) """
+        cookie: str | None = self.__web.cookie
+        self.__send(200, PAGE.read_bytes(), "text/html; charset=utf-8", PAGE_POLICY,
+                    headers={"Set-Cookie": cookie} if cookie else None)
 
     def __share(self, token: str) -> None:
         """ The page of a public link, as /export --html writes it: 404 for a link that does not exist or was closed """
@@ -1082,8 +1262,11 @@ class _Handler(BaseHTTPRequestHandler):
     def __json(self, status: int, data: dict) -> None:
         self.__send(status, json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
-    def __send(self, status: int, body: bytes, content_type: str, policy: str | None = None, keep: int = 0) -> None:
+    def __send(self, status: int, body: bytes, content_type: str, policy: str | None = None, keep: int = 0,
+               headers: dict[str, str] | None = None) -> None:
         self.send_response(status)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", f"max-age={keep}" if keep else "no-store")
