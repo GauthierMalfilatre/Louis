@@ -1687,10 +1687,12 @@
   function update() {
     const info = state.info;
     const busy = state.connected && !!info.busy && !info.closed;
+    // The busy words only while the model answers: a command (/think, /resume...) is done before they would mean anything
+    const answering = busy && !!info.turn && !info.asking;
     if (!busy) state.stopping = false;
-    pending.hidden = !busy || !!info.asking || moving();
+    pending.hidden = !answering || moving();
     pending.querySelector(".thinking").textContent = `${busyWord}…`;
-    prompt.classList.toggle("busy", busy && !info.asking);
+    prompt.classList.toggle("busy", answering);
 
     let key, label;
     if (info.closed) [key, label] = ["closed", "Louis s'est arrêté"];
@@ -1826,13 +1828,10 @@
     state.sending = true;
     closeMenu();
     update();
+    // Busy or not, the server says it: its "free again" may come before this answer, for a command done at once
     const error = await api("/api/messages", { text, shown });
     state.sending = false;
-    if (error) setHint(error, true);
-    else {
-      state.info.busy = true;  // Until the server says so, so it is never sent twice
-      setHint(HINT);
-    }
+    setHint(error ?? HINT, !!error);
     update();
     return !error;
   }

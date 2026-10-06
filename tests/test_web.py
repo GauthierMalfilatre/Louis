@@ -99,6 +99,30 @@ def test_a_button_command_is_not_shown_as_a_message(served):
     assert web.getUserInput() == "/think"
     assert snapshot(web)["log"] == []
 
+def test_only_a_reply_shows_louis_answering(served):
+    web, bus = served
+    started(bus)
+    # A command (/think): busy while it runs, never a turn, free again as soon as the app asks for the next message
+    request(web, "POST", "/api/messages", {"text": "/think", "shown": False})
+    web.getUserInput()
+    assert snapshot(web)["state"]["turn"] is False
+    def wait() -> None:
+        """ The app waiting for the next message, until the server closes """
+        with pytest.raises(EOFError):
+            web.getUserInput()
+
+    threading.Thread(target=wait, daemon=True).start()
+    for _ in range(100):
+        if not snapshot(web)["state"]["busy"]:
+            break
+        time.sleep(0.01)
+    assert snapshot(web)["state"]["busy"] is False
+    # A message: the model answers from the start of its turn to its end
+    bus.dispatch(CHAT_TURN_STARTED)
+    assert snapshot(web)["state"]["turn"] is True
+    bus.dispatch(CHAT_TURN_ENDED, reason="cancelled", message=None)
+    assert snapshot(web)["state"]["turn"] is False
+
 def test_the_sidebar_asks_the_sessions_first(served):
     web, bus = served
     started(bus, persistent=True)

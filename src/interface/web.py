@@ -163,7 +163,7 @@ class WebInterface(Interface):
         self.__ids  : itertools.count = itertools.count(1)
         self.__state: dict = {
             "user": None, "persistent": False, "session": None, "sessions": [], "model": None, "think": False,
-            "commands": [], "context": None, "busy": False, "asking": False, "closed": False,
+            "commands": [], "context": None, "busy": False, "turn": False, "asking": False, "closed": False,
         }
         # The messages of the pages, and their answer to the permission being asked (its id, None when none is)
         self.__inputs : queue.Queue = queue.Queue()
@@ -220,7 +220,7 @@ class WebInterface(Interface):
     def __exit__(self, *exception) -> None:
         """ Tell the pages Louis stopped, then close the server """
         with self.__lock:
-            self.__emit({"type": "state", "state": {"closed": True, "busy": False, "asking": False}})
+            self.__emit({"type": "state", "state": {"closed": True, "busy": False, "turn": False, "asking": False}})
             for events in self.__subscribers:
                 events.put(None)
         self.__inputs.put(None)
@@ -281,7 +281,7 @@ class WebInterface(Interface):
         with self.__lock:
             # A message sent meanwhile is taken at once: Louis never looks free in between
             if self.__inputs.empty():
-                self.__emit({"type": "state", "state": {"busy": False, "asking": False}})
+                self.__emit({"type": "state", "state": {"busy": False, "turn": False, "asking": False}})
         message: tuple[str, bool] | None = self.__inputs.get()
         if message is None:
             raise EOFError
@@ -483,8 +483,10 @@ class WebInterface(Interface):
                     "Clique sur une session pour la reprendre (celles d'un autre dossier se reprennent depuis lui).")
 
     def __on_turn_started(self, event: Event) -> None:
+        """ The model answers: unlike a command (/think...), the pages show Louis at work until the turn ends """
         self.__text = self.__thinking = None
         self.__running = []
+        self.__set(turn=True)
 
     def __on_thinking(self, event: Event) -> None:
         """ What the model thinks before replying (/think), as it comes """
@@ -518,6 +520,7 @@ class WebInterface(Interface):
         for identifier, _ in self.__running:
             self.__patch(identifier, status="cancelled")
         self.__running = []
+        self.__set(turn=False)
         match event.data["reason"]:
             case "done":
                 pass
