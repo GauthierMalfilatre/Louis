@@ -131,8 +131,12 @@ Mesuré sur le même projet (181 passages de code décrits, GPU de 6 Go, seuil p
 ## Tester
 
 ```bash
-python -m unittest discover -s tests     # depuis la racine du dépôt, ~2 s
+pip install -r requirements-dev.txt      # une fois : pytest et ruff, dans le venv
+python -m pytest                         # depuis la racine du dépôt, ~2 s (pytest.ini : tests/, et src dans le chemin)
+python -m pytest tests/test_knowledge.py # un seul fichier
 ```
+
+`python -m pytest` plutôt que `pytest` : il prend le pytest du venv. Un `pytest` installé sur le système lancerait le Python du système, sans les dépendances de Louis (`No module named 'numpy'`).
 
 Les tests (`tests/`) n'appellent aucun modèle : le reranker et le modèle qui décrit sont remplacés par des faux, la recherche se fait par mots-clés. Ils couvrent les genres et les motifs de chemin, les filtres (chemin, genre, date) appliqués avant le classement, le seuil et le repli sans reranker, ce qu'une source garde d'un `/index` à l'autre (exclusions, descriptions, versions), la migration d'un ancien index, les fichiers générés, les dates de l'historique git (ignorés sans git), le contexte des passages, la requête faite au modèle qui décrit et les messages de l'outil.
 

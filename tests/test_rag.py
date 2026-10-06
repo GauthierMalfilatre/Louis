@@ -35,7 +35,10 @@ def test_without_ollama_it_says_so_and_goes_on_by_keywords(tmp_path, docs):
     base: Knowledge = knowledge(tmp_path, Embedder("http://127.0.0.1:9", "nomic-embed-text"))
     counts: dict = base.index(str(docs), "docs")
     assert counts["embedded"] == 0 and "Ollama ne répond pas" in counts["warning"]
-    assert [hit.path for hit in base.search("relue coéquipier")][0] == "/team.md"
+    # assert [hit.path for hit in base.search("relue coéquipier")][0] == "/team.md"
+    found = base.search("relue coéquipier")
+    assert found.hits
+    assert found.hits[0].path == "/team.md"
 
 def test_an_empty_knowledge_base_tells_the_model_to_ask_for_an_index(tmp_path, app):
     app.knowledge = knowledge(tmp_path)
