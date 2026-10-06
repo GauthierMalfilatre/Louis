@@ -5,7 +5,7 @@
 ## Web interface: Louis in a browser (louis --web), and the pages of the public links of /share
 ##
 from interface.interface import Interface
-from interface.cli import LABELS, call_detail, result_summary, short_path, preview as one_line
+from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import APP_STARTED, APP_STOPPED, THINKING_ENABLED, THINKING_DISABLED
@@ -36,6 +36,7 @@ import re
 import signal
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -57,6 +58,13 @@ CHOICES: frozenset[str] = frozenset({"y", "n", "a"})
 WILDCARDS: frozenset[str] = frozenset({"", "0.0.0.0", "::"})
 # The names a page of this computer reaches Louis by, when it only listens there
 LOCAL_NAMES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# What the empty page suggests to work on: the files changed in git, or else the ones touched last, never those of
+# Louis itself nor of the tools of the project. At most FILES_LOOKED files are looked at, for a big folder
+SKIPPED_DIRS : frozenset[str] = frozenset({"node_modules", "__pycache__", "venv", "dist", "build", "target", "exports"})
+SKIPPED_FILES: re.Pattern = re.compile(r"^louis\.|\.(db|db-journal|log|jsonl|pyc|lock)$")
+FILES_LOOKED : int = 2000
+HINTS        : int = 3
 
 # The chat page loads its fonts and its Markdown libraries from these, nothing else: a reply that slipped a <script>
 # past DOMPurify could not send the conversation anywhere
@@ -95,11 +103,23 @@ def local(stamp: str | None) -> str:
     except (TypeError, ValueError):
         return stamp or ""
 
+def tool_object(name: str, arguments: dict) -> str:
+    """ What a call worked on, as a sentence of Louis names it: "lu calc.py", "lancé git status", "exécuté du code python" """
+    if name in ("git", "github_pr"):
+        return " ".join(str(arguments[key]) for key in ("action", "branch", "number") if arguments.get(key) not in (None, ""))
+    if name == "run_code":
+        return str(arguments.get("language") or "")
+    if name == "tree":
+        path = arguments.get("path")
+        return "" if path in (None, "", ".", "/") else shorten(str(path))
+    return call_detail(name, arguments)
+
 def tool_item(name: str, arguments: dict, producer: str = "model") -> dict:
     """ A tool call as a page shows it while it runs: what it does, on what, and who asked for it """
+    values: dict = arguments if isinstance(arguments, dict) else {}
     return {
         "kind": "tool", "name": name, "label": LABELS.get(name, name), "producer": producer, "status": "running",
-        "detail": call_detail(name, arguments if isinstance(arguments, dict) else {}),
+        "detail": call_detail(name, values), "object": tool_object(name, values),
     }
 
 def tool_result(name: str, result: str | None, ok: bool | None, duration: float | None = None) -> dict:
@@ -147,6 +167,52 @@ def history_items(history: list[dict]) -> list[dict]:
                               **tool_result(call["name"], call.get("result"), call.get("ok"))})
     return items
 
+def kept(path: str) -> bool:
+    """ A file worth suggesting: not Louis's own (its database, its log...), nor hidden """
+    name: str = os.path.basename(path)
+    return not name.startswith(".") and not SKIPPED_FILES.search(name)
+
+def changed_files(cwd: str) -> list[str] | None:
+    """ The files changed or added in git, relative to cwd as git status gives them: None out of a repository """
+    try:
+        status = subprocess.run(["git", "status", "--porcelain", "--", "."], cwd=cwd, capture_output=True, text=True,
+                                timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if status.returncode != 0:
+        return None
+    files: list[str] = []
+    for line in status.stdout.splitlines():
+        path: str = line[3:].split(" -> ")[-1].strip('"')
+        # A deleted file is nothing to work on, an untracked folder is not a file
+        if "D" not in line[:2] and kept(path) and os.path.isfile(os.path.join(cwd, path)):
+            files.append(path)
+    return files
+
+def recent_files(cwd: str) -> list[str]:
+    """ The files touched last in cwd, out of hidden folders and those of the tools (venv, node_modules...) """
+    found: list[tuple[float, str]] = []
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [folder for folder in dirs if not folder.startswith(".") and folder not in SKIPPED_DIRS]
+        for name in files:
+            path: str = os.path.join(root, name)
+            if kept(path):
+                try:
+                    found.append((os.path.getmtime(path), os.path.relpath(path, cwd)))
+                except OSError:
+                    continue
+            if len(found) >= FILES_LOOKED:
+                break
+        if len(found) >= FILES_LOOKED:
+            break
+    return [path for _, path in sorted(found, reverse=True)[:HINTS]]
+
+def project(cwd: str) -> dict:
+    """ What the empty page suggests from: the name of the folder, and the files changed in git, or touched last """
+    changed: list[str] | None = changed_files(cwd)
+    return {"name": os.path.basename(os.path.abspath(cwd)), "changed": (changed or [])[:HINTS],
+            "recent": [] if changed else recent_files(cwd)}
+
 def sidebar(sessions: list[dict]) -> list[dict]:
     """ The sessions of SESSION_LIST as the sidebar lists them: the newest first, named by their first message """
     return [{
@@ -183,7 +249,7 @@ class WebInterface(Interface):
         self.__ids  : itertools.count = itertools.count(1)
         self.__state: dict = {
             "user": None, "persistent": False, "session": None, "sessions": [], "model": None, "think": False,
-            "commands": [], "context": None, "busy": False, "turn": False, "started": None, "asking": False,
+            "commands": [], "context": None, "project": None, "busy": False, "turn": False, "started": None, "asking": False,
             "closed": False,
         }
         # The messages of the pages, and their answer to the permission being asked (its id, None when none is)
@@ -274,7 +340,7 @@ class WebInterface(Interface):
         bus.subscribe(self.__on_structured, STRUCTURED_REPLY)
         bus.subscribe(self.__on_model_call, MODEL_CALL)
         bus.subscribe(lambda event: self.__add(
-            kind="note", text="Louis avait annoncé une action sans la faire : il est relancé pour la faire."
+            kind="note", text="J'avais annoncé une action sans la faire : je m'y remets."
         ), CHAT_NUDGED)
         bus.subscribe(self.__on_retrieved, RAG_RETRIEVED)
         bus.subscribe(self.__on_tool_started, TOOL_CALL_STARTED)
@@ -468,7 +534,7 @@ class WebInterface(Interface):
         """ A new session, empty: the pages start over """
         self.__always.clear()
         self.__reset([])
-        self.__set(user=event.data["user"], persistent=event.data["persistent"], session=None)
+        self.__set(user=event.data["user"], persistent=event.data["persistent"], session=None, project=project(os.getcwd()))
         if event.data["custom_prompt"]:
             self.__notice("Nouvelle session avec ton prompt système.")
 
@@ -485,7 +551,7 @@ class WebInterface(Interface):
         self.__always.clear()
         items: list[dict] = history_items(event.data.get("history") or [])
         items.append({"kind": "notice", "tone": "info",
-                      "text": f"Session #{event.data['id']} reprise ({plural(event.data['messages'], 'message')})."})
+                      "text": f"On reprend la session #{event.data['id']} ({plural(event.data['messages'], 'message')})."})
         self.__reset(items)
         self.__set(session=event.data["id"])
 
@@ -558,9 +624,9 @@ class WebInterface(Interface):
             case "done":
                 pass
             case "cancelled":
-                self.__notice("Réponse interrompue.")
+                self.__notice("Je me suis arrêté là, comme demandé.")
             case "error":
-                self.__notice(f"Erreur : {event.data['message']}", "error")
+                self.__notice(f"Oups, ça a coincé : {event.data['message']}", "error")
             case _:
                 self.__notice(event.data["message"] or "La réponse s'est arrêtée.", "warn")
 
@@ -574,7 +640,7 @@ class WebInterface(Interface):
             parts.append(f"{event.data['results']} anciens résultats d'outils réduits à leurs premières lignes")
         if event.data["dropped"]:
             parts.append(f"{event.data['dropped']} anciens messages mis de côté")
-        self.__notice(f"Contexte allégé : {', '.join(parts)}.")
+        self.__notice(f"J'ai fait de la place dans ma mémoire : {', '.join(parts)}.")
 
     def __on_structured(self, event: Event) -> None:
         """ The JSON of a reply that matches its schema. One that does not is told by the end of the turn """
@@ -674,8 +740,8 @@ class WebInterface(Interface):
     def __on_thinking_switched(self, event: Event) -> None:
         enabled: bool = event.name == THINKING_ENABLED
         self.__set(think=enabled)
-        self.__notice("Réflexion activée : Louis réfléchit avant chaque réponse, c'est plus long." if enabled
-                      else "Réflexion désactivée : Louis répond directement.")
+        self.__notice("Je réfléchirai avant chaque réponse : ce sera plus long, mais plus posé." if enabled
+                      else "Je réponds de nouveau directement.")
 
     def __on_export_done(self, event: Event) -> None:
         """ ✓ Session #12 exportée en JSON (8 messages) : ~/projet/exports/session-12.json """

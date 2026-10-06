@@ -14,7 +14,7 @@
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap">
 <!-- Markdown while a reply is written, and code highlighting. Without them (offline) the reply is plain text until it
      ends, then laid out by Louis itself -->
 <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js" defer></script>
@@ -23,37 +23,37 @@
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #faf9fc;
-    --sidebar: #f2f0f8;
-    --surface: #ffffff;
-    --surface-2: #edeaf4;
-    --border: #e3dfec;
-    --border-soft: #eeebf4;
-    --text: #1a1721;
-    --muted: #6a6478;
+    --bg: #fbf8f4;
+    --sidebar: #f5efe8;
+    --surface: #fffdfa;
+    --surface-2: #f1e9e0;
+    --border: #e8ddd2;
+    --border-soft: #f0e8df;
+    --text: #251e1b;
+    --muted: #76695f;
     --accent: #7326e8;
     --accent-2: #d63fb8;
     --accent-text: #ffffff;
     --accent-soft: rgb(115 38 232 / 0.08);
-    --user-bg: linear-gradient(135deg, #7b2ff2, #9c2bd8);
+    --user-bg: linear-gradient(135deg, #7b2ff2, #b8359e);
     --user-text: #ffffff;
-    --code-bg: #f4f2f9;
+    --code-bg: #f6f0e8;
     --ok: #1f9d55;
     --warn: #c27c0e;
-    --off: #9a93a8;
+    --off: #a6998e;
     --danger: #c92a5c;
     --logo-1: #7b2ff2;
     --logo-2: #e0409f;
     --glow: rgb(123 47 242 / 0.07);
     --halo: rgb(123 47 242 / 0.45);
-    --shadow: 0 1px 2px rgb(30 20 50 / 0.05), 0 6px 20px rgb(30 20 50 / 0.06);
-    --shadow-lg: 0 2px 6px rgb(30 20 50 / 0.06), 0 16px 40px rgb(30 20 50 / 0.13);
+    --shadow: 0 1px 2px rgb(70 40 20 / 0.05), 0 6px 20px rgb(70 40 20 / 0.06);
+    --shadow-lg: 0 2px 6px rgb(70 40 20 / 0.06), 0 16px 40px rgb(70 40 20 / 0.12);
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
     /* Code highlighting */
     --hl-keyword: #7c3aed;
     --hl-string: #2f7d32;
     --hl-number: #c2410c;
-    --hl-comment: #6b6479;
+    --hl-comment: #7a6c62;
     --hl-function: #1d4ed8;
     --hl-type: #955a06;
     --hl-builtin: #be123c;
@@ -64,24 +64,24 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
-      --bg: #131017;
-      --sidebar: #17141d;
-      --surface: #1c1924;
-      --surface-2: #272232;
-      --border: #332c3d;
-      --border-soft: #262130;
-      --text: #ece8f3;
-      --muted: #9c94ab;
+      --bg: #1a1416;
+      --sidebar: #1e1719;
+      --surface: #241c1e;
+      --surface-2: #2f2528;
+      --border: #3d3134;
+      --border-soft: #2b2225;
+      --text: #f2eae6;
+      --muted: #ab9b94;
       --accent: #bb8dff;
       --accent-2: #ff8ad8;
       --accent-text: #1a1024;
       --accent-soft: rgb(187 141 255 / 0.13);
-      --user-bg: linear-gradient(135deg, #6d31c9, #57219f);
+      --user-bg: linear-gradient(135deg, #6d31c9, #93307f);
       --user-text: #f6f0ff;
-      --code-bg: #221d2b;
+      --code-bg: #261d20;
       --ok: #3ccf7a;
       --warn: #e8a93a;
-      --off: #6f6880;
+      --off: #7a6a6c;
       --danger: #ff7aa2;
       --logo-1: #a06bff;
       --logo-2: #ff7ad0;
@@ -92,7 +92,7 @@
       --hl-keyword: #c4a7ff;
       --hl-string: #a6e3a1;
       --hl-number: #fab387;
-      --hl-comment: #8e869e;
+      --hl-comment: #9d8d86;
       --hl-function: #89b4fa;
       --hl-type: #f9e2af;
       --hl-builtin: #f38ba8;
@@ -103,24 +103,24 @@
   /* The switch */
   :root[data-theme="dark"] {
     color-scheme: dark;
-      --bg: #131017;
-      --sidebar: #17141d;
-      --surface: #1c1924;
-      --surface-2: #272232;
-      --border: #332c3d;
-      --border-soft: #262130;
-      --text: #ece8f3;
-      --muted: #9c94ab;
+      --bg: #1a1416;
+      --sidebar: #1e1719;
+      --surface: #241c1e;
+      --surface-2: #2f2528;
+      --border: #3d3134;
+      --border-soft: #2b2225;
+      --text: #f2eae6;
+      --muted: #ab9b94;
       --accent: #bb8dff;
       --accent-2: #ff8ad8;
       --accent-text: #1a1024;
       --accent-soft: rgb(187 141 255 / 0.13);
-      --user-bg: linear-gradient(135deg, #6d31c9, #57219f);
+      --user-bg: linear-gradient(135deg, #6d31c9, #93307f);
       --user-text: #f6f0ff;
-      --code-bg: #221d2b;
+      --code-bg: #261d20;
       --ok: #3ccf7a;
       --warn: #e8a93a;
-      --off: #6f6880;
+      --off: #7a6a6c;
       --danger: #ff7aa2;
       --logo-1: #a06bff;
       --logo-2: #ff7ad0;
@@ -131,7 +131,7 @@
       --hl-keyword: #c4a7ff;
       --hl-string: #a6e3a1;
       --hl-number: #fab387;
-      --hl-comment: #8e869e;
+      --hl-comment: #9d8d86;
       --hl-function: #89b4fa;
       --hl-type: #f9e2af;
       --hl-builtin: #f38ba8;
@@ -352,7 +352,7 @@
     font-weight: 650;
   }
   .side-foot .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .backdrop { position: fixed; inset: 0; z-index: 20; background: rgb(15 8 30 / 0.45); }
+  .backdrop { position: fixed; inset: 0; z-index: 20; background: rgb(35 20 15 / 0.45); }
   .backdrop[hidden] { display: none; }
   .burger {
     display: none;
@@ -379,7 +379,7 @@
     color: var(--text);
     box-shadow: var(--shadow-lg);
   }
-  dialog::backdrop { background: rgb(15 8 30 / 0.45); }
+  dialog::backdrop { background: rgb(35 20 15 / 0.45); }
   .dialog-body { padding: 18px 20px 16px; }
   .dialog-body h2 { margin: 0 0 6px; font-size: 17px; }
   .dialog-body p { margin: 0 0 14px; color: var(--muted); font-size: 13.5px; }
@@ -963,7 +963,8 @@
     box-shadow: var(--shadow);
   }
   .permission:not([data-status="pending"]) { border-color: var(--border); box-shadow: none; }
-  .msg.assistant .perm-summary { margin: 0; font-weight: 550; white-space: pre-wrap; }
+  .msg.assistant .perm-ask { margin: 0; font-weight: 600; }
+  .msg.assistant .perm-summary { margin: 0; color: var(--muted); font-size: 13.5px; white-space: pre-wrap; }
   .perm-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .perm-actions kbd { margin-left: 6px; font-size: 0.75em; opacity: 0.75; }
   .btn.primary kbd { border-color: rgb(255 255 255 / 0.4); background: transparent; color: inherit; }
@@ -1041,6 +1042,113 @@
   .send.stop .stop-icon { display: block; }
   .send.stop { background: var(--text); color: var(--bg); }
   .send.stop:disabled { background: var(--surface-2); color: var(--off); }
+
+  /* ---------- Warmth: a voice, a serif to greet, the waves of the hour, a mark that nods ---------- */
+
+  .greeting, .brand-name, .dialog-body h2 { font-family: "Fraunces", Georgia, "Times New Roman", serif; }
+  .greeting { font-weight: 600; letter-spacing: -0.01em; }
+  .brand-name { font-size: 17px; font-weight: 600; letter-spacing: 0; }
+
+  /* The last session, to take it up again from the empty page */
+  .resume {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    max-width: min(100%, 520px);
+    margin: 0 0 16px;
+    padding: 10px 16px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .resume:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+  .resume:disabled { cursor: default; opacity: 0.6; }
+  .resume:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .resume svg { flex: none; color: var(--accent); }
+  .resume-text { display: grid; min-width: 0; }
+  .resume-title { overflow: hidden; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+  .resume-meta { color: var(--muted); font-size: 12.5px; }
+
+  /* The tool calls of a reply, told in one sentence once they are done: unfolded on a click */
+  .run, .run-items { display: flex; flex-direction: column; gap: 10px; }
+  .run.folded .run-items { display: none; }
+  .recap {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    width: fit-content;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font-size: 13.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .recap[hidden] { display: none; }
+  .recap:hover { color: var(--text); }
+  .recap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+  .recap-icon { position: relative; display: inline-block; flex: none; width: 14px; color: var(--ok); text-align: center; }
+  .recap[data-failed="true"] .recap-icon { color: var(--warn); }
+  .recap .chev { flex: none; align-self: center; transition: transform 0.15s; }
+  .run:not(.folded) > .recap .chev { transform: rotate(180deg); }
+  /* A change Louis was allowed to make, made: its check pops, with a spark */
+  .recap.landed .recap-icon { animation: pop 0.6s cubic-bezier(0.2, 1.6, 0.4, 1) both; }
+  .recap.landed .recap-icon::after {
+    content: "✦";
+    position: absolute;
+    top: -9px;
+    left: 9px;
+    color: var(--accent-2);
+    font-size: 10px;
+    animation: spark 0.9s ease-out both;
+  }
+
+  /* A reply that is being written: its blocks fade in, a dot breathes at its end */
+  .md .fresh { animation: fade-in 0.5s ease-out both; }
+  .md.streaming:not(.plain) > :last-child::after, .md.plain.streaming::after {
+    content: "";
+    display: inline-block;
+    width: 0.5em;
+    height: 0.5em;
+    margin-left: 5px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+
+  /* The mark of Louis nods when a reply is done */
+  .msg.assistant > .mark.nod { animation: nod 0.9s ease-in-out; transform-origin: 50% 85%; }
+
+  /* The waves follow the hour: peach in the morning, violet by day, a sunset in the evening, indigo at night */
+  :root[data-sky="morning"]:not([data-theme="ultravision"]) #wave-1 stop { stop-color: #ff9a76; }
+  :root[data-sky="morning"]:not([data-theme="ultravision"]) #wave-2 stop { stop-color: #ffbe7d; }
+  :root[data-sky="morning"]:not([data-theme="ultravision"]) #wave-3 stop { stop-color: #e0409f; }
+  :root[data-sky="evening"]:not([data-theme="ultravision"]) #wave-1 stop { stop-color: #7b2ff2; }
+  :root[data-sky="evening"]:not([data-theme="ultravision"]) #wave-2 stop { stop-color: #ff7a59; }
+  :root[data-sky="evening"]:not([data-theme="ultravision"]) #wave-3 stop { stop-color: #e0409f; }
+  :root[data-sky="night"]:not([data-theme="ultravision"]) #wave-1 stop { stop-color: #3f3cd8; }
+  :root[data-sky="night"]:not([data-theme="ultravision"]) #wave-2 stop { stop-color: #6b3fd4; }
+  :root[data-sky="night"]:not([data-theme="ultravision"]) #wave-3 stop { stop-color: #2a63c9; }
+
+  @keyframes fade-in { from { opacity: 0; transform: translateY(3px); } }
+  @keyframes pop { 0% { transform: scale(0.2); } 60% { transform: scale(1.35); } 100% { transform: none; } }
+  @keyframes spark {
+    0% { opacity: 0; transform: translate(0, 4px) scale(0.4) rotate(0deg); }
+    40% { opacity: 1; }
+    100% { opacity: 0; transform: translate(6px, -6px) scale(1.1) rotate(90deg); }
+  }
+  @keyframes nod {
+    0%, 100% { transform: none; }
+    25% { transform: rotate(-12deg) translateY(1px); }
+    55% { transform: rotate(8deg); }
+    80% { transform: rotate(-3deg); }
+  }
 
   /* Under a reply: why it took one more round, and what it cost */
   .reply-note { color: var(--muted); font-size: 12.5px; font-style: italic; }
@@ -1251,7 +1359,35 @@
 
 <script>
   const HINT = 'Entrée pour envoyer · Maj+Entrée pour aller à la ligne<span class="extra"> · ↑ pour tes derniers messages</span>';
-  const SUGGESTIONS = ["Que fait ce projet ?", "Montre-moi l'arborescence du projet", "Cherche les TODO dans le code"];
+  // What the empty page suggests when the project says nothing more
+  const SUGGESTIONS = ["Montre-moi l'arborescence du projet", "Cherche les TODO dans le code"];
+  // What Louis asks, in its own words, above what the tool says it will do
+  const ASKS = {
+    edit_file: "J'aimerais modifier ce fichier, d'accord ?",
+    write_file: "J'aimerais écrire ce fichier, d'accord ?",
+    mkdir: "J'aimerais créer ce dossier, d'accord ?",
+    git: "J'aimerais lancer cette commande git, d'accord ?",
+    github_pr: "J'aimerais faire ceci sur GitHub, d'accord ?",
+    run_code: "J'aimerais exécuter ce code, d'accord ?",
+    share: "J'aimerais publier ceci, d'accord ?",
+  };
+  // How Louis tells what a tool did: done, wanted (its infinitive), and many calls at once
+  const RECAP = {
+    tree: { did: "regardé l'arborescence", to: "regarder l'arborescence", link: " de ", many: (n) => `regardé ${n} arborescences` },
+    cat_file: { did: "lu", to: "lire", many: (n) => `lu ${n} fichiers` },
+    search: { did: "cherché", to: "chercher", many: (n) => `fait ${n} recherches` },
+    edit_file: { did: "modifié", to: "modifier", many: (n) => `modifié ${n} fichiers` },
+    write_file: { did: "écrit", to: "écrire", many: (n) => `écrit ${n} fichiers` },
+    mkdir: { did: "créé le dossier", to: "créer le dossier", many: (n) => `créé ${n} dossiers` },
+    web_search: { did: "cherché sur le web", to: "chercher sur le web", many: (n) => `fait ${n} recherches sur le web` },
+    search_knowledge: { did: "consulté mes connaissances sur", to: "consulter mes connaissances sur", many: (n) => `consulté ${n} fois mes connaissances` },
+    git: { did: "lancé git", to: "lancer git", many: (n) => `lancé ${n} commandes git` },
+    github_pr: { did: "utilisé GitHub :", to: "utiliser GitHub :", many: (n) => `utilisé ${n} fois GitHub` },
+    run_code: { did: "exécuté du code", to: "exécuter du code", many: (n) => `exécuté ${n} programmes` },
+  };
+  const CHEVRON = '<svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+  const RESUME = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>';
+  const FADE = 500;  // Milliseconds a new block of a reply takes to appear
   // The words of the terminal while Louis works, one at a time
   const BUSY = ["Gamberging", "Gooning", "Phasing", "Zioning", "Larping", "Yapping", "Blablating", "Doomscrolling", "Asking my mom", "Taking coffee"];
   const BUSY_EVERY = 3000;
@@ -1299,6 +1435,13 @@
     applyTheme();
   });
   applyTheme();
+
+  // The colors of the waves, by the hour
+  function sky(hour = new Date().getHours()) {
+    return hour < 6 || hour >= 22 ? "night" : hour < 11 ? "morning" : hour < 18 ? "day" : "evening";
+  }
+  document.documentElement.dataset.sky = sky();
+  setInterval(() => { document.documentElement.dataset.sky = sky(); }, 60000);
 
   /* ---------- State: the same as the server's, rebuilt from its snapshot on every (re)connection ---------- */
 
@@ -1389,18 +1532,50 @@
 
   function drawText(item) {
     const node = el("div");
-    const body = el("div", "md");
+    node.append(el("div", "md"));
+    writeText(item, node, false);
+    return node;
+  }
+
+  // The text of a reply, changed in place: the blocks that did not change stay, so a new one can fade in
+  function writeText(item, node, animate = true) {
+    const body = node.querySelector(".md");
     const html = item.done && item.html ? item.html : liveMarkdown(item.text);
-    if (html === null) {
-      body.classList.add("plain");
-      body.textContent = item.text;
-    } else {
-      body.innerHTML = html;
+    body.classList.toggle("plain", html === null);
+    body.classList.toggle("streaming", !item.done);
+    if (html === null) body.textContent = item.text;
+    else {
+      morph(body, html, animate);
       if (item.done) decorate(body);
     }
-    node.append(body);
-    if (item.meta) node.append(el("div", "md-meta", item.meta));
-    return node;
+    if (item.meta && !node.querySelector(".md-meta")) node.append(el("div", "md-meta", item.meta));
+  }
+
+  const sources = new WeakMap();  // A block shown -> the HTML it was made from
+
+  function morph(body, html, animate) {
+    [...body.childNodes].forEach((child) => { if (child.nodeType !== Node.ELEMENT_NODE) child.remove(); });
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const blocks = [...template.content.children];
+    const shown = [...body.children];
+    const now = performance.now();
+    blocks.forEach((block, i) => {
+      const was = shown[i];
+      const source = block.outerHTML;
+      if (was && sources.get(was) === source) return;
+      sources.set(block, source);
+      // A new block fades in; one that grew goes on fading from where it was, it never starts over
+      const born = was ? Number(was.dataset.born) : animate ? now : NaN;
+      if (now - born < FADE) {
+        block.dataset.born = String(born);
+        block.classList.add("fresh");
+        block.style.animationDelay = `${Math.round(born - now)}ms`;
+      }
+      if (was) was.replaceWith(block);
+      else body.append(block);
+    });
+    shown.slice(blocks.length).forEach((extra) => extra.remove());
   }
 
   function drawThinking(item) {
@@ -1469,21 +1644,22 @@
   }
 
   const PERMISSION_STATUS = {
-    granted: () => "Autorisé.",
-    always: (item) => `Autorisé, et pour tout ${item.tool} de cette session.`,
-    auto: (item) => `Autorisé : tu as répondu « toujours » pour ${item.tool} dans cette session.`,
-    refused: () => "Refusé : Louis ne l'a pas fait.",
-    cancelled: () => "Annulé.",
+    granted: () => "C'est parti.",
+    always: (item) => `C'est parti, et je ne te redemanderai plus pour ${item.tool} dans cette session.`,
+    auto: (item) => `Tu m'as dit « toujours » pour ${item.tool} : j'y vais.`,
+    refused: () => "D'accord, je ne le fais pas.",
+    cancelled: () => "Demande annulée.",
   };
 
   function drawPermission(item) {
     const node = el("div", "permission");
     node.dataset.status = item.status;
+    if (item.status !== "auto") node.append(el("p", "perm-ask", ASKS[item.tool] ?? "J'ai besoin de ton accord pour ceci :"));
     node.append(el("p", "perm-summary", item.summary));
     if (item.preview && item.status !== "auto") node.append(diff(item.preview));
     if (item.status === "pending") {
       const actions = el("div", "perm-actions");
-      const choices = [["y", "Autoriser", "btn primary", "O"], ["n", "Refuser", "btn", "N"]];
+      const choices = [["y", "Vas-y", "btn primary", "O"], ["n", "Non", "btn", "N"]];
       if (!item.every_time) choices.push(["a", `Toujours pour ${item.tool}`, "btn", "T"]);
       for (const [choice, label, className, key] of choices) {
         const button = el("button", className, label);
@@ -1575,25 +1751,112 @@
     return node;
   }
 
+  // "a, b et c"
+  const together = (parts) => (parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} et ${parts.at(-1)}`);
+  // "de lire", "d'écrire"
+  const of = (verb) => (/^[aeiouyéèêh]/i.test(verb) ? `d'${verb}` : `de ${verb}`);
+
+  // What the calls of a run did, as Louis says it: "J'ai lu calc.py et modifié calc.py."
+  function told(tools) {
+    const groups = [];
+    for (const tool of tools) {
+      const outcome = tool.status === "ok" ? "ok" : tool.status === "cancelled" ? "cancelled"
+        : tool.summary === "refusé" ? "refused" : "failed";
+      const last = groups.at(-1);
+      if (last && last.name === tool.name && last.outcome === outcome) last.tools.push(tool);
+      else groups.push({ name: tool.name, label: tool.label, outcome, tools: [tool] });
+    }
+    const parts = groups.map(({ name, label, outcome, tools: calls }) => {
+      const how = RECAP[name] ?? { did: `utilisé ${label}`, to: `utiliser ${label}`, many: (n) => `utilisé ${n} fois ${label}` };
+      const objects = [...new Set(calls.map((call) => call.object).filter(Boolean))];
+      const named = objects.length && objects.length <= 2;
+      const what = (verb) => (named ? `${verb}${how.link ?? " "}${together(objects)}` : verb);
+      const times = !named && calls.length > 1 ? ` (${calls.length} fois)` : "";
+      if (outcome === "ok") return calls.length > 2 && objects.length > 2 ? how.many(calls.length) : what(how.did);
+      if (outcome === "refused") return `voulu ${what(how.to)}${times} (tu as refusé)`;
+      if (outcome === "cancelled") return `commencé à ${what(how.to)}${times} (annulé)`;
+      return `essayé ${of(what(how.to))}${times}, sans succès`;
+    });
+    return `J'ai ${together(parts)}.`;
+  }
+
+  function makeRun() {
+    const run = el("div", "run");
+    const recap = el("button", "recap");
+    recap.type = "button";
+    recap.hidden = true;
+    recap.append(el("span", "recap-icon"), el("span", "recap-text"));
+    recap.insertAdjacentHTML("beforeend", CHEVRON);
+    recap.addEventListener("click", () => {
+      run.dataset.open = String(run.classList.contains("folded"));
+      refreshRun(run);
+    });
+    run.append(recap, el("div", "run-items"));
+    return run;
+  }
+
+  // A run shows its calls while one runs or asks, then folds into its sentence (unless the user unfolded it)
+  function refreshRun(run) {
+    const items = [...run.querySelector(".run-items").children].map((node) => state.items.get(Number(node.dataset.id)))
+      .filter(Boolean);
+    const tools = items.filter((item) => item.kind === "tool");
+    const live = items.some((item) => item.status === "running" || item.status === "pending");
+    const was = run.dataset.live === "true";
+    const recap = run.querySelector(".recap");
+    run.dataset.live = String(live);
+    recap.hidden = live || !tools.length;
+    run.classList.toggle("folded", !recap.hidden && run.dataset.open !== "true");
+    if (recap.hidden) return;
+    const failed = tools.some((tool) => tool.status !== "ok");
+    recap.dataset.failed = String(failed);
+    recap.querySelector(".recap-icon").textContent = failed ? "!" : "✓";
+    recap.querySelector(".recap-text").textContent = told(tools);
+    recap.setAttribute("aria-expanded", String(!run.classList.contains("folded")));
+    // A change Louis was allowed to make, made: a little wink
+    const allowed = items.some((item) => item.kind === "permission" && ["granted", "always", "auto"].includes(item.status));
+    if (was && allowed && !failed) {
+      recap.classList.remove("landed");
+      void recap.offsetWidth;
+      recap.classList.add("landed");
+    }
+  }
+
   function place(item) {
     const node = draw(item);
+    node.dataset.id = item.id;
     els.set(item.id, node);
-    if (REPLY.has(item.kind)) {
-      let last = pending.previousElementSibling;
-      if (!last || !last.matches(".msg.assistant")) {
-        last = group();
-        logEl.insertBefore(last, pending);
-      }
-      last.querySelector(".body").append(node);
-    } else {
+    if (!REPLY.has(item.kind)) {
       logEl.insertBefore(node, pending);
+      return;
     }
+    let last = pending.previousElementSibling;
+    if (!last || !last.matches(".msg.assistant")) {
+      last = group();
+      logEl.insertBefore(last, pending);
+    }
+    const body = last.querySelector(".body");
+    if (item.kind !== "tool" && item.kind !== "permission") {
+      body.append(node);
+      return;
+    }
+    let run = body.lastElementChild;
+    if (!run?.matches(".run")) {
+      run = makeRun();
+      body.append(run);
+    }
+    run.querySelector(".run-items").append(node);
+    refreshRun(run);
   }
 
   function redraw(item) {
     const old = els.get(item.id);
     if (!old) return;
+    if (item.kind === "text") {
+      writeText(item, old);
+      return;
+    }
     const node = draw(item);
+    node.dataset.id = item.id;
     // A thinking the user opened or closed stays so
     if (item.kind === "thinking" && old.open !== !item.done && item.done) node.open = old.open;
     if (item.kind === "tool") {
@@ -1602,28 +1865,87 @@
     }
     old.replaceWith(node);
     els.set(item.id, node);
+    const run = node.closest(".run");
+    if (run) refreshRun(run);
   }
 
   function unplace(id) {
     const node = els.get(id);
     els.delete(id);
     if (!node) return;
-    const owner = node.parentElement?.closest(".msg.assistant");
+    const run = node.closest(".run");
+    const owner = node.closest(".msg.assistant");
     node.remove();
+    if (run && !run.querySelector(".run-items").children.length) run.remove();
+    else if (run) refreshRun(run);
     if (owner && !owner.querySelector(".body").children.length) owner.remove();
+  }
+
+  // What Louis says first, by the hour: the greeting, how it ends, and the line under it
+  function greeting(hour = new Date().getHours()) {
+    if (hour < 5) return ["Encore debout", " ?", "On reste concentrés, alors. Par quoi on commence ?"];
+    if (hour < 12) return ["Bonjour", ".", "Que fait-on aujourd'hui ?"];
+    if (hour < 18) return ["Bon après-midi", ".", "On avance sur quoi ?"];
+    return ["Bonsoir", ".", "Une dernière chose avant de fermer ?"];
+  }
+
+  // The last session held in this folder, other than the current one
+  function lastSession() {
+    const info = state.info;
+    if (!info.persistent) return null;
+    return (info.sessions ?? []).find((session) => session.here && session.id !== info.session) ?? null;
+  }
+
+  // "il y a 2 h", "hier"
+  function ago(date) {
+    const at = parseDate(date);
+    if (!at) return "";
+    const minutes = Math.round((Date.now() - at) / 60000);
+    if (minutes < 1) return "à l'instant";
+    if (minutes < 60) return `il y a ${minutes} min`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `il y a ${hours} h`;
+    const days = Math.round(hours / 24);
+    if (days === 1) return "hier";
+    return days < 7 ? `il y a ${days} jours` : `le ${at.toLocaleDateString("fr-FR", { day: "numeric", month: "long" })}`;
+  }
+
+  function resumeButton(session) {
+    const button = el("button", "resume");
+    button.type = "button";
+    button.insertAdjacentHTML("beforeend", RESUME);
+    const title = session.title.length > 48 ? `${session.title.slice(0, 47)}…` : session.title;
+    const text = el("span", "resume-text");
+    text.append(el("span", "resume-title", `On reprend « ${title} » ?`),
+      el("span", "resume-meta", `Session #${session.id}, commencée ${ago(session.created_at)}`));
+    button.append(text);
+    button.addEventListener("click", () => sendText(`/resume ${session.id}`, false));
+    return button;
+  }
+
+  // What to work on, from the project: its changes in git, or else the file touched last
+  function suggested() {
+    const project = state.info.project ?? {};
+    const list = [];
+    if (project.changed?.length) list.push(`Relis mes changements dans ${project.changed[0]}`, "Écris un message de commit pour mes changements");
+    else if (project.recent?.length) list.push(`Explique-moi ${project.recent[0]}`);
+    list.push(project.name ? `Que fait le projet ${project.name} ?` : "Que fait ce projet ?");
+    for (const text of SUGGESTIONS) if (list.length < 3) list.push(text);
+    return list.slice(0, 3);
   }
 
   function emptyState() {
     const info = state.info;
     const box = el("div", "empty");
     box.innerHTML = MARK;
-    const greeting = el("h1", "greeting");
+    const [hello, end, line] = greeting();
+    const title = el("h1", "greeting");
     const named = info.user && info.persistent;
-    const name = el("span", "name", named ? info.user : "");
-    greeting.append(named ? "Bonjour, " : "Bonjour", name, ".");
-    const lead = el("p", "lead", "Que fait-on aujourd'hui ?");
+    title.append(named ? `${hello}, ` : hello, el("span", "name", named ? info.user : ""), end);
+    const lead = el("p", "lead", line);
+    const last = lastSession();
     const suggestions = el("div", "suggestions");
-    for (const text of SUGGESTIONS) {
+    for (const text of suggested()) {
       const button = el("button", "suggestion", text);
       button.type = "button";
       button.addEventListener("click", () => sendText(text));
@@ -1631,7 +1953,11 @@
     }
     const tip = el("p", "tip");
     tip.innerHTML = "Tape <kbd>/</kbd> pour voir les commandes";
-    box.append(greeting, lead, suggestions, tip);
+    box.append(title, lead);
+    if (last) box.append(resumeButton(last));
+    box.append(suggestions, tip);
+    // What it shows, to draw it again only when that changes: its entrance is not played at each event
+    box.dataset.key = JSON.stringify([hello, info.user, info.persistent, last?.id, suggested()]);
     if (info.user && !info.persistent) {
       box.append(el("p", "note", "Session non enregistrée : lance louis --web --user <nom> pour garder tes sessions."));
     }
@@ -1672,7 +1998,8 @@
     }
 
     const empty = logEl.querySelector(".empty");
-    if (empty) empty.replaceWith(emptyState());
+    const next = empty && emptyState();
+    if (next && next.dataset.key !== empty.dataset.key) empty.replaceWith(next);
     renderSessions();
     if (!menuEl.hidden) refreshMenu(false);
     update();
@@ -1857,7 +2184,7 @@
     input.disabled = !!info.closed;
     input.placeholder = info.closed ? "Louis s'est arrêté : relance-le pour continuer" : "Écris un message, ou / pour les commandes";
     thinkBtn.disabled = !canSend();
-    logEl.querySelectorAll(".suggestion, .card button, .perm-actions button").forEach((button) => {
+    logEl.querySelectorAll(".suggestion, .resume, .card button, .perm-actions button").forEach((button) => {
       if (button.closest(".perm-actions")) button.disabled = !state.connected || !!info.closed;
       else button.disabled = !canSend();
     });
@@ -1980,8 +2307,18 @@
   }
 
   // Louis asks a permission, or is done, while the tab is hidden: the app waits for the user, who must know it
+  // The mark of the last reply nods: Louis is done
+  function nod() {
+    const mark = [...logEl.querySelectorAll(".msg.assistant:not(.pending) > .mark")].at(-1);
+    if (!mark) return;
+    mark.classList.remove("nod");
+    void mark.getBoundingClientRect();
+    mark.classList.add("nod");
+  }
+
   function watch(was) {
     const info = state.info;
+    if (was.turn && !info.turn) nod();
     if (!document.hidden) return;
     if (info.asking && !was.asking) {
       const asked = [...state.log].reverse().find((item) => item.kind === "permission" && item.status === "pending");

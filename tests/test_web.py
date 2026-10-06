@@ -6,7 +6,9 @@
 ##
 import http.client
 import json
+import os
 import sqlite3
+import subprocess
 import threading
 import time
 import pytest
@@ -15,7 +17,7 @@ from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_RESUMED, CHAT_TURN_STARTED, CHAT_TURN_ENDED
 from events.event_list import CHAT_TEXT, CHAT_REPLY, TOOL_CALL_STARTED, TOOL_CALL_ENDED, RAG_INDEXED
 from events.event_list import MODEL_CALL, RAG_RETRIEVED, CHAT_NUDGED
-from interface.web import WebInterface, history_items, stats
+from interface.web import WebInterface, history_items, stats, project, tool_object
 from logger.logger import log_event
 from session.database import Database
 from session.user import User
@@ -231,6 +233,30 @@ def test_a_resumed_session_is_shown_whole(served):
     shown: dict = snapshot(web)
     assert [item["kind"] for item in shown["log"]] == ["user", "tool", "text", "notice"]
     assert shown["log"][1]["status"] == "failed" and shown["state"]["session"] == 4
+
+def test_a_call_is_named_as_a_sentence_says_it():
+    assert tool_object("git", {"action": "commit", "branch": "main", "message": "fix"}) == "commit main"
+    assert tool_object("run_code", {"language": "python", "code": "print(1)"}) == "python"
+    assert tool_object("tree", {"path": "."}) == ""
+    assert tool_object("cat_file", {"path": "calc.py"}) == "calc.py"
+
+def test_the_empty_page_suggests_the_files_of_the_project(tmp_path):
+    (tmp_path / "old.py").write_text("x")
+    (tmp_path / "new.py").write_text("y")
+    os.utime(tmp_path / "old.py", (1, 1))
+    # Louis's own files, hidden ones and those of the tools are never suggested
+    for name in ("louis.db", "louis.log", ".env"):
+        (tmp_path / name).write_text("z")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "lib.js").write_text("z")
+    hints: dict = project(str(tmp_path))
+    assert hints == {"name": tmp_path.name, "changed": [], "recent": ["new.py", "old.py"]}
+
+    # In git: what changed, not what was touched last
+    for command in (["init", "-q"], ["add", "old.py"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
+        subprocess.run(["git", *command], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "old.py").write_text("changed")
+    assert project(str(tmp_path))["changed"] == ["old.py", "new.py"]
 
 def test_history_items_keep_the_calls_without_result():
     items: list[dict] = history_items([
