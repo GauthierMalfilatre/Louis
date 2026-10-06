@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#fbf8f4">
+<title>Louis</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fbf8f4; --text: #251e1b; --muted: #76695f; --accent: #7326e8; --border: #e8ddd2; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1a1416; --text: #f2eae6; --muted: #ab9b94; --accent: #bb8dff; --border: #3d3134; } }
+  body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: var(--bg); color: var(--text);
+         font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 340px; padding: 24px; text-align: center; }
+  img { width: 72px; height: 72px; border-radius: 18px; }
+  h1 { margin: 18px 0 6px; font: 600 22px/1.3 Georgia, serif; }
+  p { margin: 0 0 8px; color: var(--muted); }
+  a { display: inline-block; margin-top: 14px; padding: 10px 22px; border-radius: 999px; background: var(--accent);
+      color: var(--bg); font-weight: 600; text-decoration: none; }
+</style>
+</head>
+<body>
+<main>
+  <img src="/icons/icon-192.png" alt="">
+  <h1>Louis n'est pas joignable</h1>
+  <p>Ton ordinateur est peut-être éteint, ou <code style="white-space: nowrap">louis --web</code> n'y tourne pas.</p>
+  <p>Vérifie aussi que ton téléphone est bien connecté à Tailscale.</p>
+  <a href="/">Réessayer</a>
+</main>
+</body>
+</html>

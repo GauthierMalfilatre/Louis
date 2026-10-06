@@ -49,7 +49,19 @@ HOST: str = "127.0.0.1"
 # The port of share.base_url when it is empty: the links of /share lead to louis --web by default
 PORT: int = 8080
 
-PAGE: Path = Path(__file__).with_name("static") / "index.html"
+STATIC: Path = Path(__file__).with_name("static")
+PAGE: Path = STATIC / "index.html"
+# What makes the page an app a phone installs (PWA): its manifest, its icons, its service worker (at the root, so that it
+# handles every page) and the page it shows when Louis can not be reached. path: (file, type, seconds it may be kept)
+FILES: dict[str, tuple[str, str, int]] = {
+    "/manifest.webmanifest"     : ("manifest.webmanifest", "application/manifest+json", 0),
+    "/sw.js"                    : ("sw.js", "text/javascript; charset=utf-8", 0),
+    "/offline.html"             : ("offline.html", "text/html; charset=utf-8", 0),
+    "/icons/icon-192.png"       : ("icons/icon-192.png", "image/png", 86400),
+    "/icons/icon-512.png"       : ("icons/icon-512.png", "image/png", 86400),
+    "/icons/icon-maskable-512.png": ("icons/icon-maskable-512.png", "image/png", 86400),
+    "/icons/apple-touch-icon.png": ("icons/apple-touch-icon.png", "image/png", 86400),
+}
 KEEPALIVE  : float = 15.0          # Seconds of silence before a page is pinged, which also finds the closed ones
 MAX_BODY   : int   = 1024 * 1024   # Bytes of a request from a page
 RESULT_SHOWN: int  = 20000         # Characters of the result of a tool a page can unfold
@@ -197,8 +209,12 @@ class WebInterface(Interface):
     # The empty page of a new session shows the sentence of the scribe under its greeting
     welcomes: bool = True
 
-    def __init__(self, host: str = HOST, port: int = PORT, database: str | None = None):
-        """ Listen on host:port at once (OSError when it is taken), the pages are served once opened """
+    def __init__(self, host: str = HOST, port: int = PORT, database: str | None = None, url: str | None = None):
+        """
+            Listen on host:port at once (OSError when it is taken), the pages are served once opened. url: the address
+            the pages are reached by when a proxy serves them (tailscale serve: https://pc.tailnet.ts.net), its name is
+            then let in as the ones of this computer are
+        """
         super().__init__()
         self.__lock       : threading.RLock  = threading.RLock()
         self.__subscribers: set[queue.Queue] = set()
@@ -233,7 +249,9 @@ class WebInterface(Interface):
 
         self.__database: str | None = database
         self.__host    : str        = host
-        self.__names   : frozenset[str] | None = LOCAL_NAMES | {host.lower()} if loopback(host) else None
+        self.__public  : str | None = url.rstrip("/") if url else None
+        public: set[str] = {(urlsplit(url).hostname or "").lower()} if url else set()
+        self.__names   : frozenset[str] | None = LOCAL_NAMES | {host.lower()} | public if loopback(host) else None
         self.__server  : _Server    = _Server((host, port), partial(_Handler, web=self))
         self.__thread  : threading.Thread | None = None
         self.__stoppable: bool = False
@@ -241,9 +259,19 @@ class WebInterface(Interface):
 
     @property
     def url(self) -> str:
-        """ The address of the pages """
+        """ The address of the pages: the one a proxy serves them at, or the one Louis listens on """
+        return self.__public or self.local
+
+    @property
+    def local(self) -> str:
+        """ The address Louis listens on """
         host: str = "localhost" if self.__host in WILDCARDS else f"[{self.__host}]" if ":" in self.__host else self.__host
         return f"http://{host}:{self.__server.server_port}"
+
+    @property
+    def origins(self) -> frozenset[str]:
+        """ The origins a page of Louis is sent from, besides the one of the Host it asks: the address of the proxy """
+        return frozenset({self.__public.lower()}) if self.__public else frozenset()
 
     @property
     def names(self) -> frozenset[str] | None:
@@ -258,8 +286,8 @@ class WebInterface(Interface):
             self.__stoppable = True
         self.__thread = threading.Thread(target=self.__server.serve_forever, name="louis-web", daemon=True)
         self.__thread.start()
-        log.info(f"[web] serving on {self.url}")
-        print(f"Louis est sur {self.url} (Ctrl+C pour l'arrêter)", flush=True)
+        log.info(f"[web] serving on {self.local}{f', reached at {self.__public}' if self.__public else ''}")
+        print(f"Louis est sur {self.local}{f' et {self.__public}' if self.__public else ''} (Ctrl+C pour l'arrêter)", flush=True)
         if self.__names is None:
             sys.stderr.write("Attention : l'interface est ouverte au réseau, sans mot de passe : qui l'atteint peut "
                              "faire agir Louis sur tes fichiers.\n")
@@ -920,6 +948,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.__events()
         elif path == "/api/sessions":
             self.__search()
+        elif path in FILES:
+            self.__file(*FILES[path])
         else:
             self.__json(404, {"error": "Introuvable."})
 
@@ -956,9 +986,10 @@ class _Handler(BaseHTTPRequestHandler):
         return host is not None and host.lower() in names
 
     def __same_origin(self) -> bool:
-        """ Sent by a page of Louis, or by something that is no page at all (curl) """
+        """ Sent by a page of Louis (at the address of its Host, or of the proxy), or by no page at all (curl) """
         origin: str | None = self.headers.get("Origin")
-        return origin is None or urlsplit(origin).netloc.lower() == (self.headers.get("Host") or "").lower()
+        return (origin is None or urlsplit(origin).netloc.lower() == (self.headers.get("Host") or "").lower()
+                or origin.lower() in self.__web.origins)
 
     def __body(self) -> dict | None:
         """ The JSON object sent, None if it is not one """
@@ -999,6 +1030,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.__json(409, {"error": "Les sessions ne sont gardées qu'avec --user <nom>."})
         else:
             self.__json(200, found)
+
+    def __file(self, name: str, content_type: str, keep: int) -> None:
+        """ A file of the app: what a phone needs to install it """
+        self.__send(200, (STATIC / name).read_bytes(), content_type, PAGE_POLICY if name.endswith(".html") else None,
+                    keep=keep)
 
     def __page(self) -> None:
         """ The chat page, read at each request """
@@ -1046,11 +1082,11 @@ class _Handler(BaseHTTPRequestHandler):
     def __json(self, status: int, data: dict) -> None:
         self.__send(status, json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
-    def __send(self, status: int, body: bytes, content_type: str, policy: str | None = None) -> None:
+    def __send(self, status: int, body: bytes, content_type: str, policy: str | None = None, keep: int = 0) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", f"max-age={keep}" if keep else "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         if policy is not None:

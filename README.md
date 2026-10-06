@@ -56,6 +56,7 @@ python src/main.py
 ```bash
 louis --web                  # http://127.0.0.1:8080
 louis --web --port 9000 --user ada
+louis --web --url https://pc.tailnet.ts.net    # derrière tailscale serve, pour le téléphone
 ```
 
 Louis s'ouvre dans le navigateur au lieu du terminal. Il t'accueille selon l'heure, te propose de reprendre ta dernière session et des idées tirées de ton projet (tes changements en cours dans git). La réponse s'écrit en direct, chaque appel d'outil s'affiche pendant qu'il tourne, puis Louis le résume en une phrase (« J'ai lu calc.py. ») qui se déplie d'un clic, et les permissions se donnent depuis la page, avec le diff de ce que l'outil veut changer (`O` autoriser, `N` refuser, `T` toujours pour cet outil dans la session). Le bouton ■ arrête ce que Louis fait, comme Ctrl+C dans le terminal. Sous chaque réponse : ce qu'elle a coûté (tokens écrits, vitesse, premier token, et le chargement du modèle quand il a été long), et sous chaque recherche dans la base de connaissances, les passages trouvés. Quand l'onglet est caché, son titre et son icône te disent que Louis attend ta réponse ou qu'il a fini ; la cloche y ajoute une notification du bureau. La barre de gauche liste tes sessions (avec `--user`) : un clic en reprend une, « Nouvelle session » fait un `/clear`. Les commandes (`/`) marchent comme dans le terminal, avec leur menu. Ctrl+C dans le terminal arrête Louis.
@@ -63,6 +64,17 @@ Louis s'ouvre dans le navigateur au lieu du terminal. Il t'accueille selon l'heu
 Le serveur écoute sur `127.0.0.1` : ce poste seulement. `--host 0.0.0.0` l'ouvre au réseau, **sans mot de passe** : qui l'atteint peut faire agir Louis sur tes fichiers.
 
 Il sert aussi les liens publics de `/share` (`/s/<jeton>`) : les liens pointent vers lui tant que `share.base_url` (dans `src/config/settings.py`) est vide, ou vers l'adresse donnée par ce réglage ou par `LOUIS_SHARE_URL` (un proxy, un nom de domaine...).
+
+### Sur ton téléphone, comme une application
+
+La page s'installe sur l'écran d'accueil du téléphone (une PWA) : plein écran, son icône, une page « Louis n'est pas joignable » quand ton ordinateur est éteint. Louis tourne toujours sur ton ordinateur, avec ses fichiers et sa carte graphique : le téléphone n'est que l'écran. Pour qu'il l'atteigne sans l'ouvrir à Internet, et en HTTPS (sans lui, un téléphone n'installe pas l'application), le plus simple est [Tailscale](https://tailscale.com), gratuit pour un usage personnel :
+
+1. Installe Tailscale sur l'ordinateur (`curl -fsSL https://tailscale.com/install.sh | sh`, puis `sudo tailscale up`) et sur le téléphone (App Store, Play Store), avec le même compte.
+2. Dans la console de Tailscale, page DNS : active MagicDNS et les certificats HTTPS.
+3. Sur l'ordinateur : `tailscale serve --bg 8080`, qui donne l'adresse `https://<ordinateur>.<tailnet>.ts.net` ([la doc](https://tailscale.com/kb/1242/tailscale-serve) ; `tailscale serve reset` l'arrête), puis `louis --web --user <nom> --url https://<ordinateur>.<tailnet>.ts.net`. `--url` laisse entrer cette adresse, et les liens de `/share` l'utilisent.
+4. Sur le téléphone, ouvre cette adresse : Android (Chrome) ⋮ → « Installer l'application » ; iPhone (Safari) : Partager → « Sur l'écran d'accueil ».
+
+Seuls tes appareils atteignent Louis. Sur le téléphone, Entrée va à la ligne (le bouton envoie) et un glissement depuis le bord gauche ouvre les sessions. Les notifications de la cloche n'arrivent que tant que l'application est ouverte ou vient d'être quittée : le téléphone suspend une page en arrière-plan.
 
 ## Le scribe : titres, résumés, accueil
 

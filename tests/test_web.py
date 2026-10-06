@@ -28,12 +28,12 @@ from tool.permission import PermissionManager
 def request(web: WebInterface, method: str, path: str, body: dict | None = None,
             headers: dict | None = None) -> tuple[int, dict, str]:
     """ One request to the server, as a page sends it: its status, its headers and its body """
-    port: int = int(web.url.rsplit(":", 1)[1])
+    port: int = int(web.local.rsplit(":", 1)[1])
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     sent: dict = {"Content-Type": "application/json"} if body is not None else {}
     connection.request(method, path, json.dumps(body) if body is not None else None, {**sent, **(headers or {})})
     response = connection.getresponse()
-    result = response.status, dict(response.getheaders()), response.read().decode()
+    result = response.status, dict(response.getheaders()), response.read().decode(errors="replace")
     connection.close()
     return result
 
@@ -80,7 +80,7 @@ def test_a_turn_reaches_the_pages(served):
 def test_the_events_stream_starts_with_what_is_shown(served):
     web, bus = served
     started(bus)
-    port: int = int(web.url.rsplit(":", 1)[1])
+    port: int = int(web.local.rsplit(":", 1)[1])
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     connection.request("GET", "/api/events")
     response = connection.getresponse()
@@ -208,7 +208,7 @@ def test_other_sites_are_refused(served):
     web, bus = served
     assert request(web, "GET", "/", headers={"Host": "evil.example"})[0] == 403
     assert request(web, "POST", "/api/messages", {"text": "hi"}, {"Origin": "http://evil.example"})[0] == 403
-    port: int = int(web.url.rsplit(":", 1)[1])
+    port: int = int(web.local.rsplit(":", 1)[1])
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     connection.request("POST", "/api/messages", "text=hi", {"Content-Type": "application/x-www-form-urlencoded"})
     assert connection.getresponse().status == 415
@@ -338,3 +338,27 @@ def test_the_log_gives_the_size_of_a_history(caplog):
     finally:
         logger.propagate = False
     assert "history=[2 messages]" in caplog.text and "history=True" in caplog.text
+
+def test_a_phone_gets_what_installs_the_app(served):
+    web, _ = served
+    status, headers, body = request(web, "GET", "/manifest.webmanifest")
+    manifest: dict = json.loads(body)
+    assert status == 200 and headers["Content-Type"] == "application/manifest+json"
+    assert manifest["display"] == "standalone" and {icon["purpose"] for icon in manifest["icons"]} == {"any", "maskable"}
+    for icon in manifest["icons"]:
+        assert request(web, "GET", icon["src"])[0] == 200
+    status, headers, body = request(web, "GET", "/sw.js")
+    assert status == 200 and headers["Content-Type"].startswith("text/javascript") and "offline.html" in body
+    assert request(web, "GET", "/offline.html")[0] == 200
+    assert request(web, "GET", "/icons/apple-touch-icon.png")[1]["Cache-Control"] == "max-age=86400"
+
+def test_behind_a_proxy_its_address_is_let_in(tmp_path):
+    with WebInterface("127.0.0.1", 0, None, "https://pc.tail1234.ts.net/") as web:
+        assert web.url == "https://pc.tail1234.ts.net" and web.local.startswith("http://127.0.0.1:")
+        # tailscale serve gives the Host it was asked, or the one of Louis: both are let in, the origin of the proxy too
+        assert request(web, "GET", "/", headers={"Host": "pc.tail1234.ts.net"})[0] == 200
+        assert request(web, "POST", "/api/stop", {}, {"Host": "pc.tail1234.ts.net", "Origin": "https://pc.tail1234.ts.net"})[0] == 409
+        assert request(web, "POST", "/api/stop", {}, {"Origin": "https://pc.tail1234.ts.net"})[0] == 409
+        # Any other name is still refused
+        assert request(web, "GET", "/", headers={"Host": "evil.example"})[0] == 403
+        assert request(web, "POST", "/api/stop", {}, {"Origin": "https://evil.example"})[0] == 403
