@@ -54,13 +54,15 @@ Le garde-fou passe **après** : il relit le résultat final, déjà trié et ré
 
 ## Filtres et catalogue
 
-Le modèle peut limiter une recherche à une partie de la base : `path` (un dossier ou un motif depuis la racine de la source : `src/auth`, `docs/*.md`, ou un morceau de chemin : `auth`, sans tenir compte de la casse) et `kind` (`code`, `doc`, `config`, `data`, d'après l'extension, `rag/index.py`, `KINDS`). Le filtre s'applique **avant** le classement, dans les mots-clés comme dans les vecteurs : les 20 candidats du reranker sont tous dans le filtre, pas ce qu'il reste des 20 meilleurs après lui. Rien n'est ajouté à l'index : chemin et genre se lisent dans le chemin, pas besoin de réindexer.
+Le modèle peut limiter une recherche à une partie de la base : `path` (un dossier ou un motif depuis la racine de la source : `src/auth`, `docs/*.md`, ou un morceau de chemin : `auth`, sans tenir compte de la casse), `kind` (`code`, `doc`, `config`, `data`, d'après l'extension, `rag/index.py`, `KINDS`) et `modified_after` (`AAAA-MM-JJ` : les fichiers modifiés depuis ce jour, pour « ce qui a changé récemment »).
+
+La date d'un fichier est celle du **dernier commit** qui l'a touché, lue en une fois dans l'historique à chaque `/index` (`rag/ingest.py`, `last_changes`) : dans un dépôt, la date sur le disque est celle du clone ou du checkout, la même pour tous. Un fichier que git ne suit pas, ou un dossier hors d'un dépôt, garde sa date sur le disque. Une modification pas encore commitée garde la date de son dernier commit. Le catalogue donne à chaque source sa période (`modifiés du 2026-04-20 au 2026-05-13`), et chaque passage rendu sa date (`· modifié le 2026-05-12`). Le filtre s'applique **avant** le classement, dans les mots-clés comme dans les vecteurs : les 20 candidats du reranker sont tous dans le filtre, pas ce qu'il reste des 20 meilleurs après lui. Rien n'est ajouté à l'index : chemin et genre se lisent dans le chemin, pas besoin de réindexer.
 
 Le modèle ne peut choisir qu'une source qu'il connaît, et ne filtrer que sur un dossier qu'il a vu : la description de `search_knowledge` se termine par le **catalogue** de la base (`Knowledge.catalog()` : chaque source, ses fichiers par genre, ses 20 plus gros dossiers), refait au démarrage et après chaque `/index` et `/unindex` (`App.offer_knowledge`). Il coûte ~110 tokens par requête pour une source comme celle des mesures.
 
 - Un filtre qui ne garde aucun fichier renvoie une erreur avec les dossiers qui existent : le modèle se corrige au tour suivant.
 - Un filtre qui garde des fichiers mais où rien ne répond : l'outil lui dit que le filtre est peut-être trop étroit, et de relancer une fois sans lui.
-- `RAG_RETRIEVED` et la ligne `rag` des traces gardent `path`, `kind` et `files` (les fichiers gardés) : on voit si le modèle filtre, et comment.
+- `RAG_RETRIEVED` et la ligne `rag` des traces gardent `path`, `kind`, `after` et `files` (les fichiers gardés) : on voit si le modèle filtre, et comment.
 
 Mesuré avec les filtres qu'un modèle peut déduire de la question et du catalogue (champ `filters` de `docs/rag_eval.json`, `--no-filters` pour comparer) : hit@1 0.64 → 0.68, hit@4 0.77 → 0.82, hit@20 0.86 → 0.91. `kind=code` écarte un fichier de réglages généré qui prenait les places des mots-clés ; `path` départage des modules presque identiques (le même code copié dans plusieurs dossiers). Ce que le filtre ne corrige pas : un passage que le reranker note mal, une question en mots (« les touches du clavier ») face à du code qui n'a que les constantes d'une bibliothèque, sans une phrase autour (noté 0.0015 même seul dans son dossier).
 
@@ -125,6 +127,14 @@ Mesuré sur le même projet (181 passages de code décrits, GPU de 6 Go, seuil p
 - **Le rappel monte** : hit@20 0.91 → 0.95. Une question en français sur du code écrit en anglais (« carburant » face à `fuel`), absente des 20 candidats, passe au rang 1.
 - **Le classement aussi**, au seuil par défaut : avec qwen3:4b-instruct, quatre questions gagnent des places (le calcul de la cible de deux variantes d'un algorithme, l'exploration par bruit, le choix du moteur d'un agent, les réseaux d'un module nommé), une en perd (les touches du clavier, du rang 3 au rang 14).
 - Les descriptions de qwen3:8b resserraient les scores : plusieurs bonnes réponses passaient sous le seuil de 0.05 (hit@4 0.73 à 0.05, 0.86 à 0.01). Celles de qwen3:4b-instruct gardent le seuil par défaut utilisable (0.82 de 0.02 à 0.1). Sur 22 questions, ce sont des écarts d'une ou deux questions : à mesurer sur ses propres sources.
+
+## Tester
+
+```bash
+python -m unittest discover -s tests     # depuis la racine du dépôt, ~2 s
+```
+
+Les tests (`tests/`) n'appellent aucun modèle : le reranker et le modèle qui décrit sont remplacés par des faux, la recherche se fait par mots-clés. Ils couvrent les genres et les motifs de chemin, les filtres (chemin, genre, date) appliqués avant le classement, le seuil et le repli sans reranker, ce qu'une source garde d'un `/index` à l'autre (exclusions, descriptions, versions), la migration d'un ancien index, les fichiers générés, les dates de l'historique git (ignorés sans git), le contexte des passages, la requête faite au modèle qui décrit et les messages de l'outil.
 
 ## Mesurer
 

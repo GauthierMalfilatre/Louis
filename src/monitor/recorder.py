@@ -276,6 +276,7 @@ class Recorder:
             # Whether the model filters, and how: what its description and its size change
             path=data.get("path"),
             kind=data.get("kind"),
+            after=data.get("after"),
             files=data.get("files"),
             mode=data["mode"],
             reranker=data.get("reranker"),

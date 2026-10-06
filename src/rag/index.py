@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS files (
     path     TEXT NOT NULL,
     hash     TEXT NOT NULL,
     embedded INTEGER NOT NULL DEFAULT 0,
+    modified REAL,
     UNIQUE (source, path)
 );
 
@@ -70,10 +71,12 @@ CREATE INDEX IF NOT EXISTS idx_descriptions_source ON descriptions(source);
 # The columns added since the first index files: added to an older file when it is opened, its rows kept
 # (sources.exclude: the patterns left out of a folder, JSON; sources.chunker: the version of the cutting its passages
 # were made with; sources.describe: whether a model describes its passages of code, sources.describer: which one;
-# chunks.context: where a passage is in its file, "class Agent › def run"; chunks.description: what it does)
+# chunks.context: where a passage is in its file, "class Agent › def run"; chunks.description: what it does;
+# files.modified: when the file was last changed, in seconds, by its last commit or its date on the disk)
 COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("sources", "exclude", "TEXT"), ("sources", "chunker", "INTEGER"), ("sources", "describe", "INTEGER"),
-    ("sources", "describer", "TEXT"), ("chunks", "context", "TEXT"), ("chunks", "description", "TEXT")
+    ("sources", "describer", "TEXT"), ("chunks", "context", "TEXT"), ("chunks", "description", "TEXT"),
+    ("files", "modified", "REAL")
 )
 
 # The rank of a passage counts for 1 / (RRF + rank) in each list it is in: the usual constant of the fusion
@@ -125,19 +128,24 @@ def path_matches(path: str, pattern: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class Filter:
-    """ Which passages a search may give: those of a source (None: all), of a path (see path_matches), of some kinds """
+    """
+        Which passages a search may give: those of a source (None: all), of a path (see path_matches), of some kinds,
+        of the files changed since after (seconds; a file whose date is not known is not kept then)
+    """
     source: str | None      = None
     path  : str | None      = None
     kinds : frozenset[str]  = field(default_factory=frozenset)
+    after : float | None    = None
 
     @property
     def on_files(self) -> bool:
         """ Check if it keeps some files of the sources only, not whole sources """
-        return bool(self.path or self.kinds)
+        return bool(self.path or self.kinds or self.after is not None)
 
-    def keeps(self, path: str) -> bool:
+    def keeps(self, path: str, modified: float | None = None) -> bool:
         """ Whether a file of the source is kept """
-        return (not self.kinds or kind_of(path) in self.kinds) and (not self.path or path_matches(path, self.path))
+        return ((not self.kinds or kind_of(path) in self.kinds) and (not self.path or path_matches(path, self.path))
+                and (self.after is None or (modified is not None and modified >= self.after)))
 
 @dataclass(frozen=True, slots=True)
 class Hit:
@@ -156,6 +164,8 @@ class Hit:
     context: str = ""
     # What it does, written by the chat model at indexing, "" when its source is not described (rag/describer.py)
     description: str = ""
+    # When its file was last changed (seconds), None if it is not known
+    modified: float | None = None
 
 def pack(vector: list[float]) -> bytes:
     """ A vector as it is saved: unit length (a dot product is then a cosine), 32 bits per number """
@@ -320,10 +330,24 @@ class Index:
         if self.__conn is None:
             return []
         rows = self.__conn.execute(
-            "SELECT id, path FROM files" + (" WHERE source = ?" if where.source else ""),
+            "SELECT id, path, modified FROM files" + (" WHERE source = ?" if where.source else ""),
             (where.source,) if where.source else ()
         ).fetchall()
-        return [row["id"] for row in rows if where.keeps(row["path"])]
+        return [row["id"] for row in rows if where.keeps(row["path"], row["modified"])]
+
+    def stamp(self, source: str, dates: dict[str, float | None]) -> None:
+        """ When the files of a source were last changed, all of them at each indexing: a commit changes it, not the text """
+        db: sqlite3.Connection = self.__open()
+        with db:
+            db.executemany("UPDATE files SET modified = ? WHERE source = ? AND path = ?",
+                           [(date, source, path) for path, date in dates.items()])
+
+    def span(self, source: str) -> tuple[float, float] | None:
+        """ The oldest and the newest change of the files of a source, None if none is known """
+        if self.__conn is None:
+            return None
+        row = self.__conn.execute("SELECT MIN(modified), MAX(modified) FROM files WHERE source = ?", (source,)).fetchone()
+        return (row[0], row[1]) if row and row[0] is not None else None
 
     def outline(self, source: str, depth: int = 2) -> dict:
         """
@@ -374,12 +398,12 @@ class Index:
         if not best:
             return []
         rows = self.__conn.execute(
-            "SELECT c.id, f.source, f.path, c.start_line, c.end_line, c.text, c.context, c.description FROM chunks c"
-            " JOIN files f ON f.id = c.file_id WHERE c.id IN (%s)" % ",".join("?" * len(best)), best
+            "SELECT c.id, f.source, f.path, f.modified, c.start_line, c.end_line, c.text, c.context, c.description"
+            " FROM chunks c JOIN files f ON f.id = c.file_id WHERE c.id IN (%s)" % ",".join("?" * len(best)), best
         ).fetchall()
         by_id: dict[int, sqlite3.Row] = {row["id"]: row for row in rows}
         return [Hit(row["source"], row["path"], row["start_line"], row["end_line"], row["text"], round(scores[i], 4),
-                    context=row["context"] or "", description=row["description"] or "")
+                    context=row["context"] or "", description=row["description"] or "", modified=row["modified"])
                 for i in best if (row := by_id.get(i)) is not None]
 
     def __by_keywords(self, query: str, pool: int, source: str | None, files: list[int] | None) -> list[int]:

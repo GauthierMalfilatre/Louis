@@ -13,7 +13,8 @@
 ## The deeper search keeps what the threshold of the reranker drops: the scores of the right answers it would drop
 ## are seen, and the table of thresholds tells what each one would keep and drop.
 ## Compare:  --no-rerank (the index alone), --rerank-model Xenova/ms-marco-MiniLM-L-6-v2, --min-score 0.2
-## A question may give the filters the model should choose ("filters": {"path": "src/auth", "kind": "code"}):
+## A question may give the filters the model should choose ("filters": {"path": "src/auth", "kind": "code",
+## "modified_after": "2026-09-01"}):
 ## the run then tells what the filters bring when they are well chosen (--no-filters: without them, to compare)
 ##
 from dataclasses import dataclass, asdict
@@ -92,7 +93,9 @@ def load_questions(path: str) -> tuple[str | None, list[dict]]:
 def evaluate(knowledge: Knowledge, source: str | None, question: dict, k: int, filtered: bool = True) -> Result:
     """ Search a question as search_knowledge does, then deeper: with its filters, when it has some and filtered is True """
     expected: list[Expected] = [parse_expected(e) for e in question.get("expected", [])]
-    filters: dict = {key: value for key, value in (question.get("filters") or {}).items() if key in ("path", "kind") and value}
+    # The names of the tool: modified_after is the parameter after of Knowledge.search
+    names: dict[str, str] = {"path": "path", "kind": "kind", "modified_after": "after"}
+    filters: dict = {names[key]: value for key, value in (question.get("filters") or {}).items() if key in names and value}
     if not filtered:
         filters = {}
     hits: list[Hit] = knowledge.search(question["question"], source, k, **filters).hits

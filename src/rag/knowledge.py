@@ -22,12 +22,13 @@ from rag.context import contexts, header, brief
 from rag.describer import Describer, DescribeError
 from rag.embedder import Embedder, EmbedError
 from rag.index import Index, Hit, Filter, path_matches, kind_of
-from rag.ingest import scan, load, generated, GENERATED_RATIO
+from rag.ingest import scan, load, generated, GENERATED_RATIO, last_changes, modified_at
 from rag.reranker import Reranker, RerankError
 from events.event_bus import EventBus
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_RETRIEVED, RAG_DESCRIBE_PROGRESS
 from config.settings import settings as default_settings
 from logger.logger import log
+from datetime import datetime
 import hashlib
 import os
 import re
@@ -58,6 +59,17 @@ def passage(path: str, context: str, description: str, text: str, reranked: bool
 def describable(path: str) -> bool:
     """ Whether the passages of a file are described: its code only (a document already says what it does in words) """
     return kind_of(path) == "code" and not path.endswith(".ipynb")
+
+def day(seconds: float) -> str:
+    """ A date as the model reads and writes it: "2026-09-30" """
+    return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d")
+
+def since(text: str) -> float:
+    """
+        The start of a day the model gives ("2026-09-30", or with a time "2026-09-30T14:00"), in seconds.
+        NOTE: Raisable (ValueError: not a date)
+    """
+    return datetime.fromisoformat(text.strip()).timestamp()
 
 @dataclass(frozen=True, slots=True)
 class Found:
@@ -150,31 +162,42 @@ class Knowledge:
         """ The folders of a source, the biggest first: what a filter on the paths may name """
         return [folder for folder, _ in self.__index.outline(source)["folders"]]
 
+    def span(self, source: str) -> tuple[str, str] | None:
+        """ The days of the oldest and the newest change of the files of a source, None if none is known """
+        known: tuple[float, float] | None = self.__index.span(source)
+        return (day(known[0]), day(known[1])) if known else None
+
     def catalog(self) -> str:
         """
-            What the base holds, for the model: one line per source, with its files of each kind and its biggest
-            folders. Without it, the model knows neither that a project is indexed, nor which path to filter on
+            What the base holds, for the model: one line per source, with its files of each kind, when they changed,
+            and its biggest folders. Without it, the model knows neither that a project is indexed, nor which path or
+            which date to filter on
         """
         lines: list[str] = []
         for source in self.sources():
             outline: dict = self.__index.outline(source["name"])
             kinds: str = ", ".join(f"{count} {kind}" for kind, count in outline["kinds"].items())
+            dates: tuple[str, str] | None = self.span(source["name"])
+            changed: str = f", modifiés du {dates[0]} au {dates[1]}" if dates else ""
             shown: list[str] = sorted(folder for folder, _ in outline["folders"][:CATALOG_FOLDERS])
             more: int = len(outline["folders"]) - len(shown)
-            lines.append(f"- {source['name']} ({source['files']} fichiers : {kinds}) : dossiers {', '.join(shown)}"
+            lines.append(f"- {source['name']} ({source['files']} fichiers : {kinds}{changed}) : dossiers {', '.join(shown)}"
                          + (f", et {more} autres" if more > 0 else ""))
         return "\n".join(lines)
 
     def search(self, query: str, source: str | None = None, limit: int | None = None, *,
-               path: str | None = None, kind: str | None = None, drop: bool = True) -> Found:
+               path: str | None = None, kind: str | None = None, after: str | None = None,
+               drop: bool = True) -> Found:
         """
-            The passages that answer the query best, in one source or in all of them, in the files of a path and of a
-            kind only when they are given: limit at most, fewer (or none) when the reranker finds the others do not
-            answer. drop=False keeps them, ranked (to measure the threshold)
+            The passages that answer the query best, in one source or in all of them, in the files of a path, of a
+            kind, changed since a day (after: "2026-09-30") only when they are given: limit at most, fewer (or none)
+            when the reranker finds the others do not answer. drop=False keeps them, ranked (to measure the threshold).
+            NOTE: Raisable (ValueError: after is not a date)
         """
         start: float = time.perf_counter()
         limit = limit or self.__results
-        where: Filter = Filter(source, path or None, frozenset({kind}) if kind else frozenset())
+        where: Filter = Filter(source, path or None, frozenset({kind}) if kind else frozenset(),
+                               since(after) if after else None)
         files: int | None = len(self.__index.matching(where)) if where.on_files else None
         vector: list[float] | None = None
         model: str | None = None
@@ -214,6 +237,7 @@ class Knowledge:
             source=source,
             path=where.path,
             kind=kind,
+            after=after,
             files=files,
             mode="hybrid" if vector is not None else "keyword",
             reranker=reranker.model if reranked else None,
@@ -249,6 +273,9 @@ class Knowledge:
                                                  describe, self.__describer.model if self.__describer else None)
         describer: Describer | None = self.__describer if described else None
         known: dict[str, tuple[str, bool]] = self.__index.files(source)
+        # When each file was last changed: one reading of the history of the repository for all of them
+        history: dict[str, float] = last_changes(root)
+        dates: dict[str, float | None] = {}
 
         seen: set[str] = set()
         # The files to save, with their passages, contexts and descriptions: embedded together once there are enough
@@ -292,14 +319,16 @@ class Knowledge:
                 next /index, its passages already described coming from the cache
             """
             nonlocal describer, describe_warning, describing
-            if not described or not describable(path):
+            if not described or self.__describer is None or not describable(path):
                 return [""] * len(chunks), True
             # What every request of the file starts with, after the instructions: Ollama reads it once for all of them
             outline: str = "\n".join(dict.fromkeys(f"- {brief(context)}" for context in found if context))
             said: list[str] = []
             asked: int = 0
             for chunk, context in zip(chunks, found):
-                key: str = hashlib.sha1(f"{describer.model}\n{path}\n{context}\n{chunk.text}".encode("utf-8")).hexdigest()
+                # By the model the settings give, still known once it stopped answering (describer is None then): the
+                # passages it described before still come from the cache
+                key: str = hashlib.sha1(f"{self.__describer.model}\n{path}\n{context}\n{chunk.text}".encode("utf-8")).hexdigest()
                 description: str | None = self.__index.described(key)
                 if description is not None:
                     counts["reused"] += 1
@@ -338,6 +367,7 @@ class Knowledge:
                 counts["skipped"] += 1
             else:
                 seen.add(relative)
+                dates[relative] = modified_at(path, relative, history)
                 digest: str = loaded[1]
                 before: tuple[str, bool] | None = known.get(relative)
                 # Unchanged, unless it lacks the vectors that can be made now
@@ -358,10 +388,13 @@ class Knowledge:
         gone: list[str] = [path for path in known if path not in seen]
         for path in gone:
             self.__index.drop(source, path)
+        # Every file kept, changed or not: a commit changes its date without changing its text
+        self.__index.stamp(source, dates)
 
         result: dict = {
             "source": source, "root": root, "files": len(seen), **counts, "removed": len(gone), "warning": warning,
-            "exclude": patterns, "generated": made, "describe": described, "describe_warning": describe_warning,
+            "exclude": patterns, "generated": made, "history": bool(history),
+            "describe": described, "describe_warning": describe_warning,
             "describe_seconds": round(describing, 1), "duration": round(time.perf_counter() - start, 3)
         }
         self.__bus.dispatch(RAG_INDEXED, **result)

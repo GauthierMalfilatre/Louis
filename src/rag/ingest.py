@@ -5,8 +5,10 @@
 ## Ingest: which files of a folder are worth indexing, and their text
 ##
 from tool.impl.file.tool_tree import IGNORED, IGNORED_EXT
+from logger.logger import log
 import hashlib
 import os
+import subprocess
 
 # A bigger file is a dump (a data file, a bundle), not something to read passage by passage
 MAX_FILE_SIZE: int = 1_000_000
@@ -53,6 +55,47 @@ def scan(root: str) -> list[str]:
                 continue
             found.append(path)
     return found
+
+# The history of a big repository may take long to read: past this, the files keep the date of the file system
+GIT_TIMEOUT: float = 60.0
+
+def last_changes(root: str) -> dict[str, float]:
+    """
+        When each file of a folder was last changed, by the commit that last touched it ({"/path/from/root": seconds}):
+        in a repository, the date of a file on the disk is the one of the clone or the checkout, the same for all.
+        Empty when the folder is not in a repository, or git is missing or too slow (see modified_at)
+    """
+    try:
+        # safe.directory: git refuses a repository owned by another user (a mounted disk), which reading does not need.
+        # --relative: the paths from the folder indexed, even below the root of the repository
+        res = subprocess.run(
+            ["git", "-c", f"safe.directory={root}", "-C", root, "log", "--format=%x00%ct", "--name-only", "--no-renames",
+             "--relative"],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        log.info(f"[rag] no history of {root}: {type(e).__name__}")
+        return {}
+    if res.returncode != 0:
+        return {}
+    dates: dict[str, float] = {}
+    date: float = 0.0
+    for line in res.stdout.splitlines():
+        if line.startswith("\0"):
+            date = float(line[1:])
+        elif line.strip():
+            # The newest commit comes first: the first date met is the last change
+            dates.setdefault("/" + line.strip(), date)
+    return dates
+
+def modified_at(path: str, relative: str, history: dict[str, float]) -> float | None:
+    """ When a file was last changed: its last commit, or for a file git does not follow, its date on the disk """
+    if relative in history:
+        return history[relative]
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
 
 def generated(text: str, ratio: float = GENERATED_RATIO) -> str | None:
     """ Why a text looks made by a program, None if it looks written by hand. ratio 0 only reads the marks """
