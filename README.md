@@ -6,7 +6,7 @@ Louis est un assistant basé sur un modèle de langage, qui permet à l'utilisat
 
 - **Environnement virtuel** : Le projet crée un environnement virtuel Python (venv) pour isoler les dépendances.
 - **Système de sessions** : Les sessions sont stockées dans une base de données SQLite, et les utilisateurs peuvent avoir des sessions personnalisées.
-- **Interface** : L'utilisateur peut interagir avec le système via une interface en ligne de commande (CLI), ou via une interface curses pour un affichage plus avancé.
+- **Interface** : L'utilisateur peut interagir avec le système via une interface en ligne de commande (CLI), via une interface curses pour un affichage plus avancé, ou depuis son navigateur (`louis --web`).
 - **Modèle de langage** : Le système utilise un modèle de langage (comme Ollama) pour générer des réponses.
 
 ## Équipe
@@ -50,6 +50,19 @@ python src/main.py
 - Installer les dépendances.
 - Créer un lanceur (`louis`) dans `$HOME/.local/bin`.
 - Configurer le PATH pour que `louis` soit accessible depuis n'importe quel répertoire.
+
+## Interface web
+
+```bash
+louis --web                  # http://127.0.0.1:8080
+louis --web --port 9000 --user ada
+```
+
+Louis s'ouvre dans le navigateur au lieu du terminal : la réponse s'écrit en direct, chaque appel d'outil s'affiche avec ce qu'il a donné (et son résultat complet à déplier), et les permissions se donnent depuis la page, avec le diff de ce que l'outil veut changer (`O` autoriser, `N` refuser, `T` toujours pour cet outil dans la session). Le bouton ■ arrête ce que Louis fait, comme Ctrl+C dans le terminal. La barre de gauche liste tes sessions (avec `--user`) : un clic en reprend une, « Nouvelle session » fait un `/clear`. Les commandes (`/`) marchent comme dans le terminal, avec leur menu. Ctrl+C dans le terminal arrête Louis.
+
+Le serveur écoute sur `127.0.0.1` : ce poste seulement. `--host 0.0.0.0` l'ouvre au réseau, **sans mot de passe** : qui l'atteint peut faire agir Louis sur tes fichiers.
+
+Il sert aussi les liens publics de `/share` (`/s/<jeton>`) : les liens pointent vers lui tant que `share.base_url` (dans `src/config/settings.py`) est vide, ou vers l'adresse donnée par ce réglage ou par `LOUIS_SHARE_URL` (un proxy, un nom de domaine...).
 
 ## Base de connaissances (RAG)
 

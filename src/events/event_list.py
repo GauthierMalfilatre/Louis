@@ -70,7 +70,7 @@ TOOL_GRANT_PERMISSION  = "tool.permission.grant"    # data: id, granted
 SESSION_CREATED = "session.created"   # data: user, persistent (saved from the first message of the user on), custom_prompt
 SESSION_SAVED   = "session.saved"     # data: id (the current session is in the database, from its first message on)
 SESSION_LIST    = "session.list"      # data: user, sessions: [{id, first_message, cwd, here, current, created_at}]
-SESSION_RESUMED = "session.resumed"   # data: id, user, messages (count), last_question, last_answer
+SESSION_RESUMED = "session.resumed"   # data: id, user, messages (count), last_question, last_answer, history (the conversation, as export/document.py reads it)
 
 # A session written to a file by /export: id is None for a session never saved (the anonymous user's). With
 # --artifact, files the model wrote alone: files are their paths (None for a whole session)

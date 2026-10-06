@@ -35,9 +35,9 @@ settings: dict[str] = {
     "monitor.file"         : "louis.traces.jsonl",
     # Where /export writes the sessions, relative to the working directory
     "export.dir"           : "exports",
-    # Where the public links of /share point to (the server of louis --serve, or the address that reaches it),
-    # unless LOUIS_SHARE_URL gives another
-    "share.base_url"       : "http://localhost:8080",
+    # Where the public links of /share point to: the address that reaches the server of louis --web (it serves them),
+    # unless LOUIS_SHARE_URL gives another. Empty: the address louis --web listens on (http://localhost:8080 without it)
+    "share.base_url"       : "",
     # Structured replies (/json, louis --schema): the folder of the project where its own schemas are looked for
     # first (they win over the ones of louis, in src/structured/schemas), and the replies asked of the model before
     # giving up on one that does not match its schema

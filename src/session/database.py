@@ -7,6 +7,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 import sqlite3
 
@@ -57,11 +58,19 @@ def now() -> str:
 
 class Database:
     """ A connection to the database, which creates its tables if they do not exist """
-    def __init__(self, path: str):
-        """ Open the database, creating the file if needed """
+    def __init__(self, path: str, *, readonly: bool = False):
+        """
+            Open the database, creating the file if needed. Read-only, it is read as it is, never created nor cleaned:
+            the pages of the public links read it beside the connection of the app (sqlite3.OperationalError if the
+            file does not exist)
+        """
         self.__path: str = path
         self.__grouped: bool = False
-        self.__conn: sqlite3.Connection = sqlite3.connect(path)
+        if readonly:
+            self.__conn: sqlite3.Connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+            self.__conn.row_factory = sqlite3.Row
+            return
+        self.__conn = sqlite3.connect(path)
         self.__conn.row_factory = sqlite3.Row
         self.__conn.execute("PRAGMA foreign_keys = ON")
         self.__conn.executescript(SCHEMA)
