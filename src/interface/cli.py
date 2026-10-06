@@ -10,11 +10,11 @@ from events.event import Event
 from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_COMPACTED
-from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED, EXPORT_DONE
 from events.event_list import SHARE_CREATED, SHARE_LIST, SHARE_REVOKED
 from datetime import datetime, timezone
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
+from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 import json
 import os
 import re
@@ -362,6 +362,8 @@ class CLI(Interface):
             origin: str = " (projet)" if schema["origin"] == "projet" else ""
             lines.append(f"  {schema['name']:<{width}}  {mark}{preview(schema['description'] or '')}{origin}")
         lines.append(f"Les tiens vont dans {folder}/, ils passent avant ceux de Louis du même nom.")
+        self.out("\n".join(lines) + "\n")
+
     def __on_export_done(self, event: Event) -> None:
         """
             ✓ Session #12 exportée en JSON (8 messages, 1 fichier) : ~/projet/exports/session-12.json

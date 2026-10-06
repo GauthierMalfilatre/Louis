@@ -10,9 +10,7 @@ THINKING_DISABLED = "chat.thinking.disabled"   # data: none
 
 # The conversation, as it goes: the app never prints, the interfaces show these their own way
 CHAT_TURN_STARTED = "chat.turn.started"   # data: none (the model starts answering a message of the user)
-
-CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length", "refused", "invalid", "empty"), message (None when done or cancelled)
-
+CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length", "refused", "empty", "invalid"), message (None when done or cancelled)
 CHAT_TEXT         = "chat.text"           # data: text (a piece of the reply, as the model writes it)
 CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" if it only calls tools), tools (their names)
 # A reply asked as JSON that matches a schema (/json, louis --schema), before CHAT_TURN_ENDED: its JSON when it
@@ -70,7 +68,6 @@ SESSION_SAVED   = "session.saved"     # data: id (the current session is in the 
 SESSION_LIST    = "session.list"      # data: user, sessions: [{id, first_message, cwd, here, current, created_at}]
 SESSION_RESUMED = "session.resumed"   # data: id, user, messages (count), last_question, last_answer
 
-SCHEMA_LIST     = "schema.list"       # data: folder (the one of the project), schemas: [{name, description, origin ("projet" or "louis"), path, ok}]
 # A session written to a file by /export: id is None for a session never saved (the anonymous user's). With
 # --artifact, files the model wrote alone: files are their paths (None for a whole session)
 EXPORT_DONE     = "export.done"       # data: format ("json"...), path (absolute), id, messages (count, as exported), files, artifacts (count of files)
@@ -79,6 +76,8 @@ EXPORT_DONE     = "export.done"       # data: format ("json"...), path (absolute
 SHARE_CREATED   = "share.created"     # data: token, url, kind ("session" or "artifact"), id (the session), title, masked (texts changed)
 SHARE_LIST      = "share.list"        # data: user, shares: [{token, url, kind, session_id, title, created_at}] (newest first)
 SHARE_REVOKED   = "share.revoked"     # data: token, url
+
+SCHEMA_LIST     = "schema.list"       # data: folder (the one of the project), schemas: [{name, description, origin ("projet" or "louis"), path, ok}]
 
 COMMAND_UNKNOWN = "command.unknown"   # data: name, commands: [{name, usage, description}]
 COMMAND_ERROR   = "command.error"     # data: command, reason (a short code), message (one sentence), details...

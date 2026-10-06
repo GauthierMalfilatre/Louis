@@ -23,7 +23,7 @@ from events.event import Event
 from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, GUARD_TRIGGERED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
-from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, STRUCTURED_REPLY, RAG_RETRIEVED
+from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, RAG_RETRIEVED, STRUCTURED_REPLY
 from config.settings import settings as default_settings
 from logger.logger import log, scrub
 import hashlib
@@ -271,6 +271,8 @@ class Recorder:
             valid=event.data["valid"],
             attempts=event.data["attempts"],
             errors=[text(error, RESULT_CHARS) for error in event.data["errors"]]
+        )
+
     def __on_retrieved(self, event: Event) -> None:
         """ A look-up in the knowledge base: the query (cleaned as any text), the paths it found, not their text """
         self.__write(
