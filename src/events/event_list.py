@@ -10,9 +10,12 @@ THINKING_DISABLED = "chat.thinking.disabled"   # data: none
 
 # The conversation, as it goes: the app never prints, the interfaces show these their own way
 CHAT_TURN_STARTED = "chat.turn.started"   # data: none (the model starts answering a message of the user)
-CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length", "refused"), message (None when done or cancelled)
+CHAT_TURN_ENDED   = "chat.turn.ended"     # data: reason ("done", "cancelled", "error", "rounds", "loop", "length", "refused", "invalid"), message (None when done or cancelled)
 CHAT_TEXT         = "chat.text"           # data: text (a piece of the reply, as the model writes it)
 CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" if it only calls tools), tools (their names)
+# A reply asked as JSON that matches a schema (/json, louis --schema), before CHAT_TURN_ENDED: its JSON when it
+# matches, or why the last one did not (the turn then ends with the reason "invalid")
+STRUCTURED_REPLY  = "chat.structured"     # data: schema (its name), valid, data (the JSON, None if not valid), attempts (replies asked), errors ([] if valid)
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
 # How full the context of the model is: measured by Ollama after each reply, estimated when the session changes
 CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
@@ -51,6 +54,8 @@ SESSION_CREATED = "session.created"   # data: user, persistent (saved from the f
 SESSION_SAVED   = "session.saved"     # data: id (the current session is in the database, from its first message on)
 SESSION_LIST    = "session.list"      # data: user, sessions: [{id, first_message, cwd, here, current, created_at}]
 SESSION_RESUMED = "session.resumed"   # data: id, user, messages (count), last_question, last_answer
+
+SCHEMA_LIST     = "schema.list"       # data: folder (the one of the project), schemas: [{name, description, origin ("projet" or "louis"), path, ok}]
 
 COMMAND_UNKNOWN = "command.unknown"   # data: name, commands: [{name, usage, description}]
 COMMAND_ERROR   = "command.error"     # data: command, reason (a short code), message (one sentence), details...

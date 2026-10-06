@@ -35,9 +35,13 @@ from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
+from command.impl.command_json import JsonCommand
+from command.impl.command_schemas import SchemasCommand
+from structured.reply import instruction, checked, retry, shown
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
+from typing import Any
 from dataclasses import asdict
 from datetime import date
 import json
@@ -138,6 +142,8 @@ class App:
             .register(ClearCommand())\
             .register(SessionsCommand())\
             .register(ResumeCommand())\
+            .register(JsonCommand())\
+            .register(SchemasCommand())\
             .register(ToggleThinkCommand())\
 
         # NOTE: Raisable
@@ -280,6 +286,83 @@ class App:
                 # Ctrl+C in a command: back to the input, the answers handle it themselves
                 log.info("[app] command interrupted by the user")
 
+    def structured(self, text: str, name: str, schema: dict) -> tuple[bool, Any]:
+        """
+            Answer a message of the user with JSON that matches the schema (its name for the user), without tools:
+            Ollama constrains the reply, then it is checked (a reply cut, or a constraint the grammar can not hold),
+            and asked again with what is wrong, structured.attempts times at most. Whether it matches, and its JSON.
+            Kept in the session as JSON when it matches. With the guard, the reply is checked again once masked: a
+            reply that no longer matches is refused, asking again would only mask it again
+        """
+        self.__bus.dispatch(CHAT_TURN_STARTED)
+        most: int = max(1, int(self.__settings.get("structured.attempts", 3)))
+        attempts: int = 0
+        errors: list[str] = []
+        data: Any = None
+        try:
+            question: str = text
+            if self.__guard is not None:
+                verdict: Verdict = self.__guard.check_input(text)
+                if verdict.refused:
+                    self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
+                    return False, None
+                question = verdict.content
+
+            saved: bool = self.session.saved
+            self.session.add("user", question)
+            if not saved and self.session.saved:
+                self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+            # The schema is told for this request only: the session keeps the question as the user asked it
+            messages: list[dict] = self.__view()
+            messages[-1] = {**messages[-1], "content": question + instruction(schema)}
+
+            while attempts < most:
+                attempts += 1
+                reply: Reply = self.__chat(messages, [], None, schema=schema)
+                if reply.cut:
+                    data, errors = None, [f"réponse coupée : elle a dépassé {self.__settings.get('chat.predict')} tokens"]
+                else:
+                    data, errors = checked(reply.content, schema)
+                if not errors and self.__guard is not None:
+                    verdict = self.__guard.check_output(question, reply.content)
+                    if verdict.refused:
+                        self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
+                        return False, None
+                    if verdict.content != reply.content:
+                        data, errors = checked(verdict.content, schema)
+                        if errors:
+                            errors = ["le garde-fou a masqué des données sensibles, et la réponse masquée ne respecte "
+                                      "plus le schéma"] + errors
+                            break
+                if not errors:
+                    break
+                log.info(f"[app] structured reply #{attempts} does not match {name}: {'; '.join(errors)}")
+                messages = messages + [{"role": "assistant", "content": reply.content},
+                                       {"role": "user", "content": retry(errors)}]
+
+            valid: bool = not errors
+            if valid:
+                self.session.add("assistant", shown(data))
+            self.__bus.dispatch(
+                STRUCTURED_REPLY, schema=name, valid=valid, data=data if valid else None, attempts=attempts,
+                errors=errors
+            )
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="done" if valid else "invalid", message=None if valid else (
+                f"Réponse invalide pour le schéma {name} après {attempts} essai{'s' if attempts > 1 else ''} : "
+                + "; ".join(errors)
+            ))
+            return valid, data if valid else None
+        except KeyboardInterrupt:
+            log.info("[app] structured reply cancelled by the user")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="cancelled", message=None)
+        except ModelException as e:
+            log.error(f"[app] the model failed: {e.message}")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="error", message=e.message)
+        except Exception as e:
+            log.exception("[app] the structured reply failed")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="error", message=f"Erreur interne : {type(e).__name__}: {e}")
+        return False, None
+
     def __answer(self, text: str) -> None:
         """
             Answer a message of the user: the model replies, calling tools, until a reply calls none.
@@ -397,18 +480,22 @@ class App:
         log.warning(f"[app] stopped after {rounds} rounds of tool calls")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} tours d'appels d'outils.")
 
-    def __chat(self, messages: list[dict], tools: list[dict], stream: Callable | None) -> Reply:
+    def __chat(self, messages: list[dict], tools: list[dict], stream: Callable | None,
+               schema: dict | None = None) -> Reply:
         """
             Ask the model for its next reply, and tell how the request went (MODEL_CALL), even when it fails or the
-            user cancels it: the monitoring records every call, with its latency and its tokens
+            user cancels it: the monitoring records every call, with its latency and its tokens.
+            With a schema, the reply is JSON that matches it, and the model does not think first: what it would
+            think is no JSON
         """
         start: float = time.perf_counter()
         reply: Reply | None = None
         status, error = "ok", None
+        think: bool = self.think and schema is None
         try:
             reply = self.__model.chat(
-                messages, tools, think=self.think, on_text=stream,
-                on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk)
+                messages, tools, think=think, on_text=stream,
+                on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk), schema=schema
             )
             return reply
         except ModelException as e:
@@ -427,7 +514,7 @@ class App:
                 system=self.__prompt(),
                 messages=messages,
                 tools=[tool["function"]["name"] for tool in tools],
-                think=self.think,
+                think=think,
                 status=status,
                 error=error,
                 latency=round(time.perf_counter() - start, 3),

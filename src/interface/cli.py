@@ -11,6 +11,7 @@ from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, CO
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_COMPACTED
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED
+from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 import json
 import os
 import re
@@ -125,6 +126,8 @@ class CLI(Interface):
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
         bus.subscribe(self.__on_session_list, SESSION_LIST)
         bus.subscribe(self.__on_session_resumed, SESSION_RESUMED)
+        bus.subscribe(self._on_structured, STRUCTURED_REPLY)
+        bus.subscribe(self.__on_schema_list, SCHEMA_LIST)
         bus.subscribe(self.__on_command_unknown, COMMAND_UNKNOWN)
         bus.subscribe(self.__on_command_error, COMMAND_ERROR)
         bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
@@ -266,6 +269,30 @@ class CLI(Interface):
             lines.append(f"  Toi   : {preview(event.data['last_question'])}")
         if event.data["last_answer"]:
             lines.append(f"  Louis : {preview(event.data['last_answer'])}")
+        self.out("\n".join(lines) + "\n")
+
+    def _on_structured(self, event: Event) -> None:
+        """ The JSON of a reply that matches its schema, indented. One that does not is told by the end of the turn """
+        if not event.data["valid"]:
+            return
+        self._newline()
+        self.out(json.dumps(event.data["data"], ensure_ascii=False, indent=2))
+        attempts: int = event.data["attempts"]
+        self.out(f"(schéma {event.data['schema']}{f', {attempts} essais' if attempts > 1 else ''})", dim=True)
+
+    def __on_schema_list(self, event: Event) -> None:
+        """ One schema per line: its name for /json, what it is for, and where it comes from """
+        folder: str = short_path(event.data["folder"])
+        if not event.data["schemas"]:
+            self.out(f"\nAucun schéma : ajoutes-en dans {folder}/ (un fichier <nom>.json par schéma).\n")
+            return
+        lines: list[str] = ["\nSchémas de /json <schéma> <question> :"]
+        width: int = max(len(schema["name"]) for schema in event.data["schemas"])
+        for schema in event.data["schemas"]:
+            mark: str = "" if schema["ok"] else "⚠ "
+            origin: str = " (projet)" if schema["origin"] == "projet" else ""
+            lines.append(f"  {schema['name']:<{width}}  {mark}{preview(schema['description'] or '')}{origin}")
+        lines.append(f"Les tiens vont dans {folder}/, ils passent avant ceux de Louis du même nom.")
         self.out("\n".join(lines) + "\n")
 
     def __on_command_unknown(self, event: Event) -> None:
