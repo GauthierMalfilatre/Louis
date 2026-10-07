@@ -7,6 +7,7 @@
 from command.command import Command
 from command.impl.command_sessions import NOT_SAVED
 from config.prompt import NUDGE_PROMPT
+from export.document import conversation
 from events.event_list import SESSION_RESUMED
 from logger.logger import log
 import os
@@ -51,5 +52,7 @@ class ResumeCommand(Command):
             last_question=next(
                 (m.content for m in reversed(messages) if m.role == "user" and m.content != NUDGE_PROMPT), None
             ),
-            last_answer=next((m.content for m in reversed(messages) if m.role == "assistant" and m.content.strip()), None)
+            last_answer=next((m.content for m in reversed(messages) if m.role == "assistant" and m.content.strip()), None),
+            # The conversation as it is read, for an interface that shows it whole (the web page)
+            history=conversation(session)
         )

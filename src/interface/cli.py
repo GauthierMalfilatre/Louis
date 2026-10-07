@@ -11,7 +11,7 @@ from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, CO
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_COMPACTED
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED, EXPORT_DONE
-from events.event_list import SHARE_CREATED, SHARE_LIST, SHARE_REVOKED
+from events.event_list import SHARE_CREATED, SHARE_LIST, SHARE_REVOKED, SESSION_FOUND
 from datetime import datetime, timezone
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
 from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
@@ -143,6 +143,7 @@ class CLI(Interface):
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
         bus.subscribe(self.__on_session_list, SESSION_LIST)
         bus.subscribe(self.__on_session_resumed, SESSION_RESUMED)
+        bus.subscribe(self.__on_session_found, SESSION_FOUND)
         bus.subscribe(self._on_structured, STRUCTURED_REPLY)
         bus.subscribe(self.__on_schema_list, SCHEMA_LIST)
         bus.subscribe(self.__on_export_done, EXPORT_DONE)
@@ -182,6 +183,8 @@ class CLI(Interface):
             parts.append(f"{event.data['results']} anciens résultats d'outils réduits à leurs premières lignes")
         if event.data["dropped"]:
             parts.append(f"{event.data['dropped']} anciens messages mis de côté")
+        if event.data.get("summarized"):
+            parts.append("résumés par le modèle")
         self._newline()
         self.out(f"  {BULLETS['system']} Contexte allégé : {', '.join(parts)}.", dim=True)
 
@@ -351,8 +354,24 @@ class CLI(Interface):
         lines: list[str] = [f"\nSessions de {event.data['user']} (* : en cours) :"]
         for session in event.data["sessions"]:
             where: str = "" if session["here"] else f"[{short_path(session['cwd'])}] "
-            first: str = preview(session["first_message"]) if session["first_message"] else "(vide)"
+            first: str = preview(session.get("title") or session["first_message"] or "(vide)")
             lines.append(f"{'*' if session['current'] else ' '} #{session['id']:<4} {where}{first}")
+        self.out("\n".join(lines) + "\n")
+
+    def __on_session_found(self, event: Event) -> None:
+        """ The sessions found, the closest first: their title (or first message), then their summary """
+        sessions: list[dict] = event.data["sessions"]
+        if not sessions:
+            self.out(f"\nAucune session ne parle de « {event.data['query']} ».\n")
+            return
+        how: str = "par le sens" if event.data["mode"] == "meaning" else "par les mots"
+        lines: list[str] = [f"\nSessions sur « {event.data['query']} » ({how}, /resume <id> pour en reprendre une) :"]
+        for session in sessions:
+            where: str = "" if session["here"] else f"[{short_path(session['cwd'])}] "
+            lines.append(f"{'*' if session['current'] else ' '} #{session['id']:<4} {where}"
+                         f"{preview(session['title'] or session['first_message'] or '(vide)')}")
+            if session["summary"]:
+                lines.append(f"        {preview(session['summary'])}")
         self.out("\n".join(lines) + "\n")
 
     def __on_session_resumed(self, event: Event) -> None:

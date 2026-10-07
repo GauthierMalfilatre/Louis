@@ -40,11 +40,14 @@ class Embedder:
         """ Get the name of the embedding model """
         return self.__model
 
-    def documents(self, texts: list[str]) -> list[list[float]]:
-        """ The vectors of passages to search in, in the same order. NOTE: Raisable (EmbedError) """
+    def documents(self, texts: list[str], gpu: bool = True) -> list[list[float]]:
+        """
+            The vectors of passages to search in, in the same order: on the GPU, unless a few texts at a time are not
+            worth moving the model there (the description of a session). NOTE: Raisable (EmbedError)
+        """
         vectors: list[list[float]] = []
         for i in range(0, len(texts), self.__batch):
-            vectors.extend(self.__embed([self.__document_prefix + text for text in texts[i:i + self.__batch]], True))
+            vectors.extend(self.__embed([self.__document_prefix + text for text in texts[i:i + self.__batch]], gpu))
         return vectors
 
     def query(self, text: str) -> list[float]:

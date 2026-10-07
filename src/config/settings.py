@@ -16,6 +16,10 @@ settings: dict[str] = {
     "chat.tools.maxdepth"  : 40,
     "chat.think"           : False,
     "chat.keepalive"       : "30m",
+    # When the context is full, the oldest exchanges left out of what the model sees are summed up by the chat model
+    # itself (what was asked, the files read and changed, what is left to do), in its system prompt: it goes on knowing
+    # them. One request each time the cut moves forward (a few seconds on the GPU). False: they are only left out
+    "chat.compact.summary" : True,
     # Tokens the model sees at once. 12288 keeps qwen3:8b at ~92% GPU on 8 GB of VRAM:
     # above that it spills onto the CPU, and gets much slower
     "chat.context"         : 24576,
@@ -35,9 +39,9 @@ settings: dict[str] = {
     "monitor.file"         : "louis.traces.jsonl",
     # Where /export writes the sessions, relative to the working directory
     "export.dir"           : "exports",
-    # Where the public links of /share point to (the server of louis --serve, or the address that reaches it),
-    # unless LOUIS_SHARE_URL gives another
-    "share.base_url"       : "http://localhost:8080",
+    # Where the public links of /share point to: the address that reaches the server of louis --web (it serves them),
+    # unless LOUIS_SHARE_URL gives another. Empty: the address louis --web listens on (http://localhost:8080 without it)
+    "share.base_url"       : "",
     # Structured replies (/json, louis --schema): the folder of the project where its own schemas are looked for
     # first (they win over the ones of louis, in src/structured/schemas), and the replies asked of the model before
     # giving up on one that does not match its schema
@@ -89,6 +93,16 @@ settings: dict[str] = {
     # context: its num_ctx when it is not the chat model (a passage and the outline of its file); predict: the tokens of
     # an answer at most
     "rag.describe.model"   : "qwen3:4b-instruct",
+    # The scribe: beside the chat, a small model writes the title and the summary of each session once a reply is done
+    # (the sidebar of louis --web, /sessions, /find) and the sentence that welcomes the user to a new session on the web
+    # page. On the CPU, in its own thread: it never takes the GPU from the chat model, nor slows a reply. Measured on a
+    # laptop CPU, loaded: 1.5 to 4s a request with qwen3:4b-instruct (the same as rag.describe.model: one model for
+    # both); qwen3:1.7b is twice as fast, but writes "vous", or "Louis a…", and proposes what makes no sense. It must
+    # answer without thinking first: an "instruct" model. "": no scribe
+    "scribe.model"         : "qwen3:4b-instruct",
+    "scribe.gpu"           : False,
+    "scribe.keepalive"     : "30m",
+    "scribe.context"       : 4096,
     "rag.describe.context" : 4096,
     "rag.describe.predict" : 80,
     # Reranking: the passages the search found are read again with the question by a cross-encoder (ONNX on the CPU,
