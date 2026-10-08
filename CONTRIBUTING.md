@@ -42,7 +42,7 @@ not Conventional Commits — don't write `feat(auth):`.
 
 1. Push your branch and open a PR **into `dev`**. The template fills itself in.
 2. Put `Closes #12` in the description so the issue closes when it merges.
-3. CI runs `backend` and `frontend`. Wait for both to be green.
+3. CI runs. Wait for those to be green.
 4. Get one teammate to approve. Don't merge your own PR unreviewed.
 5. Squash or merge — either is fine, but don't force-push a branch someone is
    already reviewing.
