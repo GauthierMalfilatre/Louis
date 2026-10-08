@@ -10,8 +10,12 @@ models:
   # differ from Louis' (chat.context, chat.keepalive). Each check then reloads it twice, for NeMo and for the next
   # request of the chat or of the judge: 12 to 18 s each with qwen3.5:9b on a laptop. Start Ollama with the values
   # of chat.context and chat.keepalive (Louis tells it after its first check when they differ):
-  #   OLLAMA_CONTEXT_LENGTH=24576 OLLAMA_KEEP_ALIVE=30m ollama serve
-  # or, for the service:  sudo systemctl edit ollama  ->  [Service] Environment="OLLAMA_CONTEXT_LENGTH=24576" ...
+  #   Ollama of the snap (it runs as a service, restarted by the command):
+  #     sudo snap set ollama context-length=24576 keep-alive=30m
+  #   Ollama of the install script of ollama.com (a systemd service):
+  #     sudo systemctl edit ollama  ->  [Service] Environment="OLLAMA_CONTEXT_LENGTH=24576" "OLLAMA_KEEP_ALIVE=30m"
+  #   Ollama started by hand (no service already listening on 11434):
+  #     OLLAMA_CONTEXT_LENGTH=24576 OLLAMA_KEEP_ALIVE=30m ollama serve
   - type: main
     engine: ollama
     model: qwen3.5:9b

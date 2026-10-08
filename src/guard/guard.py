@@ -105,8 +105,9 @@ class Guard:
         message: str = (
             f"Le garde-fou fait recharger {main.model} à chaque vérification : Ollama le charge avec {context} tokens de "
             f"contexte pour NeMo, et Louis avec {self.__context} (chat.context), chaque changement prend plusieurs "
-            f"secondes. Relance Ollama avec OLLAMA_CONTEXT_LENGTH={self.__context} OLLAMA_KEEP_ALIVE=30m (variables "
-            "de son service, ou devant ollama serve)."
+            f"secondes. Donne-lui ce contexte : sudo snap set ollama context-length={self.__context} keep-alive=30m "
+            f"(Ollama du snap), sinon OLLAMA_CONTEXT_LENGTH={self.__context} OLLAMA_KEEP_ALIVE=30m dans son service "
+            "systemd (voir src/guard/config/config.yml)."
         )
         log.warning(f"[guard] {main.model} loaded with num_ctx {context} for NeMo, {self.__context} for the chat: "
                     "it is reloaded on every check")
