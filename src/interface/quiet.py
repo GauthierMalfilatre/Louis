@@ -15,6 +15,9 @@ class QuietInterface(Interface):
         For louis --ask: stdout is only the reply, for a script to read. What went wrong goes to stderr, and the
         permissions are never asked (nobody answers: a tool never acts)
     """
+    # One question, then Louis quits: the scribe would load its model for nothing
+    describes: bool = False
+
     def bind(self, bus: EventBus) -> "QuietInterface":
         """ Only the errors: why a turn gave no answer, why a command failed """
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)

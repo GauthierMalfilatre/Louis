@@ -7,6 +7,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 import sqlite3
 
@@ -17,11 +18,16 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TEXT NOT NULL
 );
 
+-- title, summary: written by the scribe once a reply is done (session/scribe.py); vector: the meaning of both, for /find
 CREATE TABLE IF NOT EXISTS sessions (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    cwd        TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    cwd          TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    title        TEXT,
+    summary      TEXT,
+    vector       BLOB,
+    described_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, id);
 
@@ -51,20 +57,38 @@ CREATE TABLE IF NOT EXISTS shares (
 CREATE INDEX IF NOT EXISTS idx_shares_user ON shares(user_id, created_at);
 """
 
+# Columns added to a table since it was first made: a database of an older version gets them, empty
+ADDED: dict[str, list[tuple[str, str]]] = {
+    "sessions": [("title", "TEXT"), ("summary", "TEXT"), ("vector", "BLOB"), ("described_at", "TEXT")],
+}
+
 def now() -> str:
     """ The current time, in UTC, as it is saved in the database """
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 class Database:
     """ A connection to the database, which creates its tables if they do not exist """
-    def __init__(self, path: str):
-        """ Open the database, creating the file if needed """
+    def __init__(self, path: str, *, readonly: bool = False):
+        """
+            Open the database, creating the file if needed. Read-only, it is read as it is, never created nor cleaned:
+            the pages of the public links read it beside the connection of the app (sqlite3.OperationalError if the
+            file does not exist)
+        """
         self.__path: str = path
         self.__grouped: bool = False
-        self.__conn: sqlite3.Connection = sqlite3.connect(path)
+        if readonly:
+            self.__conn: sqlite3.Connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+            self.__conn.row_factory = sqlite3.Row
+            return
+        self.__conn = sqlite3.connect(path)
         self.__conn.row_factory = sqlite3.Row
         self.__conn.execute("PRAGMA foreign_keys = ON")
         self.__conn.executescript(SCHEMA)
+        for table, columns in ADDED.items():
+            known: set[str] = {row["name"] for row in self.__conn.execute(f"PRAGMA table_info({table})")}
+            for name, kind in columns:
+                if name not in known:
+                    self.__conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
         # A conversation without a message of the user is never saved: remove the ones older versions left
         self.execute("DELETE FROM sessions WHERE id NOT IN (SELECT session_id FROM messages WHERE role = 'user')")
 

@@ -18,9 +18,12 @@ TOKEN_BYTES: int = 16
 # A token is typed back (/unshare) by its start, as /shares shows it: at least this many characters
 MIN_PREFIX: int = 6
 
+# Where the links point to when nothing says otherwise: louis --web, on its default port
+DEFAULT_URL: str = "http://localhost:8080"
+
 def base_url() -> str:
-    """ Where the links point to: LOUIS_SHARE_URL, or the setting (the server of louis --serve) """
-    return (os.environ.get("LOUIS_SHARE_URL") or settings.get("share.base_url", "http://localhost:8080")).rstrip("/")
+    """ Where the links point to: LOUIS_SHARE_URL, or the setting (louis --web sets it to its address when empty) """
+    return (os.environ.get("LOUIS_SHARE_URL") or settings.get("share.base_url") or DEFAULT_URL).rstrip("/")
 
 def url(token: str) -> str:
     """ The public link of a share """

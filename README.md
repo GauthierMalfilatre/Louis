@@ -6,7 +6,7 @@ Louis est un assistant basé sur un modèle de langage, qui permet à l'utilisat
 
 - **Environnement virtuel** : Le projet crée un environnement virtuel Python (venv) pour isoler les dépendances.
 - **Système de sessions** : Les sessions sont stockées dans une base de données SQLite, et les utilisateurs peuvent avoir des sessions personnalisées.
-- **Interface** : L'utilisateur peut interagir avec le système via une interface en ligne de commande (CLI), ou via une interface curses pour un affichage plus avancé.
+- **Interface** : L'utilisateur peut interagir avec le système via une interface en ligne de commande (CLI), via une interface curses pour un affichage plus avancé, ou depuis son navigateur (`louis --web`).
 - **Modèle de langage** : Le système utilise un modèle de langage (comme Ollama) pour générer des réponses.
 
 ## Équipe
@@ -50,6 +50,28 @@ python src/main.py
 - Installer les dépendances.
 - Créer un lanceur (`louis`) dans `$HOME/.local/bin`.
 - Configurer le PATH pour que `louis` soit accessible depuis n'importe quel répertoire.
+
+## Interface web
+
+```bash
+louis --web                  # http://127.0.0.1:8080
+louis --web --port 9000 --user ada
+```
+
+Louis s'ouvre dans le navigateur au lieu du terminal. Il t'accueille selon l'heure, te propose de reprendre ta dernière session et des idées tirées de ton projet (tes changements en cours dans git). La réponse s'écrit en direct, chaque appel d'outil s'affiche pendant qu'il tourne, puis Louis le résume en une phrase (« J'ai lu calc.py. ») qui se déplie d'un clic, et les permissions se donnent depuis la page, avec le diff de ce que l'outil veut changer (`O` autoriser, `N` refuser, `T` toujours pour cet outil dans la session). Le bouton ■ arrête ce que Louis fait, comme Ctrl+C dans le terminal. Sous chaque réponse : ce qu'elle a coûté (tokens écrits, vitesse, premier token, et le chargement du modèle quand il a été long), et sous chaque recherche dans la base de connaissances, les passages trouvés. Quand l'onglet est caché, son titre et son icône te disent que Louis attend ta réponse ou qu'il a fini ; la cloche y ajoute une notification du bureau. La barre de gauche liste tes sessions (avec `--user`) : un clic en reprend une, « Nouvelle session » fait un `/clear`. Les commandes (`/`) marchent comme dans le terminal, avec leur menu. Ctrl+C dans le terminal arrête Louis.
+
+Le serveur écoute sur `127.0.0.1` : ce poste seulement. `--host 0.0.0.0` l'ouvre au réseau, **sans mot de passe** : qui l'atteint peut faire agir Louis sur tes fichiers.
+
+Il sert aussi les liens publics de `/share` (`/s/<jeton>`) : les liens pointent vers lui tant que `share.base_url` (dans `src/config/settings.py`) est vide, ou vers l'adresse donnée par ce réglage ou par `LOUIS_SHARE_URL` (un proxy, un nom de domaine...).
+
+## Le scribe : titres, résumés, accueil
+
+À côté de la conversation, un petit modèle (`scribe.model`, qwen3:4b-instruct par défaut, le même que `rag.describe.model`) écrit le titre et le résumé de chaque session une fois la réponse finie, et la phrase qui t'accueille sur la page web, d'après ta dernière session et tes changements en cours. Il tourne sur le processeur, dans son propre fil : il ne prend jamais la carte graphique au modèle de la conversation, et Louis ne l'attend jamais. Les sessions d'avant sont décrites quand il n'a rien d'autre à faire.
+
+- **Retrouver une session** : `/find <texte>`, ou la recherche de la barre latérale de `louis --web`, par le sens du titre et du résumé (avec `nomic-embed-text`, le modèle d'embedding du RAG), ou par les mots sans lui.
+- **Résumer au lieu de couper** : quand le contexte est plein, les plus vieux échanges qui en sortent sont résumés par le modèle de la conversation (les demandes, ce qu'il a appris des fichiers lus, les réponses déjà données), et il relit ce résumé à leur place. `chat.compact.summary: False` revient à les couper seulement.
+
+`ollama pull qwen3:4b-instruct` s'il n'est pas déjà là ; `scribe.model: ""` coupe le scribe.
 
 ## Base de connaissances (RAG)
 

@@ -58,6 +58,12 @@ def scrub(text: str) -> str:
     return _scrub(text)
 
 def log_event(event) -> None:
-    """ Log an event of the bus, subscribe it with bus.subscribe(log_event) to log every event """
-    data: str = ", ".join(f"{key}={value}" for key, value in event.data.items())
+    """
+        Log an event of the bus, subscribe it with bus.subscribe(log_event) to log every event. A whole conversation
+        (the history of SESSION_RESUMED) is logged as its size: it is in the database already
+    """
+    data: str = ", ".join(
+        f"{key}={f'[{len(value)} messages]' if key == 'history' and isinstance(value, list) else value}"
+        for key, value in event.data.items()
+    )
     log.debug(f"[event] {event.name} {data}".rstrip())
