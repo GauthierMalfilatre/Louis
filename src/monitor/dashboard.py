@@ -317,6 +317,15 @@ function renderKpis(s) {
     tiles.push(["JSON replies", fmt.percent(s.structured.valid_rate) + " valid",
       fmt.count(s.structured.replies) + " asked · " + fmt.percent(s.structured.first_try_rate) + " at once"]);
   }
+  // Only once the judge scored answers (eval.enabled, /eval)
+  if (s.eval && s.eval.answers) {
+    const grade = (v) => v == null ? "–" : v.toFixed(1) + "/5";
+    tiles.push(["Faithful to sources", fmt.percent(s.eval.faithfulness),
+      fmt.count(s.eval.answers) + " judged · " + fmt.percent(s.eval.flagged_rate) + " claims flagged · " +
+      fmt.count(s.eval.contradicted) + " contradicted"]);
+    tiles.push(["Relevance · coherence", grade(s.eval.relevance) + " · " + grade(s.eval.coherence),
+      "by the judge, " + fmt.count(s.eval.versions.length) + (s.eval.versions.length === 1 ? " version" : " versions")]);
+  }
   document.getElementById("kpis").replaceChildren(...tiles.map(([label, value, sub]) =>
     el("div", { class: "card kpi" }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }),
       el("div", { class: "sub", text: sub }))));

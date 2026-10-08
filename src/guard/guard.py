@@ -11,11 +11,12 @@
 ##         verdict = guard.check_tool_result(tool, result)   before the model reads what a tool gave (see screens_result)
 ##
 import os
+import requests
 from .verdict import Verdict, PASS, MASKED, REFUSED
 from .patterns import redact
 from tool.tool_call import ToolCall
 from events.event_bus import EventBus
-from events.event_list import GUARD_TRIGGERED
+from events.event_list import GUARD_TRIGGERED, GUARD_RELOADS
 from logger.logger import log, protect
 
 # The rules: which rails run (config.yml), their flows (rails.co) and the code they call (actions.py)
@@ -27,8 +28,12 @@ class Guard:
         The model is still called by OllamaModel: its tools, streaming and thinking stay as they are.
         The app asks and gets a verdict back; what the guard did is told on the bus (GUARD_TRIGGERED)
     """
-    def __init__(self, bus: EventBus, path: str = CONFIG):
-        """ Load the rails of the given folder. NOTE: Raisable (NeMo missing, bad config) """
+    def __init__(self, bus: EventBus, path: str = CONFIG, context: int | None = None):
+        """
+            Load the rails of the given folder. context is the num_ctx of the chat: after the first check, the guard
+            tells (GUARD_RELOADS) if Ollama loaded the model with another one for NeMo. NOTE: Raisable (NeMo missing,
+            bad config)
+        """
         # The log sees everything before the rails do (the message typed, the reply, what a tool read):
         # it keeps it only masked
         protect(redact)
@@ -40,6 +45,9 @@ class Guard:
 
         self.__bus  : EventBus = bus
         self.__rails = LLMRails(RailsConfig.from_path(path))
+        self.__context: int | None = context
+        # Checked once, after the first request NeMo made
+        self.__probed : bool       = context is None
         log.info(f"[guard] rails loaded from {path}")
 
     def check_input(self, question: str) -> Verdict:
@@ -76,6 +84,35 @@ class Guard:
             result, variable="tool_message", tool=tool
         )
 
+    def __probe(self) -> None:
+        """
+            The context Ollama loaded the model of NeMo with (/api/ps), against the chat's: when they differ, every check
+            reloads the model, and the next request of the chat reloads it again (12 to 18 s each with qwen3.5:9b on
+            a laptop). Nothing NeMo sends can change it: told once, with what to set where Ollama starts
+        """
+        main = next((model for model in self.__rails.config.models if model.type == "main"), None)
+        if main is None or main.engine != "ollama":
+            return
+        uri: str = str((main.parameters or {}).get("base_url") or "http://localhost:11434").removesuffix("/").removesuffix("/v1")
+        try:
+            loaded: dict = {model["name"]: model.get("context_length")
+                            for model in requests.get(f"{uri}/api/ps", timeout=2.0).json().get("models", [])}
+        except (requests.RequestException, ValueError):
+            return
+        context: int | None = loaded.get(main.model)
+        if context is None or context == self.__context:
+            return
+        message: str = (
+            f"Le garde-fou fait recharger {main.model} à chaque vérification : Ollama le charge avec {context} tokens de "
+            f"contexte pour NeMo, et Louis avec {self.__context} (chat.context), chaque changement prend plusieurs "
+            f"secondes. Donne-lui ce contexte : sudo snap set ollama context-length={self.__context} keep-alive=30m "
+            f"(Ollama du snap), sinon OLLAMA_CONTEXT_LENGTH={self.__context} OLLAMA_KEEP_ALIVE=30m dans son service "
+            "systemd (voir src/guard/config/config.yml)."
+        )
+        log.warning(f"[guard] {main.model} loaded with num_ctx {context} for NeMo, {self.__context} for the chat: "
+                    "it is reloaded on every check")
+        self.__bus.dispatch(GUARD_RELOADS, model=main.model, loaded=context, expected=self.__context, message=message)
+
     def hide(self, arguments: dict) -> dict:
         """
             The arguments of a call as the user sees them: masked the way the log is. Only what is shown:
@@ -94,6 +131,9 @@ class Guard:
         if variable:
             options["output_vars"] = [variable]
         res = self.__rails.generate(messages=messages, options=options)
+        if not self.__probed:
+            self.__probed = True
+            self.__probe()
         # With messages, NeMo answers with messages: the last one is the checked text, or the refusal
         content: str = res.response[-1]["content"] if isinstance(res.response, list) else res.response
         stopped: list[str] = [rail.name for rail in res.log.activated_rails if rail.stop] if res.log else []

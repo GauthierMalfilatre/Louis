@@ -54,6 +54,23 @@ def finding(item: dict) -> str:
                    else f"{item['change']:+.0%}" if item["change"] is not None else "")
     return f"{'▲' if item['after'] > item['before'] else '▼'} {label} {shown(item['before'])} → {shown(item['after'])} ({change})"
 
+def grade(value: float | None) -> str:
+    """ A mean score of the judge, out of 5 """
+    return f"{value:.1f}/5" if value is not None else "–"
+
+def judged(scores: dict) -> list[str]:
+    """ The lines of the answers judged: all of them, then each version (prompt and model) when there are several """
+    if not scores["answers"]:
+        return []
+    def line(label: str, values: dict) -> str:
+        return (f"  {label:<12} {count(values['answers']):>7}   faithful {percent(values['faithfulness'])} · "
+                f"relevance {grade(values['relevance'])} · coherence {grade(values['coherence'])} · "
+                f"claims flagged {percent(values['flagged_rate'])} ({values['contradicted']} contradicted)")
+    lines: list[str] = [line("judged", scores)]
+    if len(scores["versions"]) > 1:
+        lines += [line(f"  {version['prompt'] or '?'}", version) + f" · {version['model']}" for version in scores["versions"]]
+    return lines
+
 def text(summary: dict, alerts: list[dict], path: str) -> str:
     """ The summary of all the calls, and the drift alerts, for the terminal """
     calls, turns, tools = summary["calls"], summary["turns"], summary["tools"]
@@ -69,6 +86,7 @@ def text(summary: dict, alerts: list[dict], path: str) -> str:
         f"  tool calls   {count(tools['calls']):>7}   could not do it {percent(tools['errors'] / tools['calls'] if tools['calls'] else None)}",
         *([f"  json replies {count(structured['replies']):>7}   valid {percent(structured['valid_rate'])} · "
            f"at once {percent(structured['first_try_rate'])}"] if structured["replies"] else []),
+        *judged(summary.get("eval") or {"answers": 0}),
         "",
         "Drift",
     ]

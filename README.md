@@ -106,6 +106,10 @@ cd src && python -m monitor ../louis.traces.jsonl -o /tmp/dashboard.html --open
 
 Le résumé s'affiche dans le terminal, et `louis.dashboard.html` (une page autonome, sans serveur) s'ouvre dans le navigateur. En haut, les **dérives** : chaque nouveau prompt ou modèle est comparé à celui qu'il remplace, et les dernières 24 h à la semaine d'avant. Une alerte apparaît au-delà de ±30 % de latence médiane, ±30 % de tokens par appel ou ±5 points de taux d'erreur, avec au moins 5 appels de chaque côté. Un prompt modifié hier qui double la latence apparaît donc en tête, avec la hausse des tokens qui l'explique.
 
+## Évaluation des réponses (LLM juge)
+
+Un modèle relit chaque réponse de Louis, en arrière-plan une fois le tour fini, et la note : **fidélité aux sources** (la réponse découpée en affirmations, chacune vérifiée contre ce que les outils ont lu), **pertinence** et **cohérence** (de 1 à 5). Les affirmations contredites ou invérifiables sont signalées. `/eval` montre les notes de la dernière réponse, `louis --dashboard` les moyennes par prompt et par modèle, et `python -m eval.bench` compare deux versions de Louis sur un jeu de questions fixe avant de livrer. Le détail, les choix et les réglages (`eval.*`) sont dans [docs/EVAL.md](docs/EVAL.md).
+
 ## Réponses structurées (JSON)
 
 Louis peut répondre en JSON qui respecte un **schéma JSON** (un formulaire : les champs, leurs types, ceux qui sont obligatoires), au lieu de texte. Ollama empêche le modèle d'écrire autre chose, puis Louis vérifie la réponse et la redemande avec l'erreur si elle ne correspond pas (`structured.attempts` fois au plus). Une réponse qui ne correspond toujours pas n'est jamais renvoyée : c'est une erreur. Dans ce mode, le modèle n'a pas d'outils : ce qu'il doit lire est dans la question.
