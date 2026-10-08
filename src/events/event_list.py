@@ -7,6 +7,9 @@
 # The thinking mode of the model, switched by /think: it thinks before every reply from then on
 THINKING_ENABLED  = "chat.thinking.enabled"    # data: none
 THINKING_DISABLED = "chat.thinking.disabled"   # data: none
+# The reasoning loop (ReAct), switched by /react: the messages are answered step by step from then on
+REASONING_ENABLED  = "chat.reasoning.enabled"    # data: none
+REASONING_DISABLED = "chat.reasoning.disabled"   # data: none
 
 # The conversation, as it goes: the app never prints, the interfaces show these their own way
 CHAT_TURN_STARTED = "chat.turn.started"   # data: none (the model starts answering a message of the user)
@@ -17,6 +20,13 @@ CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" i
 # matches, or why the last one did not (the turn then ends with the reason "invalid")
 STRUCTURED_REPLY  = "chat.structured"     # data: schema (its name), valid, data (the JSON, None if not valid), attempts (replies asked), errors ([] if valid)
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
+# A step of the reasoning loop (/react), once the model replied: what it thought (masked with the guard, as the replies
+# are), and the tools it decided to call, their results coming in TOOL_CALL_ENDED. A step that calls none is a draft
+# of the answer, checked next with reason.verify. step counts from 1 for each message
+REASONING_STEP    = "chat.reasoning.step"   # data: step, thought ("" if the model wrote none), tools (their names, [] for a draft)
+# The model checked its draft (reason.verify): ok, or what is wrong with it, for it to answer again (attempt counts
+# from 1, reason.attempts at most). A check the model could not give counts as ok: it never holds the answer back
+REASONING_CHECK   = "chat.reasoning.check"  # data: attempt, ok, problems ([] if ok)
 # How full the context of the model is: measured by Ollama after each reply, estimated when the session changes
 CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
 CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the model thinks before replying, with /think)
