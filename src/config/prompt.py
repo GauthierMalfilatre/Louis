@@ -118,11 +118,13 @@ REACT_PROMPT: str = (
 # Asked once the model has a draft of its answer (reason.verify), after it in the conversation: it checks it against
 # what it read, as JSON (app/app.py gives the schema), without tools
 VERIFY_PROMPT: str = (
-    "Avant que ta réponse ne parte, vérifie-la. Relis la demande de l'utilisateur et ce que tes outils t'ont "
-    "vraiment renvoyé, puis juge ta réponse : répond-elle à toute la demande ? Chaque fait, nom, chemin ou valeur "
-    "qu'elle cite vient-il de ce que tu as lu ? Dit-elle avoir fait quelque chose qui n'a pas été fait, ou qui a "
-    "échoué ? Le code qu'elle propose est-il correct ? Ne relève que les vrais problèmes, pas le style : s'il n'y en "
-    "a aucun, dis que la réponse est bonne."
+    "Avant que ta réponse ne parte, vérifie-la, comme si un autre l'avait écrite : ne la crois pas juste parce que "
+    "c'est la tienne. D'abord, refais toi-même chaque vérification, pas à pas : refais chaque calcul, retrouve chaque "
+    "fait, nom, chemin ou valeur dans ce que tes outils t'ont vraiment renvoyé, contrôle chaque action qu'elle dit "
+    "avoir faite, relis le code qu'elle propose. Donne la source de chacun : la réponse elle-même n'en est pas une, et "
+    "ce qu'aucun outil n'a renvoyé est introuvable. Ensuite seulement, conclus : répond-elle à toute la demande, sans "
+    "rien d'inventé ni de faux ? Ne relève que les vrais problèmes, pas le style : s'il n'y en a aucun, dis que la "
+    "réponse est bonne."
 )
 # Sent when the check found problems: the model goes on, may call tools again, and writes a new answer
 REVISE_PROMPT: str = (

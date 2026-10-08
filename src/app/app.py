@@ -32,7 +32,7 @@ from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND, 
 from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
-from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT, SUMMARY_PROMPT, MERGE_PROMPT
+from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT, SUMMARY_PROMPT, MERGE_PROMPT, VERIFY_PROMPT
 from session.user import User
 from session.session import Session
 from session.scribe import Scribe
@@ -125,6 +125,80 @@ SUMMARY_CHARS  : int   = 3000
 # Calls of a tool the guard refuses in a turn before the tool is withdrawn until the next message: the model
 # may redo a call without the sensitive data once, but qwen3 can also ask the same one again and again
 REFUSED_CALLS: int = 2
+
+# What the model says of its draft in the reasoning loop (reason.verify): JSON, for no text to be read into a verdict.
+# Never one of the schemas of /json: the user does not ask for it. Ollama has the fields written in this order: the
+# claims checked again first, the verdict last. Asked first, the verdict is given before anything is looked at, and
+# the rest only backs it up (ok in 11 tokens for 17 × 23 = 381). Each claim gives where it was found: checked again
+# without one, the model finds a file it never read in its own draft. A few problems, each one short: enough to fix them
+MAX_CHECKS   : int = 6
+MAX_PROBLEMS : int = 5
+PROBLEM_CHARS: int = 300
+CRITIQUE: dict = {
+    "type": "object",
+    "properties": {
+        "checks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string", "description": "une affirmation importante de la réponse (fait, calcul, "
+                                                              "chemin, valeur, action faite)"},
+                    "source": {"type": "string", "description": "où tu la retrouves : le résultat d'un outil (lequel, et "
+                                                               "ce qu'il dit), le calcul refait pas à pas, ou "
+                                                               "\"introuvable\". La réponse vérifiée n'est jamais une source"},
+                    "holds": {"type": "boolean", "description": "true seulement si la source la confirme"}
+                },
+                "required": ["claim", "source", "holds"],
+                "additionalProperties": False
+            },
+            "minItems": 1,
+            "maxItems": MAX_CHECKS,
+            "description": "chaque affirmation importante de la réponse, vérifiée de nouveau"
+        },
+        "problems": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": MAX_PROBLEMS,
+            "description": "les vrais problèmes trouvés par ces vérifications, une phrase chacun, [] s'il n'y en a aucun"
+        },
+        "ok": {"type": "boolean", "description": "true seulement si aucune vérification n'a trouvé de problème"}
+    },
+    "required": ["checks", "problems", "ok"],
+    "additionalProperties": False
+}
+
+# A file a draft names: a path with the extension of a file of code, of data or of documentation. Never a piece of a
+# URL or of a longer path, nor a number (1.2, 3.13)
+CITED_FILE: re.Pattern = re.compile(
+    r"(?<![\w/.:-])((?:[\w-]+/)*[\w-]+\.(?:py|pyi|js|jsx|ts|tsx|json|jsonl|md|txt|rst|ya?ml|toml|ini|cfg|co|c|h|cpp|hpp|cc"
+    r"|go|rs|java|kt|rb|php|sh|bash|html|css|scss|sql|csv|xml|lock))(?![\w/-])"
+)
+UNSOURCED: str = (
+    "{path} : aucun outil ne l'a lu, listé ni écrit dans cette session, ce que la réponse en dit n'a pas de source. "
+    "Lis-le avant d'en parler, ou dis que tu ne l'as pas lu."
+)
+
+def unsourced(draft: str, history: list[dict]) -> list[str]:
+    """
+        The files a draft names that no tool of the session read, listed or wrote: the model can only have made up
+        what it says of them. Checked by the code, not asked to the model: a 9B model finds them in its own draft. A
+        path is found by its file name alone: the tools show it from the project root (/model/reply.py) or under its
+        folder (tree), the model from anywhere (src/model/reply.py). A made-up file with the name of a real one goes
+        through: better than asking again for an answer that was right. What the user wrote is no source: they ask,
+        the tools tell
+    """
+    sources: str = "\n".join(
+        (message.get("content") or "") if message["role"] == "tool" else
+        json.dumps([call.get("function", {}).get("arguments") for call in message.get("tool_calls") or []],
+                   ensure_ascii=False)
+        for message in history if message["role"] in ("tool", "assistant")
+    )
+    found: list[str] = []
+    for path in dict.fromkeys(match.group(1) for match in CITED_FILE.finditer(draft)):
+        if not re.search(rf"(?<![\w.-]){re.escape(path.split('/')[-1])}(?![\w-])", sources):
+            found.append(path)
+    return found
 
 class App:
     """ App Class: runs the conversation, and tells everything through the bus, never printing itself """
@@ -644,6 +718,45 @@ class App:
                 self.session.add("tool", CANCELLED_TOOL, tool_name=call.name)
             raise
         return repeats
+
+    def __verify(self, draft: str) -> tuple[bool, list[str]]:
+        """
+            The model checks the draft of its answer against what it read in this session (the draft is not in it yet),
+            as JSON that matches CRITIQUE, without tools nor thinking: whether it may go, and its problems. A check the
+            model can not give (it fails, its reply is cut or does not match) counts as ok: it never holds the answer
+            back, the draft was the answer anyway. A draft that names files no tool read is not ok, without asking the
+            model: it is written again anyway, the next check sees the rest
+        """
+        if missing := unsourced(draft, self.__history()):
+            problems: list[str] = [UNSOURCED.format(path=path) for path in missing][:MAX_PROBLEMS]
+            log.info(f"[app] draft checked: files never read: {', '.join(missing)}")
+            return False, problems
+        messages: list[dict] = self.__view() + [
+            {"role": "assistant", "content": draft},
+            {"role": "user", "content": VERIFY_PROMPT + instruction(CRITIQUE)}
+        ]
+        try:
+            reply: Reply = self.__chat(messages, [], None, schema=CRITIQUE, think=False)
+        except ModelException as e:
+            log.warning(f"[app] the draft could not be checked, it goes as it is: {e.message}")
+            return True, []
+        data, errors = (None, ["cut"]) if reply.cut else checked(reply.content, CRITIQUE)
+        if errors:
+            log.warning(f"[app] the check of the draft is no verdict, it goes as it is: {'; '.join(errors)}")
+            return True, []
+        checks: list[dict] = data.get("checks") or []
+        problems: list[str] = [problem.strip() for problem in data["problems"] if problem.strip()]
+        # A claim its source does not confirm is a problem, even when the model forgets to say so
+        failed: list[dict] = [check for check in checks if not check["holds"]]
+        if failed and not problems:
+            problems = [f"{check['claim']} : {check['source']}" for check in failed]
+        problems = [problem[:PROBLEM_CHARS] for problem in problems][:MAX_PROBLEMS]
+        # Not ok without saying why: nothing to fix, asking again would give the same answer
+        ok: bool = (data["ok"] and not failed) or not problems
+        log.info(f"[app] draft checked: {'ok' if ok else 'problems: ' + '; '.join(problems)}, after:\n" + "\n".join(
+            f"- {check['claim']} ({check['source']}): {'holds' if check['holds'] else 'does not hold'}" for check in checks
+        ))
+        return ok, [] if ok else problems
 
     def __chat(self, messages: list[dict], tools: list[dict], stream: Callable | None,
                schema: dict | None = None, think: bool | None = None) -> Reply:
