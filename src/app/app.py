@@ -500,8 +500,6 @@ class App:
         """
         self.__bus.dispatch(CHAT_TURN_STARTED)
         rounds: int = self.__settings.get("chat.tools.maxdepth", 8)
-        # The calls of the last reply not answered yet: each of them must get an answer, even if cancelled
-        pending: list[ToolCall] = []
         nudged: bool = False
         emptied: bool = False
         # A reply can only be checked whole: with the guard, it is shown once checked, not as it is written
@@ -531,14 +529,7 @@ class App:
                     [tool for tool in self.__toolManager.all() if self.__refused[tool["function"]["name"]] < REFUSED_CALLS],
                     stream
                 )
-                calls: list[ToolCall] = []
-                for call in reply.tool_calls:
-                    if call not in calls and len(calls) < MAX_CALLS:
-                        calls.append(call)
-                ignored: int = len(reply.tool_calls) - len(calls)
-                if ignored:
-                    log.warning(f"[app] {len(reply.tool_calls)} calls in one reply: {ignored} ignored")
-                reply.tool_calls = calls
+                ignored: int = self.__keep_calls(reply)
                 if self.__guard is not None and reply.content:
                     self.__screen(question, reply)
                 # Nothing to read and no call: the model called a tool it is not offered, or wrote nothing. Never
@@ -585,33 +576,12 @@ class App:
                     self.session.add("user", NUDGE_PROMPT)
                     continue
 
-                pending = list(reply.tool_calls)
-                # The share of the context the results of this round may still take
-                room: float = ROUND
-                while pending:
-                    call: ToolCall = pending[0]
-                    key: str = f"{call.name} {json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)}"
-                    reason: str | None = None
-                    if made[key] >= SAME_CALLS:
-                        reason = REPEATED_CALL
-                        repeats += 1
-                    elif room < MIN_ROOM:
-                        reason = NO_ROOM
-                    else:
-                        made[key] += 1
-                    result: str = self.__call(call, refused=reason, most=min(MAX_RESULT, room))
-                    room -= share(result, self.__window.size, self.__window.ratio)
-                    if ignored and len(pending) == 1:
-                        result += IGNORED_CALLS.format(ignored)
-                    self.session.add("tool", result, tool_name=call.name)
-                    pending.pop(0)
+                repeats += self.__run_calls(reply.tool_calls, ignored, made)
                 if repeats >= MAX_REFUSED:
                     log.warning(f"[app] {repeats} calls refused for being the same again: the model goes round in circles")
                     self.__bus.dispatch(CHAT_TURN_ENDED, reason="loop", message=LOOP_MESSAGE)
                     return
         except KeyboardInterrupt:
-            for call in pending:
-                self.session.add("tool", CANCELLED_TOOL, tool_name=call.name)
             log.info("[app] turn cancelled by the user")
             self.__bus.dispatch(CHAT_TURN_ENDED, reason="cancelled", message=None)
             return
@@ -626,6 +596,54 @@ class App:
 
         log.warning(f"[app] stopped after {rounds} rounds of tool calls")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} tours d'appels d'outils.")
+
+    @staticmethod
+    def __keep_calls(reply: Reply) -> int:
+        """ Keep the first MAX_CALLS different calls of the reply: how many of them are left out (the same again, or too many) """
+        calls: list[ToolCall] = []
+        for call in reply.tool_calls:
+            if call not in calls and len(calls) < MAX_CALLS:
+                calls.append(call)
+        ignored: int = len(reply.tool_calls) - len(calls)
+        if ignored:
+            log.warning(f"[app] {len(reply.tool_calls)} calls in one reply: {ignored} ignored")
+        reply.tool_calls = calls
+        return ignored
+
+    def __run_calls(self, calls: list[ToolCall], ignored: int, made: Counter) -> int:
+        """
+            Run the calls of a reply, each result kept in the session, the last one telling the ignored calls. A call
+            made SAME_CALLS times already for this message (counted in made) is refused, as one whose results would
+            no longer fit in the context. How many were refused for being the same again: the model goes round in
+            circles. Cancelled, each call not answered yet still gets an answer
+        """
+        pending: list[ToolCall] = list(calls)
+        repeats: int = 0
+        # The share of the context the results of this round may still take
+        room: float = ROUND
+        try:
+            while pending:
+                call: ToolCall = pending[0]
+                key: str = f"{call.name} {json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)}"
+                reason: str | None = None
+                if made[key] >= SAME_CALLS:
+                    reason = REPEATED_CALL
+                    repeats += 1
+                elif room < MIN_ROOM:
+                    reason = NO_ROOM
+                else:
+                    made[key] += 1
+                result: str = self.__call(call, refused=reason, most=min(MAX_RESULT, room))
+                room -= share(result, self.__window.size, self.__window.ratio)
+                if ignored and len(pending) == 1:
+                    result += IGNORED_CALLS.format(ignored)
+                self.session.add("tool", result, tool_name=call.name)
+                pending.pop(0)
+        except KeyboardInterrupt:
+            for call in pending:
+                self.session.add("tool", CANCELLED_TOOL, tool_name=call.name)
+            raise
+        return repeats
 
     def __chat(self, messages: list[dict], tools: list[dict], stream: Callable | None,
                schema: dict | None = None, think: bool | None = None) -> Reply:
