@@ -25,7 +25,8 @@ CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an a
 # of the answer, checked next with reason.verify. step counts from 1 for each message
 REASONING_STEP    = "chat.reasoning.step"   # data: step, thought ("" if the model wrote none), tools (their names, [] for a draft)
 # The model checked its draft (reason.verify): ok, or what is wrong with it, for it to answer again (attempt counts
-# from 1, reason.attempts at most). A check the model could not give counts as ok: it never holds the answer back
+# from 1, reason.attempts + 1 at most: the last answer is checked too, and given whatever its check says). A check the
+# model could not give counts as ok: it never holds the answer back
 REASONING_CHECK   = "chat.reasoning.check"  # data: attempt, ok, problems ([] if ok)
 # How full the context of the model is: measured by Ollama after each reply, estimated when the session changes
 CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
