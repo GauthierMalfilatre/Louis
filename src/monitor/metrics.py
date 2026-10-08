@@ -122,6 +122,36 @@ def structured_stats(replies: list[dict]) -> dict:
         "attempts"      : mean([reply.get("attempts", 1) for reply in replies]),
     }
 
+def judged(evals: list[dict]) -> dict:
+    """
+        What the judge said of some answers: the means of their scores, and the share of their claims flagged.
+        faithfulness is the mean over the answers that read a source (the others have none)
+    """
+    done: list[dict] = [record for record in evals if record.get("status") == "ok"]
+    claims: int = sum(record.get("claims", 0) for record in done)
+    return {
+        "answers"     : len(evals),
+        "errors"      : len(evals) - len(done),
+        "faithfulness": mean([record["faithfulness"] for record in done if record.get("faithfulness") is not None]),
+        "relevance"   : mean([record["relevance"] for record in done if record.get("relevance") is not None]),
+        "coherence"   : mean([record["coherence"] for record in done if record.get("coherence") is not None]),
+        "claims"      : claims,
+        "contradicted": sum(record.get("contradicted", 0) for record in done),
+        "unverifiable": sum(record.get("unverifiable", 0) for record in done),
+        "flagged_rate": ratio(sum(record.get("contradicted", 0) + record.get("unverifiable", 0) for record in done), claims),
+    }
+
+def eval_stats(evals: list[dict]) -> dict:
+    """ The answers judged: all of them, and by prompt and model, to compare the versions of Louis """
+    by_version: dict[tuple, list[dict]] = {}
+    for record in evals:
+        by_version.setdefault((record.get("prompt"), record.get("model")), []).append(record)
+    return {
+        **judged(evals),
+        "versions": [{"prompt": prompt, "model": model, **judged(records)}
+                     for (prompt, model), records in by_version.items()],
+    }
+
 def tools_stats(tools: list[dict]) -> list[dict]:
     """ Each tool: how often it was called, how often it could not do it, how long it took. Most called first """
     by_name: dict[str, list[dict]] = {}
@@ -330,6 +360,7 @@ def summarize(records: list[dict], *, days: float | None = None, by: str | None 
         "tools": {"calls": len(tools), "errors": sum(1 for tool in tools if not tool.get("ok"))},
         "guard": sum(1 for record in records if record["type"] == "guard"),
         "structured": structured_stats([record for record in records if record["type"] == "structured"]),
+        "eval": eval_stats([record for record in records if record["type"] == "eval"]),
         "series": series(records, start, end, by),
         "configurations": rows,
         # The first one is where the period starts, not a change

@@ -56,6 +56,15 @@ RAG_FORGOTTEN      = "rag.forgotten"        # data: source, chunks (removed)
 # and dropped those under its threshold. Without it, score is the fusion of the index and nothing is dropped
 RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), path, kind and after (the filters on the files, None: none; after: "2026-09-30"), files (how many the filters kept, None without them), mode ("hybrid": keywords and meaning, "keyword"), reranker (its model, None if it did not rerank), candidates (found by the index), dropped (under the threshold), hits: [{source, path, start, end, score, fused (the score of the index, None if not reranked)}], rerank (seconds, None), duration (seconds, all of it)
 
+# The judge (eval/): an answer of Louis read again by a model, after its turn, against the sources its tools read.
+# claims: [{text, verdict ("supported", "contradicted", "unverifiable"), source (its number from 1, 0: none), evidence
+# (the passage quoted, "" none), quoted (the quote is really in the source), reason}]. faithfulness is the share of the
+# claims supported, None when the answer read no source or holds no fact; relevance and coherence go from 1 to 5.
+# EVAL_SCORED is told once per judgment, from the thread of the judge when it runs in the background: only the
+# monitoring and the log listen to it. EVAL_REPORT is what /eval shows, from the thread of the app: the interfaces
+EVAL_SCORED       = "eval.scored"         # data: id, session, model, prompt (its version), question, answer, sources: [{tool, arguments, chars}], judge (its model), status ("ok", "error"), error, faithfulness, relevance, relevance_reason, coherence, coherence_reason, claims, duration (seconds)
+EVAL_REPORT       = "eval.report"         # data: the same as EVAL_SCORED
+
 APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), commands: [{name, usage, description}]
 APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
 

@@ -13,6 +13,8 @@
 ##   rag     one look-up in the knowledge base: its query, how it searched, what it found, how long it took
 ##   turn    one message of the user answered: how it ended, how long the whole answer took, what it cost
 ##   structured  a reply asked as JSON (/json, --ask): its schema, whether it matched, after how many replies
+##   eval    an answer judged (eval/): its scores, and the claims its sources do not support. Written by the thread of
+##           the judge, once the turn is over: it names the answer by the session, the prompt and the model instead
 ## The records of a turn share its id. The long texts are cut: the whole conversation is in the database and the log.
 ## A tool that asks the user waits for the answer: the duration of the call and the latency of the turn count that
 ## time, waited tells how much of it was the user's (the metrics take it out)
@@ -24,11 +26,13 @@ from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, GUARD_TRIGGERED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, RAG_RETRIEVED, STRUCTURED_REPLY
+from events.event_list import EVAL_SCORED
 from config.settings import settings as default_settings
 from logger.logger import log, scrub
 import hashlib
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -39,7 +43,7 @@ VERSION: int = 1
 RUN_SETTINGS: tuple[str, ...] = (
     "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth", "guard.enabled",
     "rag.enabled", "rag.rerank.enabled", "rag.rerank.model", "rag.rerank.pool", "rag.rerank.min_score",
-    "rag.rerank.max_chars", "rag.embed.gpu"
+    "rag.rerank.max_chars", "rag.embed.gpu", "eval.enabled", "eval.model"
 )
 
 # Characters kept of each text: enough to know what it was about
@@ -118,6 +122,8 @@ class Recorder:
         # The prompts already written whole in this run
         self.__prompts  : set[str]          = set()
         self.__broken   : bool              = False
+        # The judge writes from its own thread: one record at a time
+        self.__lock     : threading.Lock    = threading.Lock()
 
     @property
     def path(self) -> str:
@@ -139,6 +145,7 @@ class Recorder:
         bus.subscribe(self.__on_structured, STRUCTURED_REPLY)
         bus.subscribe(self.__on_retrieved, RAG_RETRIEVED)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
+        bus.subscribe(self.__on_eval, EVAL_SCORED)
         return self
 
     def __on_started(self, event: Event) -> None:
@@ -331,8 +338,44 @@ class Recorder:
             output=text(turn.output, OUTPUT_CHARS)
         )
 
+    def __on_eval(self, event: Event) -> None:
+        """
+            An answer judged: its scores, and the claims the sources do not support (cut as any text). From the thread
+            of the judge: only the data of the event is read, never the turn running
+        """
+        data: dict = event.data
+        claims: list[dict] = data["claims"]
+        self.__write(
+            "eval",
+            sample=data["id"],
+            session=data["session"],
+            model=data["model"],
+            prompt=data["prompt"],
+            judge=data["judge"],
+            status=data["status"],
+            error=data["error"],
+            faithfulness=data["faithfulness"],
+            relevance=data["relevance"],
+            coherence=data["coherence"],
+            claims=len(claims),
+            supported=sum(1 for claim in claims if claim["verdict"] == "supported"),
+            contradicted=sum(1 for claim in claims if claim["verdict"] == "contradicted"),
+            unverifiable=sum(1 for claim in claims if claim["verdict"] == "unverifiable"),
+            flagged=[{"claim": text(claim["text"], ARGUMENT_CHARS), "verdict": claim["verdict"], "source": claim["source"]}
+                     for claim in claims if claim["verdict"] != "supported"],
+            sources=[f"{source['tool']} {json.dumps(arguments(source['arguments']), ensure_ascii=False, default=str)}"
+                     for source in data["sources"]],
+            duration=data["duration"],
+            input=text(data["question"], INPUT_CHARS)
+        )
+
     def __write(self, kind: str, **fields) -> None:
         """ Append one record. A file that can not be written stops the recording, told once: louis goes on without """
+        with self.__lock:
+            self.__append(kind, fields)
+
+    def __append(self, kind: str, fields: dict) -> None:
+        """ Append one record, under the lock """
         if self.__broken:
             return
         record: dict = {

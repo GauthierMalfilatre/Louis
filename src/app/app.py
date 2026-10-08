@@ -48,6 +48,8 @@ from command.impl.command_share import ShareCommand
 from command.impl.command_shares import SharesCommand
 from command.impl.command_unshare import UnshareCommand
 from command.impl.command_index import IndexCommand, UnindexCommand
+from command.impl.command_eval import EvalCommand
+from eval.evaluator import Evaluator
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -70,9 +72,10 @@ ANNOUNCE: re.Pattern = re.compile(
     re.IGNORECASE | re.MULTILINE
 )
 
-# Logged whole elsewhere (the reply and its stats by the model, the tool calls by __call): not once more per event
+# Logged whole elsewhere (the reply and its stats by the model, the tool calls by __call, the judgments by the
+# evaluator): not once more per event
 UNLOGGED: frozenset[str] = frozenset({
-    CHAT_TEXT, CHAT_THINKING, CHAT_REPLY, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
+    CHAT_TEXT, CHAT_THINKING, CHAT_REPLY, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED, EVAL_SCORED, EVAL_REPORT
 })
 
 # Where the context Louis adds starts, after the system prompt
@@ -180,6 +183,7 @@ class App:
             .register(ToggleThinkCommand())\
             .register(IndexCommand())\
             .register(UnindexCommand())\
+            .register(EvalCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -188,6 +192,10 @@ class App:
         self.__guard: Guard | None = Guard(self.__bus) if settings.get("guard.enabled", False) else None
         # The calls the guard refused in the current turn, by tool: counted again from 0 on each message
         self.__refused: Counter[str] = Counter()
+
+        # The answers judged once their turn is done (eval.enabled), or the last one when /eval asks. It only listens to
+        # the bus: what it reads is what the guard let through
+        self.__evaluator: Evaluator = Evaluator(settings, self.__bus)
 
         self.__stream: Interface = stream
         # The interface shows what happens (the conversation, the commands...) by listening to the bus
@@ -314,6 +322,11 @@ class App:
     def seen_files(self) -> SeenFiles:
         """ Get the files the model has read or written in this session, for edit_file to check """
         return self.__seen_files
+
+    @property
+    def evaluator(self) -> Evaluator:
+        """ Get the evaluator, for /eval to show the judgment of the last answer """
+        return self.__evaluator
 
     @property
     def knowledge(self) -> Knowledge | None:

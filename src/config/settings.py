@@ -45,7 +45,7 @@ settings: dict[str] = {
     "structured.attempts"  : 3,
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
-    "guard.enabled"        : False,
+    "guard.enabled"        : True,
     # Louis signs the commits it makes with a "Co-authored-by" line: the user stays their author. For GitHub to show
     # Louis on the commits, it must be the noreply address of a GitHub account (Settings > Emails). Empty: no line
     "git.coauthor"         : "Louis <336655023+louis-sensai@users.noreply.github.com>",
@@ -105,5 +105,24 @@ settings: dict[str] = {
     "rag.rerank.min_score" : 0.05,
     # What it reads of each passage: its time grows with it, and the start of a passage tells what it is about
     "rag.rerank.max_chars" : 1000,
+    # Evaluation (eval/): a model, the judge, reads each answer of Louis again once its turn is done. It splits it into
+    # claims and checks each one against what the tools read (the sources): supported, contradicted, or unverifiable.
+    # It also scores the relevance and the coherence of the answer, from 1 to 5. The scores go to the traces
+    # (louis --dashboard, by prompt and model), /eval shows those of the last answer with the claims it flags.
+    # enabled: every answer is judged; off, only the one /eval asks for. background: in a thread, without making the
+    # user wait (it waits itself for Louis to be done with a turn before asking the model). sample: the share of the
+    # answers judged (1.0 all of them): each one costs 2 or 3 requests to the model
+    "eval.enabled"         : True,
+    "eval.background"      : True,
+    "eval.sample"          : 1.0,
+    # The judge. None: the chat model, already loaded (any other one makes Ollama load a second model). A model
+    # tends to like its own answers: another family judges more fairly, if the GPU holds both. context: its num_ctx
+    # when it is not the chat model (the chat's otherwise: another one would make Ollama reload it)
+    "eval.model"           : None,
+    "eval.context"         : 16384,
+    "eval.predict"         : 2048,
+    "eval.timeout"         : 300.0,
+    # The tools whose results are sources: what an answer may rely on. tree, mkdir, write_file... tell nothing to check
+    "eval.sources"         : ["search_knowledge", "web_search", "cat_file", "search", "git", "run_code"],
 
 }
