@@ -62,6 +62,8 @@ RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), p
 # claims supported, None when the answer read no source or holds no fact; relevance and coherence go from 1 to 5.
 # EVAL_SCORED is told once per judgment, from the thread of the judge when it runs in the background: only the
 # monitoring and the log listen to it. EVAL_REPORT is what /eval shows, from the thread of the app: the interfaces
+# EVAL_STARTED: the judge starts on an answer (from its thread too), until its EVAL_SCORED: the interfaces may show it works
+EVAL_STARTED      = "eval.started"        # data: id (of the answer, as EVAL_SCORED names it)
 EVAL_SCORED       = "eval.scored"         # data: id, session, model, prompt (its version), question, answer, sources: [{tool, arguments, chars}], judge (its model), status ("ok", "error"), error, faithfulness, relevance, relevance_reason, coherence, coherence_reason, claims, duration (seconds)
 EVAL_REPORT       = "eval.report"         # data: the same as EVAL_SCORED
 

@@ -33,7 +33,7 @@ UNVERIFIABLE: str = "unverifiable"
 VERDICTS: tuple[str, ...] = (SUPPORTED, CONTRADICTED, UNVERIFIABLE)
 
 # Claims checked at most: the most important ones, the judge's time grows with them
-MAX_CLAIMS: int = 12
+MAX_CLAIMS: int = 8
 # The sources take this share of the context of the judge at most, a token being about this many characters
 SOURCES_SHARE  : float = 0.5
 CHARS_PER_TOKEN: int   = 3

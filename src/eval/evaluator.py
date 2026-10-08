@@ -16,7 +16,7 @@ from eval.judge import Judge, Judgment
 from eval.sample import Sample
 from events.event import Event
 from events.event_bus import EventBus
-from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, EVAL_SCORED
+from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, EVAL_STARTED, EVAL_SCORED
 from logger.logger import log
 import queue
 import random
@@ -105,6 +105,7 @@ class Evaluator:
 
     def __run(self, job: Job) -> None:
         """ Judge an answer and tell it: never raises, a failed judge is a judgment with an error """
+        self.__bus.dispatch(EVAL_STARTED, id=job.sample.id)
         try:
             judgment: Judgment = self.__judge.judge(job.sample)
         except Exception as e:
