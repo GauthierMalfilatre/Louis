@@ -11,6 +11,8 @@ from tool.tool_call import ToolCall
 class Reply:
     content   : str            = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    # What the model thought before replying (think on), "" without it: kept for the reasoning to be traced
+    thinking  : str            = ""
     # The reply reached the most tokens it may take (chat.predict): it was cut before its end
     cut       : bool           = False
     # What the request cost, as Ollama counted it: the tokens of the prompt it read, and of the reply it generated
