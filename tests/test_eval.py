@@ -10,10 +10,10 @@ import sys
 import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 from eval.collector import Collector
-from eval.focus import focus, windows, terms, NOTHING
+from eval.focus import focus, windows, terms, names, anchors, NOTHING
 from eval.evaluator import Evaluator
 from eval.judge import Judge, JudgeError, CLAIMS_SCHEMA, VERIFY_SCHEMA, RUBRIC_SCHEMA, fit, sources_text, NO_SOURCE
-from eval.judge import normalized
+from eval.judge import normalized, merged
 from eval.metrics import summary_of, deltas
 from eval.sample import Sample, Source
 from events.event_bus import EventBus
@@ -25,20 +25,29 @@ SOURCE: str = "def load(path):\n    return json.load(open(path))\n"
 
 class ScriptedJudge(Judge):
     """ A judge whose model answers what the test says, by step; and that counts the requests """
-    def __init__(self, claims=None, verdicts=None, rubric=None, fail=False):
-        super().__init__("http://localhost:0", "juge", 4096)
+    def __init__(self, claims=None, verdicts=None, rubric=None, fail=False, again=None, recheck=0):
+        """ again: the verdicts of the second looks, one list per request (the flagged claims, in order) """
+        super().__init__("http://localhost:0", "juge", 4096, recheck=recheck)
         self.replies = {
             id(CLAIMS_SCHEMA): {"claims": claims or []},
             id(VERIFY_SCHEMA): {"verdicts": verdicts or []},
             id(RUBRIC_SCHEMA): rubric or {"relevance": {"reason": "r", "score": 4}, "coherence": {"reason": "c", "score": 5}},
         }
+        self.again: list[list[dict]] = list(again or [])
         self.asked: list[str] = []
+        self.prompts: list[str] = []
         self.fail: bool = fail
 
-    def ask(self, instructions, prompt, schema):
-        self.asked.append({id(CLAIMS_SCHEMA): "claims", id(VERIFY_SCHEMA): "verify", id(RUBRIC_SCHEMA): "rubric"}[id(schema)])
+    def ask(self, instructions, prompt, schema, examples=()):
+        step: str = {id(CLAIMS_SCHEMA): "claims", id(VERIFY_SCHEMA): "verify", id(RUBRIC_SCHEMA): "rubric"}[id(schema)]
+        if step == "verify" and "verify" in self.asked:
+            step = "again"
+        self.asked.append(step)
+        self.prompts.append(prompt)
         if self.fail:
             raise JudgeError("Ollama ne répond pas")
+        if step == "again":
+            return {"verdicts": self.again.pop(0)}
         return self.replies[id(schema)]
 
 def sample(sources=True) -> Sample:
@@ -104,11 +113,11 @@ class JudgeTest(unittest.TestCase):
         judge = ScriptedJudge(
             claims=["load lit un fichier JSON.", "load met le fichier en cache.", "load renvoie une liste.", "inventée"],
             verdicts=[
-                {"claim": 1, "reason": "dit", "verdict": "supported", "source": 1, "evidence": "return json.load(open(path))"},
-                {"claim": 2, "reason": "rien", "verdict": "unverifiable", "source": 0, "evidence": ""},
+                {"claim": 1, "verdict": "supported", "source": 1, "evidence": "return json.load(open(path))"},
+                {"claim": 2, "verdict": "unverifiable", "source": 0, "evidence": ""},
                 # Supported, but by no source: a guess
-                {"claim": 3, "reason": "?", "verdict": "supported", "source": 9, "evidence": "x"},
-                {"claim": 12, "reason": "hors liste", "verdict": "supported", "source": 1, "evidence": ""},
+                {"claim": 3, "verdict": "supported", "source": 9, "evidence": "x"},
+                {"claim": 12, "verdict": "supported", "source": 1, "evidence": ""},
             ])
         judgment = judge.judge(sample())
         self.assertEqual(judge.asked, ["claims", "verify", "rubric"])
@@ -121,11 +130,65 @@ class JudgeTest(unittest.TestCase):
 
     def test_a_contradiction_comes_first_and_a_made_up_quote_is_told(self):
         judge = ScriptedJudge(claims=["a", "b"], verdicts=[
-            {"claim": 1, "reason": "", "verdict": "unverifiable", "source": 0, "evidence": ""},
-            {"claim": 2, "reason": "", "verdict": "contradicted", "source": 1, "evidence": "return yaml.load(f)"}])
+            {"claim": 1, "verdict": "unverifiable", "source": 0, "evidence": ""},
+            {"claim": 2, "verdict": "contradicted", "source": 1, "evidence": "return yaml.load(f)"}])
         judgment = judge.judge(sample())
         self.assertEqual([c.text for c in judgment.flagged], ["b", "a"])
         self.assertFalse(judgment.claims[1].quoted)
+
+    def test_a_second_look_at_the_flagged_claims_only(self):
+        verdicts = [{"claim": 1, "verdict": "supported", "source": 1, "evidence": "return json.load(open(path))"},
+                    {"claim": 2, "verdict": "unverifiable", "source": 0, "evidence": ""},
+                    {"claim": 3, "verdict": "unverifiable", "source": 0, "evidence": ""},
+                    {"claim": 4, "verdict": "contradicted", "source": 1, "evidence": "def load(path):"}]
+        judge = ScriptedJudge(claims=["lit du JSON", "ouvre le fichier", "met en cache", "prend un chemin"], verdicts=verdicts,
+                              recheck=3, again=[
+            # Found this time, with a real quote: it wins
+            [{"claim": 1, "verdict": "supported", "source": 1, "evidence": "open(path)"}],
+            # A quote the source does not hold: the first verdict stays
+            [{"claim": 1, "verdict": "supported", "source": 1, "evidence": "lru_cache"}],
+            # A contradiction not found again is no longer told
+            [{"claim": 1, "verdict": "unverifiable", "source": 0, "evidence": ""}]])
+        judgment = judge.judge(sample())
+        self.assertEqual(judge.asked, ["claims", "verify", "again", "again", "again", "rubric"])
+        self.assertEqual([c.verdict for c in judgment.claims], ["supported", "supported", "unverifiable", "unverifiable"])
+        self.assertEqual(judgment.claims[1].evidence, "open(path)")
+        # Each second look reads its claim alone
+        self.assertIn("1. ouvre le fichier", judge.prompts[2])
+        self.assertNotIn("lit du JSON", judge.prompts[2])
+
+    def test_nothing_flagged_no_second_look(self):
+        judge = ScriptedJudge(claims=["lit du JSON"], verdicts=[
+            {"claim": 1, "verdict": "unverifiable", "source": 0, "evidence": ""}], recheck=3)
+        judge.judge(sample())
+        # One claim was already checked alone
+        self.assertEqual(judge.asked, ["claims", "verify", "rubric"])
+
+    def test_the_judge_is_told_where_an_exact_name_is(self):
+        judge = ScriptedJudge(claims=["`load` lit un fichier avec json.load", "elle met en cache"])
+        judge.judge(sample())
+        self.assertIn("1. `load` lit un fichier avec json.load  (cité tel quel dans : load → source 1, json.load → source 1)",
+                      judge.prompts[1])
+        self.assertIn("2. elle met en cache\n", judge.prompts[1] + "\n")
+
+    def test_the_items_of_a_list_are_one_claim(self):
+        self.assertEqual(merged([
+            "La fonction evaluate calcule la moyenne des récompenses.",
+            "La fonction evaluate calcule l'écart-type des récompenses.",
+            "La fonction evaluate calcule le minimum.",
+            "Le script génère un graphique chart.png.",
+            "Le script génère un fichier CSV results.csv.",
+            "La classe Server écrit ses journaux.",
+            "La classe Server écoute le port 8080.",
+        ]), [
+            "La fonction evaluate calcule la moyenne des récompenses, l'écart-type des récompenses, le minimum.",
+            # Four words alike: one list
+            "Le script génère un graphique chart.png, fichier CSV results.csv.",
+            # Three only: two facts
+            "La classe Server écrit ses journaux.",
+            "La classe Server écoute le port 8080.",
+        ])
+        self.assertEqual(merged(["Un seul fait."]), ["Un seul fait."])
 
     def test_a_quote_over_several_numbered_lines_is_found(self):
         self.assertIn(normalized("def load(path):\n return json.load(open(path))"),
@@ -152,6 +215,22 @@ class FocusTest(unittest.TestCase):
     LONG: str = "\n".join([f"{i:4} | x_{i} = compute_{i}(value)" for i in range(1, 200)]
                           + ["200 | # The same call made this many times is refused", "201 | SAME_CALLS : int = 2"]
                           + [f"{i:4} | y_{i} = other_{i}()" for i in range(202, 400)])
+
+    def test_exact_names_of_a_claim(self):
+        self.assertEqual(names("Un graphique `comparison.png` et results.csv, par evaluate_all_models et maxDepth"),
+                         ["comparison.png", "results.csv", "evaluate_all_models", "maxDepth"])
+        self.assertEqual(names("La fonction lit le fichier de réglages."), [])
+        self.assertEqual(anchors("écrit `results.csv`", ["df.to_csv('results.csv')", "rien"]), [("results.csv", 1)])
+
+    def test_the_window_of_an_exact_name_is_kept_on_top_of_the_others(self):
+        # Every window speaks of rewards: the words and the cross-encoder would keep others than the one of the file
+        long = "\n".join([f"{i:4} | reward_{i} = rewards.mean() + rewards.std()" for i in range(1, 300)]
+                         + ["300 | df.to_csv(os.path.join(runs_dir, 'results.csv'))"])
+        claim = "Les rewards (mean, std) sont écrites dans `results.csv`"
+        text, = focus([long], [claim], lambda claim, texts: [1.0] + [0.0] * (len(texts) - 1))
+        self.assertIn("results.csv", text)
+        # The others are still there: the name is on top, never instead
+        self.assertIn("reward_", text)
 
     def test_windows_cover_every_line_and_overlap(self):
         found = windows(["\n".join(str(i) for i in range(31))])
@@ -240,8 +319,8 @@ class MetricsTest(unittest.TestCase):
         Recorder(path).bind(bus)
         for prompt in ("v1", "v2"):
             judgment = ScriptedJudge(claims=["a", "b"], verdicts=[
-                {"claim": 1, "reason": "", "verdict": "supported", "source": 1, "evidence": ""},
-                {"claim": 2, "reason": "", "verdict": "contradicted", "source": 1, "evidence": ""}]).judge(sample())
+                {"claim": 1, "verdict": "supported", "source": 1, "evidence": ""},
+                {"claim": 2, "verdict": "contradicted", "source": 1, "evidence": ""}]).judge(sample())
             judgment.sample.prompt = prompt
             bus.dispatch(EVAL_SCORED, **judgment.to_dict())
         with open(path, encoding="utf-8") as file:

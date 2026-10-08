@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
 from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
-from events.event_list import EVAL_REPORT
+from events.event_list import EVAL_REPORT, GUARD_RELOADS
 import json
 import os
 import re
@@ -162,6 +162,7 @@ class CLI(Interface):
         bus.subscribe(self.__on_rag_sources, RAG_SOURCES)
         bus.subscribe(self.__on_rag_forgotten, RAG_FORGOTTEN)
         bus.subscribe(self.__on_eval_report, EVAL_REPORT)
+        bus.subscribe(lambda event: (self._newline(), self.out(f"⚠ {event.data['message']}", dim=True)), GUARD_RELOADS)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -394,8 +395,12 @@ class CLI(Interface):
             faithful: str = (f"{round(data['faithfulness'] * 100)} %  ({supported} affirmation{'s' if supported > 1 else ''}"
                              f" sur {len(claims)} appuyée{'s' if supported > 1 else ''} par {sources} source{'s' if sources > 1 else ''})")
         else:
-            faithful = "–  (aucune source lue : réponse de mémoire)" if not sources else "–  (aucun fait à vérifier)"
-        self.out(f"⚖ Dernière réponse, notée par {data['judge']} en {data['duration']:.1f} s")
+            faithful = "aucune source lue : réponse de mémoire" if not sources else "aucun fait à vérifier"
+        spent: dict = data["spent"]
+        detail: str = f", dont {spent['generation']:.0f} s à écrire {spent['completion_tokens']} tokens"
+        if spent["load"] >= 1.0:
+            detail += f" et {spent['load']:.0f} s à recharger le modèle"
+        self.out(f"⚖ Dernière réponse, notée par {data['judge']} en {data['duration']:.1f} s{detail}")
         self.out(f"  fidélité aux sources  {faithful}")
         self.out(f"  pertinence            {data['relevance']}/5  {data['relevance_reason']}", dim=True)
         self.out(f"  cohérence             {data['coherence']}/5  {data['coherence_reason']}", dim=True)

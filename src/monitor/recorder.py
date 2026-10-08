@@ -366,6 +366,12 @@ class Recorder:
             sources=[f"{source['tool']} {json.dumps(arguments(source['arguments']), ensure_ascii=False, default=str)}"
                      for source in data["sources"]],
             duration=data["duration"],
+            # Where the time of the judge went: a load is a reload of the model (another num_ctx, another model)
+            requests=data["spent"]["requests"],
+            load=data["spent"]["load"],
+            generation=data["spent"]["generation"],
+            prompt_tokens=data["spent"]["prompt_tokens"],
+            completion_tokens=data["spent"]["completion_tokens"],
             input=text(data["question"], INPUT_CHARS)
         )
 

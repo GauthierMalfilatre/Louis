@@ -122,6 +122,9 @@ settings: dict[str] = {
     "eval.context"         : 16384,
     "eval.predict"         : 2048,
     "eval.timeout"         : 300.0,
+    # Claims flagged (unverifiable, contradicted) looked at a second time, each alone with its own passages: a small judge
+    # misses some in a long list. One short request per claim flagged, nothing when none is. 0: never
+    "eval.recheck"         : 3,
     # The tools whose results are sources: what an answer may rely on. tree, mkdir, write_file... tell nothing to check
     "eval.sources"         : ["search_knowledge", "web_search", "cat_file", "search", "git", "run_code"],
 

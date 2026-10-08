@@ -17,7 +17,7 @@
 ##
 from collections.abc import Callable
 from dataclasses import dataclass, field, asdict
-from eval.focus import focus
+from eval.focus import focus, anchors
 from eval.sample import Sample
 from rag.reranker import Reranker
 from structured.reply import checked, instruction, retry
@@ -25,6 +25,7 @@ from logger.logger import log
 import json
 import re
 import requests
+import threading
 import time
 
 SUPPORTED   : str = "supported"
@@ -39,11 +40,16 @@ SOURCES_SHARE  : float = 0.5
 CHARS_PER_TOKEN: int   = 3
 # Replies asked of the judge for one step: the first one, and one more with what did not match its schema
 ATTEMPTS: int = 2
+# Flagged claims looked at again, each alone with its passages (eval.recheck)
+RECHECK: int = 3
+# Claims in a row that open with this many words alike are the items of one list: merged into one
+MERGE_WORDS: int = 4
 
 LINE_NUMBER: re.Pattern = re.compile(r"(?m)^\s*\d+ \| ?")
 
 NO_SOURCE: str = "aucune source : la réponse n'a rien lu pour l'appuyer"
 UNCHECKED: str = "le juge ne l'a pas vérifiée"
+NOT_FOUND: str = "le juge n'a trouvé aucun passage des sources qui en parle"
 
 EXTRACT: str = (
     "Tu découpes la réponse d'un assistant de code en affirmations atomiques : chacune dit un seul fait, se comprend "
@@ -51,12 +57,29 @@ EXTRACT: str = (
     "affirme sans rien ajouter ni corriger. Un fait porte sur le projet, ses fichiers, son code, une bibliothèque, une "
     "commande, un résultat, une date. Laisse de côté les politesses, les questions, les propositions (« veux-tu "
     "que… »), les conseils qui n'affirment rien, et le code lui-même (mais garde ce que la réponse dit du code). "
+    "Laisse aussi de côté les affirmations triviales, qui ne pourraient pas être fausses sans que toute la réponse "
+    "le soit : ce qui reprend la question, le fichier ou le projet analysé (« le fichier analysé est server.py »), le "
+    "plan de la réponse. Une énumération de choses de même nature est UNE affirmation (« la classe gère les "
+    "connexions, les déconnexions et les erreurs »), pas une par élément : la place va aux faits différents. "
     f"Une réponse sans fait donne une liste vide. Au plus {MAX_CLAIMS} affirmations : les plus importantes."
+)
+# A small judge does what it sees done far more than what it is told: given in the instructions only, qwen3.5:9b kept
+# "the file analysed is ..." and one claim per item of a list. So the judge reads a first exchange where it did it right
+# (the prompt, then its reply), on a project of no one, before the answer to split
+EXTRACT_EXAMPLE: tuple[str, dict] = (
+    "Question :\nQue fait la classe Server de server.py ?\n\nRéponse :\nD'après le fichier server.py, la classe Server "
+    "gère trois choses :\n1. les connexions (connect)\n2. les déconnexions (disconnect)\n3. les erreurs (on_error)\n\n"
+    "Elle écrit ses journaux dans server.log, et écoute par défaut le port 8080.",
+    {"claims": [
+        "La classe Server gère les connexions (connect), les déconnexions (disconnect) et les erreurs (on_error).",
+        "La classe Server écrit ses journaux dans server.log.",
+        "La classe Server écoute par défaut le port 8080.",
+    ]}
 )
 VERIFY: str = (
     "Tu vérifies des affirmations contre des sources : ce que les outils d'un assistant de code ont lu (fichiers, "
-    "recherches, commandes). Pour chaque affirmation, par son numéro, explique en une phrase puis décide, en ne "
-    "t'appuyant QUE sur les sources, jamais sur ce que tu sais par ailleurs :\n"
+    "recherches, commandes). Pour chaque affirmation, par son numéro, cherche d'abord le passage qui en parle, puis "
+    "décide, en ne t'appuyant QUE sur les sources, jamais sur ce que tu sais par ailleurs :\n"
     "- supported : une source le dit ou l'implique directement. Donne son numéro et recopie le passage exact qui le dit "
     "(une ligne, mot pour mot).\n"
     "- contradicted : une source dit le contraire. Donne son numéro et recopie le passage qui le contredit.\n"
@@ -90,17 +113,16 @@ VERIFY_SCHEMA: dict = {
             "type": "array",
             "items": {
                 "type": "object",
-                # The reason first: the judge decides once it has said why
+                # The quote first: the judge decides once it has found the passage. No reason written: the quote is
+                # the reason, and a sentence per claim was most of the time of the judge (4.6 tokens/s on a laptop)
                 "properties": {
                     "claim": {"type": "integer", "minimum": 1, "description": "le numéro de l'affirmation"},
-                    "reason": {"type": "string", "description": "une phrase : ce que les sources disent de "
-                                                                "l'affirmation, ou ce qui leur manque pour trancher"},
-                    "verdict": {"enum": list(VERDICTS)},
                     "source": {"type": "integer", "minimum": 0, "description": "le numéro de la source, 0 si aucune"},
                     "evidence": {"type": "string", "description": "le passage de la source recopié mot pour mot, "
-                                                                  "vide si aucune"}
+                                                                  "vide si aucune"},
+                    "verdict": {"enum": list(VERDICTS)}
                 },
-                "required": ["claim", "reason", "verdict", "source", "evidence"]
+                "required": ["claim", "source", "evidence", "verdict"]
             }
         }
     },
@@ -136,6 +158,22 @@ class Claim:
     quoted  : bool = False
 
 @dataclass(slots=True)
+class Spent:
+    """ What the requests of a judgment cost, as Ollama counted it: seconds and tokens """
+    requests         : int   = 0
+    # Loading the model: 0 when it was in memory as the judge wants it. Anything else is a reload
+    load             : float = 0.0
+    prompt_tokens    : int   = 0
+    prompt_eval      : float = 0.0
+    completion_tokens: int   = 0
+    generation       : float = 0.0
+
+    def rounded(self) -> "Spent":
+        """ The same, its seconds rounded to the millisecond """
+        return Spent(self.requests, round(self.load, 3), self.prompt_tokens, round(self.prompt_eval, 3),
+                     self.completion_tokens, round(self.generation, 3))
+
+@dataclass(slots=True)
 class Judgment:
     """ The scores of a sample. status "error": the judge failed, error says why, the scores are None """
     sample          : Sample
@@ -149,6 +187,7 @@ class Judgment:
     coherence       : int | None  = None
     coherence_reason: str         = ""
     duration        : float       = 0.0
+    spent           : Spent       = field(default_factory=Spent)
 
     @property
     def flagged(self) -> list[Claim]:
@@ -168,7 +207,8 @@ class Judgment:
             "relevance": self.relevance, "relevance_reason": self.relevance_reason,
             "coherence": self.coherence, "coherence_reason": self.coherence_reason,
             "claims": [asdict(claim) for claim in self.claims],
-            "duration": self.duration
+            "duration": self.duration,
+            "spent": asdict(self.spent)
         }
 
 def fit(lengths: list[int], budget: int) -> list[int]:
@@ -204,6 +244,43 @@ def normalized(text: str) -> str:
     """
     return " ".join(LINE_NUMBER.sub("", text).lower().split())
 
+def merged(texts: list[str]) -> list[str]:
+    """
+        The claims, those that follow each other with the same first MERGE_WORDS words or more made one: the items of a
+        list ("La fonction f calcule la moyenne.", "La fonction f calcule le minimum.") that qwen3.5:9b splits whatever it
+        is told or shown. "La fonction f calcule la moyenne, le minimum."
+    """
+    groups: list[list[tuple[str, list[str]]]] = []
+    for text in texts:
+        words: list[str] = text.rstrip(" .;").split()
+        if groups:
+            last: list[str] = groups[-1][0][1]
+            shared: int = next((i for i, (a, b) in enumerate(zip(last, words)) if a != b), min(len(last), len(words)))
+            if shared >= MERGE_WORDS and shared < len(words):
+                groups[-1].append((text, words))
+                continue
+        groups.append([(text, words)])
+    claims: list[str] = []
+    for group in groups:
+        if len(group) == 1:
+            claims.append(group[0][0])
+            continue
+        # The opening the group shares is the shortest one of its claims
+        first: list[str] = group[0][1]
+        start: int = min(next((i for i, (a, b) in enumerate(zip(first, words)) if a != b), len(words)) for _, words in group[1:])
+        claims.append(" ".join(first[:start]) + " " + ", ".join(" ".join(words[start:]) for _, words in group) + ".")
+    return claims
+
+def better(first: Claim, again: Claim) -> bool:
+    """
+        Whether the second look at a flagged claim wins over the first verdict: a verdict backed by a quote really in
+        the source (a judge also makes up its quotes), or a contradiction the second look could not find again (it
+        must be found twice to be told)
+    """
+    if again.verdict != UNVERIFIABLE:
+        return again.quoted and (again.verdict, again.source) != (first.verdict, first.source)
+    return first.verdict == CONTRADICTED
+
 def faithfulness(claims: list[Claim], sourced: bool) -> float | None:
     """ The share of the claims supported: None without a source or a claim, there is nothing to be faithful to """
     if not sourced or not claims:
@@ -214,7 +291,7 @@ class Judge:
     """ Judge Class, to score the answers of Louis with a model of Ollama """
     def __init__(self, uri: str, model: str, context: int, *, keepalive: str = "30m", predict: int = 2048,
                  timeout: float = 300.0, before: Callable[[], None] | None = None,
-                 rerank: Callable[[str, list[str]], list[float]] | None = None):
+                 rerank: Callable[[str, list[str]], list[float]] | None = None, recheck: int = RECHECK):
         """
             Init the judge. context is its num_ctx: the chat's when it is the chat model (another one would make Ollama
             reload it). before is called before each request: the evaluator waits there for Louis to be done with a turn.
@@ -228,6 +305,10 @@ class Judge:
         self.__timeout  : float = timeout
         self.__before   : Callable[[], None] | None = before
         self.__rerank   : Callable[[str, list[str]], list[float]] | None = rerank
+        # What the requests of the judgment being made cost, for each thread judging
+        self.__spent    : threading.local = threading.local()
+        # Flagged claims looked at again, each alone: 0 never
+        self.__recheck  : int   = max(0, recheck)
 
     @classmethod
     def from_settings(cls, settings: dict, before: Callable[[], None] | None = None) -> "Judge":
@@ -245,7 +326,7 @@ class Judge:
             rerank = reranker.score
         return cls(settings["chat.uri"], model, context, keepalive=settings.get("chat.keepalive", "30m"),
                    predict=settings.get("eval.predict", 2048), timeout=settings.get("eval.timeout", 300.0), before=before,
-                   rerank=rerank)
+                   rerank=rerank, recheck=settings.get("eval.recheck", RECHECK))
 
     @property
     def model(self) -> str:
@@ -256,6 +337,9 @@ class Judge:
         """ Score a sample: whatever goes wrong is told in the judgment (status "error"), never raised """
         start: float = time.perf_counter()
         judgment: Judgment = Judgment(sample, self.__model)
+        # Per thread: /eval may judge while the background does
+        spent: Spent = Spent()
+        self.__spent.value = spent
         try:
             judgment.claims = self.claims(sample)
             if judgment.claims:
@@ -268,49 +352,80 @@ class Judge:
             log.warning(f"[eval] the judge failed on {sample.id}: {e.message}")
             judgment = Judgment(sample, self.__model, status="error", error=e.message)
         judgment.duration = round(time.perf_counter() - start, 3)
+        judgment.spent = spent.rounded()
         return judgment
 
     def claims(self, sample: Sample) -> list[Claim]:
         """ The facts the answer states, read without the sources: the judge must not pick only those they hold """
-        data: dict = self.ask(EXTRACT, f"Question :\n{sample.question}\n\nRéponse :\n{sample.answer}", CLAIMS_SCHEMA)
-        texts: list[str] = [" ".join(text.split()) for text in data["claims"]]
+        data: dict = self.ask(EXTRACT, f"Question :\n{sample.question}\n\nRéponse :\n{sample.answer}", CLAIMS_SCHEMA,
+                              examples=[EXTRACT_EXAMPLE])
+        texts: list[str] = merged([" ".join(text.split()) for text in data["claims"]])
         # Without a source, there is nothing to check them against
         reason: str = "" if sample.sources else NO_SOURCE
         return [Claim(text, reason=reason) for text in dict.fromkeys(texts) if text][:MAX_CLAIMS]
 
     def verify(self, sample: Sample, claims: list[Claim]) -> None:
-        """ What the sources say of each claim, set on it. A claim the judge forgot stays unverifiable """
+        """
+            What the sources say of each claim, set on it. A claim the judge forgot stays unverifiable. Then a second
+            look at the claims flagged (recheck at most), each one alone with its own passages: a small judge misses
+            the end of a list of claims, or a fact the code only implies (savefig("chart.png"): a chart is made).
+            It only costs time when something is flagged, one short request per claim
+        """
         if not sample.sources:
             return
-        budget: int = int(self.__context * SOURCES_SHARE * CHARS_PER_TOKEN)
-        listed: str = "\n".join(f"{number}. {claim.text}" for number, claim in enumerate(claims, 1))
-        # Only the passages the claims are about: a small judge does not find a line in a long file. The quotes are
-        # still looked for in the whole sources
-        texts: list[str] = focus([source.text for source in sample.sources], [claim.text for claim in claims], self.__rerank)
-        data: dict = self.ask(VERIFY, f"Sources :\n{sources_text(sample, budget, texts)}\n\nAffirmations :\n{listed}",
-                              VERIFY_SCHEMA)
         for claim in claims:
             claim.reason = UNCHECKED
+        self.__check(sample, claims)
+        if len(claims) < 2:
+            # Checked alone already: the same request would give the same verdict
+            return
+        for claim in [claim for claim in claims if claim.verdict != SUPPORTED][:self.__recheck]:
+            again: Claim = Claim(claim.text, reason=UNCHECKED)
+            self.__check(sample, [again])
+            if better(claim, again):
+                log.info(f"[eval] second look at '{claim.text}': {claim.verdict} -> {again.verdict}")
+                claim.verdict, claim.source, claim.evidence, claim.quoted, claim.reason = \
+                    again.verdict, again.source, again.evidence, again.quoted, again.reason
+
+    def __check(self, sample: Sample, claims: list[Claim]) -> None:
+        """ One request of the judge on these claims, its verdicts set on them """
+        budget: int = int(self.__context * SOURCES_SHARE * CHARS_PER_TOKEN)
+        sources: list[str] = [source.text for source in sample.sources]
+        # The exact names a claim cites, and the sources they are in: the judge is told where to look
+        listed: str = "\n".join(
+            f"{number}. {claim.text}" + (f"  (cité tel quel dans : {', '.join(f'{name} → source {index}' for name, index in found[:4])})"
+                                         if (found := anchors(claim.text, sources)) else "")
+            for number, claim in enumerate(claims, 1)
+        )
+        # Only the passages the claims are about: a small judge does not find a line in a long file. The quotes are
+        # still looked for in the whole sources
+        texts: list[str] = focus(sources, [claim.text for claim in claims], self.__rerank)
+        data: dict = self.ask(VERIFY, f"Sources :\n{sources_text(sample, budget, texts)}\n\nAffirmations :\n{listed}",
+                              VERIFY_SCHEMA)
         for verdict in data["verdicts"]:
             if not 1 <= verdict["claim"] <= len(claims):
                 continue
             claim: Claim = claims[verdict["claim"] - 1]
-            claim.verdict, claim.reason = verdict["verdict"], verdict["reason"]
+            claim.verdict, claim.reason = verdict["verdict"], ""
             number: int = verdict["source"] if 1 <= verdict["source"] <= len(sample.sources) else 0
             if claim.verdict == UNVERIFIABLE or not number:
                 # Supported or contradicted by no source is a guess: it is unverifiable
-                claim.verdict, claim.source, claim.evidence = UNVERIFIABLE, 0, ""
+                claim.verdict, claim.source, claim.evidence, claim.reason = UNVERIFIABLE, 0, "", NOT_FOUND
                 continue
             claim.source, claim.evidence = number, verdict["evidence"].strip()
             claim.quoted = bool(claim.evidence) and normalized(claim.evidence) in normalized(sample.sources[number - 1].text)
 
-    def ask(self, instructions: str, prompt: str, schema: dict) -> dict:
+    def ask(self, instructions: str, prompt: str, schema: dict, examples: list[tuple[str, dict]] = ()) -> dict:
         """
-            One reply of the judge, JSON that matches the schema: asked again once with what is wrong.
-            NOTE: Raisable (JudgeError)
+            One reply of the judge, JSON that matches the schema: asked again once with what is wrong. examples are
+            exchanges the judge reads first as its own (a prompt, the reply it should give): the same every time, Ollama
+            keeps them read from one request to the next. NOTE: Raisable (JudgeError)
         """
-        messages: list[dict] = [{"role": "system", "content": instructions},
-                                {"role": "user", "content": prompt + instruction(schema)}]
+        messages: list[dict] = [{"role": "system", "content": instructions}]
+        for shown, reply in examples:
+            messages += [{"role": "user", "content": shown + instruction(schema)},
+                         {"role": "assistant", "content": json.dumps(reply, ensure_ascii=False)}]
+        messages.append({"role": "user", "content": prompt + instruction(schema)})
         errors: list[str] = []
         for _ in range(ATTEMPTS):
             content: str = self.__request(messages, schema)
@@ -343,6 +458,22 @@ class Judge:
         if res.status_code != 200:
             raise JudgeError(f"Ollama a refusé la requête du juge ({res.status_code} : {res.text[:200]})")
         try:
-            return (res.json().get("message") or {}).get("content") or ""
+            data: dict = res.json()
         except json.JSONDecodeError as e:
             raise JudgeError(f"Réponse illisible d'Ollama ({e.msg})") from e
+        # Where the time went, as Ollama counts it (in nanoseconds): a load means the model was not in memory as the
+        # judge asked it (another num_ctx, another model in its place), the generation is what the judge wrote
+        spent: Spent | None = getattr(self.__spent, "value", None)
+        seconds: Callable[[str], float] = lambda key: data.get(key, 0) / 1e9
+        written: int = data.get("eval_count", 0)
+        log.info(f"[eval] request: load {seconds('load_duration'):.1f}s, prompt {data.get('prompt_eval_count', 0)} tokens "
+                 f"in {seconds('prompt_eval_duration'):.1f}s, wrote {written} tokens in {seconds('eval_duration'):.1f}s "
+                 f"({written / seconds('eval_duration') if data.get('eval_duration') else 0:.1f} tok/s)")
+        if spent is not None:
+            spent.requests += 1
+            spent.load += seconds("load_duration")
+            spent.prompt_tokens += data.get("prompt_eval_count", 0)
+            spent.prompt_eval += seconds("prompt_eval_duration")
+            spent.completion_tokens += written
+            spent.generation += seconds("eval_duration")
+        return (data.get("message") or {}).get("content") or ""

@@ -10,7 +10,9 @@
 ## claim is about are looked for first: the sources cut into windows of lines, ranked for each claim by its words
 ## (the identifiers cut in their parts: SAME_CALLS is "same" and "calls"), then, when the reranker of the knowledge base
 ## is there, read again with the claim by its cross-encoder (it reads French and English: a claim in French, a comment
-## in English). The windows kept go to the judge in the order of their source, under its number
+## in English). On top of them, the windows where an exact name the claim cites is (`config.yml`, load_settings):
+## never instead, a claim in other words than the code must still find its passage. The windows kept go to the judge
+## in the order of their source, under its number, and the judge is told where each name is (anchors)
 ##
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +28,8 @@ STEP_LINES  : int = 10
 # Windows ranked by the words of a claim that the cross-encoder reads again, and those kept for each claim
 POOL     : int = 6
 PER_CLAIM: int = 2
+# Windows kept for each exact name a claim cites (`config.yml`), on top of those
+ANCHORED : int = 1
 
 NOTHING: str = "(rien dans cette source ne semble concerner les affirmations)"
 GAP    : str = "\n[…]\n"
@@ -65,6 +69,19 @@ def by_words(query: str, found: list[Window]) -> list[float]:
     idf: dict[str, float] = {word: math.log(1 + len(found) / count) for word, count in df.items() if count}
     return [sum(idf.get(word, 0.0) for word in words & asked) for words in sets]
 
+def names(claim: str) -> list[str]:
+    """
+        The exact names a claim cites: what it puts in backticks, and the words shaped like identifiers or files
+        (config.yml, load_settings, maxDepth). Plain words are left to by_words and the cross-encoder
+    """
+    quoted: list[str] = [name.strip() for name in re.findall(r"`([^`\n]{2,80})`", claim)]
+    shaped: list[str] = re.findall(r"\b[A-Za-z_]\w*(?:[._]\w+)+\b|\b[a-z]+[A-Z]\w*\b", claim)
+    return [name for name in dict.fromkeys(quoted + shaped) if len(name) >= 4]
+
+def anchors(claim: str, texts: list[str]) -> list[tuple[str, int]]:
+    """ The exact names of a claim found as they are in the sources: (name, the number of the source from 1) """
+    return [(name, index) for name in names(claim) for index, text in enumerate(texts, 1) if name in text]
+
 def focus(texts: list[str], claims: list[str], rerank: Callable[[str, list[str]], list[float]] | None = None) -> list[str]:
     """
         The sources as the judge reads them: whole when they are short, else for each one the windows the claims are
@@ -85,6 +102,11 @@ def focus(texts: list[str], claims: list[str], rerank: Callable[[str, list[str]]
             except Exception:
                 rerank = None
         kept.update(pool[:PER_CLAIM])
+        # On top of them, never instead: the windows where an exact name of the claim is, the best by its words first.
+        # The words and the cross-encoder find what a claim says in other words, the names what it cites as it is
+        for name in names(claim):
+            cited: list[int] = [i for i in range(len(found)) if name in found[i].text]
+            kept.update(sorted(cited, key=lambda i: -scores[i])[:ANCHORED])
 
     focused: list[str] = []
     for index, text in enumerate(texts):

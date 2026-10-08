@@ -10,6 +10,10 @@ Un modèle, le **juge**, relit chaque réponse de Louis une fois son tour fini, 
 
 Un petit juge ne retrouve pas une ligne dans un long fichier (mesuré : qwen3:4b-instruct et qwen3:8b disaient « invérifiable » pour un fait de `app/app.py`, 21 000 caractères, et le trouvaient avec les 600 caractères autour). Comme FActScore, les longues sources sont d'abord réduites aux passages dont parlent les affirmations (`eval/focus.py`) : fenêtres de lignes classées par les mots de chaque affirmation (identifiants coupés : `SAME_CALLS` → `same`, `calls`), puis relues par le cross-encoder multilingue de la base de connaissances s'il est installé (`rag.rerank.*`). Avec ça, les deux juges trouvent le fait, avec la bonne citation.
 
+En plus (jamais à la place : une affirmation formulée autrement que le code doit toujours trouver son passage), les **noms exacts** qu'elle cite (`config.yml`, `load_settings`) gardent la fenêtre où ils sont, et le juge est prévenu de la source où chacun se trouve. Puis un **second regard** : chaque affirmation signalée (3 au plus, `eval.recheck`) est revérifiée seule, avec ses propres passages ; le nouveau verdict l'emporte s'il cite un passage vraiment présent dans la source, et une contradiction doit être trouvée deux fois pour être signalée. Mesuré sur qwen3.5:9b : 11 s par affirmation revérifiée, rien quand aucune n'est signalée.
+
+Le découpage laisse de côté les affirmations triviales (« le fichier analysé est server.py ») et garde une énumération en une seule affirmation (« gère les connexions, les déconnexions et les erreurs ») : avec 8 affirmations au plus, la place va aux faits différents.
+
 Les affirmations **contredites** ou **invérifiables** sont signalées. Une réponse qui n'a lu aucune source (de mémoire) n'a pas de fidélité (`–`, pas 0) : ses affirmations sont toutes invérifiables. Le juge vérifie aussi que le passage qu'il cite est bien dans la source : une citation inventée est signalée.
 
 ## Pourquoi une évaluation directe (et pas par paires)
@@ -66,4 +70,5 @@ Chaque résultat sauvegardé par `--save` contient `ragas` : `user_input`, `retr
 | `eval.sample` | `1.0` | part des réponses jugées |
 | `eval.model` | `None` | le juge (`None` : le modèle du chat, déjà chargé) |
 | `eval.context` | `16384` | son `num_ctx` quand ce n'est pas le modèle du chat |
+| `eval.recheck` | `3` | affirmations signalées revérifiées seules (0 : jamais) |
 | `eval.sources` | `[search_knowledge, web_search, cat_file, search, git, run_code]` | les outils dont les résultats sont des sources |
