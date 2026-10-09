@@ -39,6 +39,7 @@ from session.scribe import Scribe
 from command.command import CommandTree
 from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
+from command.impl.command_react import ToggleReactCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
 from command.impl.command_json import JsonCommand
@@ -267,6 +268,7 @@ class App:
             .register(SharesCommand())\
             .register(UnshareCommand())\
             .register(ToggleThinkCommand())\
+            .register(ToggleReactCommand())\
             .register(IndexCommand())\
             .register(UnindexCommand())\
             .register(FindCommand())\
@@ -290,6 +292,7 @@ class App:
             APP_STARTED,
             model=self.__model.model,
             think=self.think,
+            react=self.react,
             commands=[command.describe() for command in self.__commands.commands]
         )
 
@@ -745,7 +748,10 @@ class App:
                 if verify and not refused:
                     checks += 1
                     ok, problems = self.__verify(reply.content)
-                    self.__bus.dispatch(REASONING_CHECK, attempt=checks, ok=ok, problems=problems)
+                    # The problems quote what the model read: shown masked, as the thoughts are. The model fixes the real ones
+                    shown: list[str] = problems if self.__guard is None else \
+                        [self.__guard.hide({"problem": problem})["problem"] for problem in problems]
+                    self.__bus.dispatch(REASONING_CHECK, attempt=checks, ok=ok, problems=shown, revise=not ok and checks <= most)
                 self.session.add("assistant", reply.content)
                 if not ok and checks <= most:
                     log.info(f"[app] draft #{checks} rejected: written again")

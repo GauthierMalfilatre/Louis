@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
 from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
+from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK
 import json
 import os
 import re
@@ -105,6 +106,14 @@ def preview(text: str) -> str:
     text = " ".join(text.split())
     return text if len(text) <= PREVIEW_LENGTH else text[:PREVIEW_LENGTH - 1] + "…"
 
+def thought_lines(thought: str) -> list[str]:
+    """
+        A thought of the reasoning loop as it is shown: its lines, without the Markdown bold nor the number the model
+        gives its step itself (« **Étape 1 :** »), the interfaces number them
+    """
+    text: str = re.sub(r"^\s*(?:étape|step)\s*\d+\s*[:.)-]?\s*", "", thought.replace("**", ""), flags=re.IGNORECASE)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
 def short_path(path: str) -> str:
     """ A path, with ~ for the home folder """
     home: str = os.path.expanduser("~")
@@ -154,6 +163,10 @@ class CLI(Interface):
         bus.subscribe(self.__on_command_error, COMMAND_ERROR)
         bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
         bus.subscribe(self.__on_thinking_disabled, THINKING_DISABLED)
+        bus.subscribe(self.__on_reasoning_enabled, REASONING_ENABLED)
+        bus.subscribe(self.__on_reasoning_disabled, REASONING_DISABLED)
+        bus.subscribe(self._on_reasoning_step, REASONING_STEP)
+        bus.subscribe(self._on_reasoning_check, REASONING_CHECK)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_rag_indexing, RAG_INDEXING)
         bus.subscribe(self.__on_rag_progress, RAG_INDEX_PROGRESS)
@@ -235,6 +248,45 @@ class CLI(Interface):
     def __on_thinking_disabled(self, event: Event) -> None:
         """ Back to direct replies """
         self.out("\nRéflexion désactivée : Louis répond directement.\n")
+
+    def __on_reasoning_enabled(self, event: Event) -> None:
+        """ Say the replies will be slower, and what is shown of them """
+        self.out("\nRaisonnement pas à pas activé : Louis dit ce qu'il fait à chaque étape et vérifie sa réponse avant "
+                 "de la donner, c'est plus long. /react pour le couper.\n")
+
+    def __on_reasoning_disabled(self, event: Event) -> None:
+        """ Back to the usual replies """
+        self.out("\nRaisonnement pas à pas désactivé : Louis répond comme d'habitude.\n")
+
+    def _on_reasoning_step(self, event: Event) -> None:
+        """
+            What the model thinks before it acts, dim, its calls below it:
+              ⟳ Étape 2 : Je dois lire le fichier pour voir ses champs.
+            A draft only says it was written: its check comes next, and the answer once checked
+        """
+        self._newline()
+        lines: list[str] = thought_lines(event.data["thought"])
+        if not event.data["tools"]:
+            lines = ["réponse écrite"] + lines
+        if lines:
+            self.out(f"  ⟳ Étape {event.data['step']} : {lines[0]}" + "".join(f"\n      {line}" for line in lines[1:]),
+                     dim=True)
+
+    def _on_reasoning_check(self, event: Event) -> None:
+        """
+            What the check of the draft found:
+              ✔ Réponse vérifiée
+              ✘ Vérification 1 : à corriger, then its problems, one per line
+              ⚠ Vérification 3 : problèmes restants, réponse donnée quand même
+        """
+        self._newline()
+        data: dict = event.data
+        if data["ok"]:
+            self.out(f"  ✔ Réponse vérifiée{f' (vérification {data["attempt"]})' if data['attempt'] > 1 else ''}", dim=True)
+            return
+        what: str = "à corriger" if data["revise"] else "problèmes restants, réponse donnée quand même"
+        self.out(f"  {'✘' if data['revise'] else '⚠'} Vérification {data['attempt']} : {what}"
+                 + "".join(f"\n      - {problem}" for problem in data["problems"]), dim=True)
 
     def __on_guard(self, event: Event) -> None:
         """ What the guard changed, dim, before the reply or the refusal:  ⛨ Message anonymisé : … """

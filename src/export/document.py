@@ -4,7 +4,7 @@
 ## File description:
 ## The document of a session, plain JSON-friendly data, that every export format lays out
 ##
-from config.prompt import NUDGE_PROMPT
+from config.prompt import NUDGE_PROMPT, REVISE_PROMPT
 from export.artifacts import collect
 from session.database import now
 from session.session import Session
@@ -26,13 +26,18 @@ def title(messages: list[dict]) -> str:
 def conversation(session: Session) -> list[dict]:
     """
         The messages of the session as they are read: without the system prompt nor the nudges (Louis wrote them,
-        not the user), and each tool result with the call it answers, in the reply of the model that asked for it
+        not the user), and each tool result with the call it answers, in the reply of the model that asked for it.
+        A draft the reasoning loop rejected is left out with what was wrong with it: the user never read it
     """
     messages: list[dict] = []
     # The calls of the last reply of the model not answered yet, in the order they were made
     pending: list[dict] = []
     for message in session.messages:
         if message.role == "system" or (message.role == "user" and message.content == NUDGE_PROMPT):
+            continue
+        if message.role == "user" and message.content.startswith(REVISE_PROMPT.split("{")[0]):
+            if messages and messages[-1]["role"] == "assistant" and not messages[-1].get("tools"):
+                messages.pop()
             continue
         if message.role == "tool":
             if pending:

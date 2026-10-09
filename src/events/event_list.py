@@ -27,7 +27,7 @@ REASONING_STEP    = "chat.reasoning.step"   # data: step, thought ("" if the mod
 # The model checked its draft (reason.verify): ok, or what is wrong with it, for it to answer again (attempt counts
 # from 1, reason.attempts + 1 at most: the last answer is checked too, and given whatever its check says). A check the
 # model could not give counts as ok: it never holds the answer back
-REASONING_CHECK   = "chat.reasoning.check"  # data: attempt, ok, problems ([] if ok)
+REASONING_CHECK   = "chat.reasoning.check"  # data: attempt, ok, problems ([] if ok, masked with the guard), revise (it is written again; False and not ok: given with its problems)
 # How full the context of the model is: measured by Ollama after each reply, estimated when the session changes
 CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
 CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the model thinks before replying, with /think)
@@ -67,7 +67,7 @@ RAG_FORGOTTEN      = "rag.forgotten"        # data: source, chunks (removed)
 # and dropped those under its threshold. Without it, score is the fusion of the index and nothing is dropped
 RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), path, kind and after (the filters on the files, None: none; after: "2026-09-30"), files (how many the filters kept, None without them), mode ("hybrid": keywords and meaning, "keyword"), reranker (its model, None if it did not rerank), candidates (found by the index), dropped (under the threshold), hits: [{source, path, start, end, score, fused (the score of the index, None if not reranked)}], rerank (seconds, None), duration (seconds, all of it)
 
-APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), commands: [{name, usage, description}]
+APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), react (True if /react is on), commands: [{name, usage, description}]
 APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
 
 # A tool asks before acting: the interface shows the request, and answers with the same id.

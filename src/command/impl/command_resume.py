@@ -6,7 +6,7 @@
 ##
 from command.command import Command
 from command.impl.command_sessions import NOT_SAVED
-from config.prompt import NUDGE_PROMPT
+from config.prompt import NUDGE_PROMPT, REVISE_PROMPT
 from export.document import conversation
 from events.event_list import SESSION_RESUMED
 from logger.logger import log
@@ -50,7 +50,8 @@ class ResumeCommand(Command):
             user=app.user.name,
             messages=len(messages),
             last_question=next(
-                (m.content for m in reversed(messages) if m.role == "user" and m.content != NUDGE_PROMPT), None
+                (m.content for m in reversed(messages) if m.role == "user" and m.content != NUDGE_PROMPT
+                 and not m.content.startswith(REVISE_PROMPT.split("{")[0])), None
             ),
             last_answer=next((m.content for m in reversed(messages) if m.role == "assistant" and m.content.strip()), None),
             # The conversation as it is read, for an interface that shows it whole (the web page)
