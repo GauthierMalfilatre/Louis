@@ -61,7 +61,9 @@ def louis(folder, monkeypatch, tmp_path):
 
     def make(replies: list[Reply], verdicts: list[tuple[bool, list[str]]] | None = None, **options) -> tuple[App, Probe]:
         probe = Probe()
-        conf = {**settings, "scribe.model": "", "rag.enabled": False, "sandbox.enabled": False, **options}
+        # Nothing that needs more than the scripted model: no NeMo for the guard, no judge in the background
+        conf = {**settings, "scribe.model": "", "rag.enabled": False, "sandbox.enabled": False, "guard.enabled": False,
+                "eval.enabled": False, **options}
         app = App(conf, SYSTEM_PROMPT, User.anonymous(), probe, Recorder(str(traces), conf))
         sent: list[list[dict]] = []
         answers = iter(replies)

@@ -138,6 +138,8 @@ def reasoning_stats(turns: list[dict], calls: list[dict]) -> dict:
         "revised_rate"  : ratio(sum(1 for turn in checked if turn.get("revised")), len(checked)),
         "left_rate"     : ratio(sum(1 for turn in checked if turn.get("left")), len(checked)),
         "check_p50"     : percentile(checks, 0.50),
+    }
+
 def judged(evals: list[dict]) -> dict:
     """
         What the judge said of some answers: the means of their scores, and the share of their claims flagged.
