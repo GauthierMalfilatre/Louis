@@ -1,5 +1,6 @@
-# Policies of the self checks: the model reads them to judge a message.
-# NeMo reads the answer as English: "Yes" blocks the message, "No" lets it through
+# Policies of the checks (check input policy, check output policy in rails.co): the model reads them to judge a
+# message. {{ user_input }} and {{ bot_response }} are the message (only these plain variables are filled in, see
+# guard/policy.py). The answer is read as English: "Yes" blocks the message, "No" lets it through, anything else blocks
 prompts:
   - task: self_check_input
     content: |

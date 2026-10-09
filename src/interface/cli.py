@@ -175,7 +175,6 @@ class CLI(Interface):
         bus.subscribe(self.__on_rag_sources, RAG_SOURCES)
         bus.subscribe(self.__on_rag_forgotten, RAG_FORGOTTEN)
         bus.subscribe(self.__on_eval_report, EVAL_REPORT)
-        bus.subscribe(lambda event: (self._newline(), self.out(f"⚠ {event.data['message']}", dim=True)), GUARD_RELOADS)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
