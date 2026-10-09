@@ -39,11 +39,6 @@ MODEL_CALL        = "model.call"          # data: model, system, messages (as se
 # the sensitive data replaced, the model reads the rest
 GUARD_TRIGGERED   = "guard.triggered"     # data: stage ("input", "output", "tool_call", "tool_result"), action ("masked", "refused"), rails (the names of those that refused), content (what goes on instead), tool (its name, for "tool_call" and "tool_result" only)
 
-# NeMo asks Ollama through its OpenAI API (/v1), which can not set num_ctx: Ollama loads the model with its own
-# default context there, and loads it again with Louis' for the next request of the chat (or of the judge). Told once,
-# after the first check, when the context Ollama loaded is not chat.context: it is set where Ollama starts
-GUARD_RELOADS     = "guard.reloads"       # data: model, loaded (the context Ollama loaded it with for NeMo), expected (chat.context), message
-
 # producer: who wanted the call, "model" (the model asked for it), "user" (a command) or "system" (Louis itself)
 TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments (masked with the guard: to show, not to run), producer
 TOOL_CALL_ENDED   = "tool.call.ended"     # data: name, producer, ok (False if it did not do it: unknown, crashed, failed or refused), result, duration (seconds)

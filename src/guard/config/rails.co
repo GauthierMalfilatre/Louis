@@ -1,9 +1,33 @@
-# Flows of the rails of Louis (Colang 1.0). The built-in ones (self check input, mask sensitive data on
-# output...) come with NeMo: only the ones calling actions.py are defined here, and enabled in config.yml
+# Flows of the rails of Louis (Colang 1.0). The built-in ones (mask sensitive data on output...) come with NeMo:
+# only the ones calling actions.py are defined here, and enabled in config.yml
 
 # What Louis says when a rail refuses a message (replaces the English default of NeMo)
 define bot refuse to respond
   "Je ne peux pas répondre à cette demande."
+
+# The model could not read the message (Ollama stopped, the model missing): a message is never let through unchecked
+define bot refuse unchecked
+  "Je ne peux pas répondre : le garde-fou n'a pas pu vérifier ce message (le modèle ne répond pas, voir louis.log)."
+
+# Refuse what breaks a policy of prompts.yml: the model reads the message against it (one request, guard/policy.py).
+# They replace the self check input / output of NeMo, which asked Ollama in a way that made it reload the model
+define subflow check input policy
+  $verdict = execute check_policy(task="self_check_input", text=$user_message)
+  if $verdict == "error"
+    bot refuse unchecked
+    stop
+  if $verdict != "allowed"
+    bot refuse to respond
+    stop
+
+define subflow check output policy
+  $verdict = execute check_policy(task="self_check_output", text=$bot_message)
+  if $verdict == "error"
+    bot refuse unchecked
+    stop
+  if $verdict != "allowed"
+    bot refuse to respond
+    stop
 
 # Anonymize: the message goes on, rewritten by the action
 define subflow mask french ids on input

@@ -50,6 +50,12 @@ settings: dict[str] = {
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
     "guard.enabled"        : True,
+    # The model that reads the messages against the policies of guard/config/prompts.yml (one request per check, Yes or
+    # No). None: the chat model, with the context and the keep-alive of the chat, so Ollama keeps one model loaded as
+    # it is. Another one is loaded beside it (VRAM), with guard.context. timeout: seconds a check may take
+    "guard.model"          : None,
+    "guard.context"        : 4096,
+    "guard.timeout"        : 120.0,
     # Louis signs the commits it makes with a "Co-authored-by" line: the user stays their author. For GitHub to show
     # Louis on the commits, it must be the noreply address of a GitHub account (Settings > Emails). Empty: no line
     "git.coauthor"         : "Louis <336655023+louis-sensai@users.noreply.github.com>",
