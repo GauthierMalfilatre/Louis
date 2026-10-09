@@ -8,7 +8,7 @@
 ## and it never takes the GPU from the chat model. What it wrote is told to the bus from its thread (SESSION_DESCRIBED,
 ## APP_WELCOME): the web page shows it, a terminal never draws from another thread
 ##
-from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT
+from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT, REVISE_PROMPT
 from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import CHAT_TURN_ENDED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED
@@ -73,9 +73,10 @@ def one_line(text: object, most: int) -> str:
     return line if len(line) <= most else line[:most - 1].rstrip() + "…"
 
 def asks(message: Message) -> bool:
-    """ A message of the user, not one Louis sent in its name (the nudge, the empty reply) """
+    """ A message of the user, not one Louis sent in its name (the nudge, the empty reply, the problems of a draft) """
     return (message.role == "user" and message.content != NUDGE_PROMPT
-            and not message.content.startswith(EMPTY_PROMPT.split("{")[0]))
+            and not message.content.startswith(EMPTY_PROMPT.split("{")[0])
+            and not message.content.startswith(REVISE_PROMPT.split("{")[0]))
 
 def transcript(messages: list[Message]) -> str:
     """

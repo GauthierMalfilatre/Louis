@@ -5,7 +5,7 @@
 ## Web interface: Louis in a browser (louis --web), and the pages of the public links of /share
 ##
 from interface.interface import Interface
-from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, preview as one_line
+from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import APP_STARTED, APP_STOPPED, THINKING_ENABLED, THINKING_DISABLED
@@ -18,6 +18,7 @@ from events.event_list import EXPORT_DONE, SHARE_CREATED, SHARE_LIST, SHARE_REVO
 from events.event_list import COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_DESCRIBE_PROGRESS, RAG_INDEXED, RAG_SOURCES
 from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
+from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK
 from config.settings import settings
 from export.render_html import MARKDOWN, render
 from session.database import Database, now
@@ -208,7 +209,7 @@ class WebInterface(Interface):
         self.__ids  : itertools.count = itertools.count(1)
         self.__state: dict = {
             "user": None, "persistent": False, "session": None, "sessions": [], "model": None, "think": False,
-            "commands": [], "context": None, "project": None, "welcome": None, "busy": False, "turn": False,
+            "react": False, "commands": [], "context": None, "project": None, "welcome": None, "busy": False, "turn": False,
             "started": None, "asking": False,
             "closed": False,
         }
@@ -312,6 +313,9 @@ class WebInterface(Interface):
         bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_thinking_switched, THINKING_ENABLED, THINKING_DISABLED)
+        bus.subscribe(self.__on_reasoning_switched, REASONING_ENABLED, REASONING_DISABLED)
+        bus.subscribe(self.__on_reasoning_step, REASONING_STEP)
+        bus.subscribe(self.__on_reasoning_check, REASONING_CHECK)
         bus.subscribe(self.__on_export_done, EXPORT_DONE)
         bus.subscribe(self.__on_share_created, SHARE_CREATED)
         bus.subscribe(self.__on_share_list, SHARE_LIST)
@@ -512,7 +516,8 @@ class WebInterface(Interface):
             raise KeyboardInterrupt
 
     def __on_started(self, event: Event) -> None:
-        self.__set(model=event.data["model"], think=event.data["think"], commands=event.data["commands"])
+        self.__set(model=event.data["model"], think=event.data["think"], react=event.data.get("react", False),
+                   commands=event.data["commands"])
 
     def __on_session_created(self, event: Event) -> None:
         """ A new session, empty: the pages start over """
@@ -752,6 +757,25 @@ class WebInterface(Interface):
         else:
             text = "Réponse anonymisée par le garde-fou"
         self.__notice(text, "guard")
+
+    def __on_reasoning_switched(self, event: Event) -> None:
+        enabled: bool = event.name == REASONING_ENABLED
+        self.__set(react=enabled)
+        self.__notice("Je raisonnerai pas à pas, et vérifierai chaque réponse avant de te la donner : ce sera plus long."
+                      if enabled else "Je réponds de nouveau sans détailler mes étapes.")
+
+    def __on_reasoning_step(self, event: Event) -> None:
+        """ A step of the reasoning loop, in the reply: what the model thinks before it acts, its calls below it """
+        self.__close_thinking()
+        data: dict = event.data
+        self.__add(kind="step", step=data["step"], thought="\n".join(thought_lines(data["thought"])),
+                   tools=[LABELS.get(name, name) for name in data["tools"]], draft=not data["tools"])
+
+    def __on_reasoning_check(self, event: Event) -> None:
+        """ What the check of the draft found, in the reply, before the answer it lets through """
+        data: dict = event.data
+        self.__add(kind="check", attempt=data["attempt"], ok=data["ok"], problems=data["problems"],
+                   revise=data["revise"])
 
     def __on_thinking_switched(self, event: Event) -> None:
         enabled: bool = event.name == THINKING_ENABLED

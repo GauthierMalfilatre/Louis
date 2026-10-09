@@ -110,7 +110,6 @@ class OllamaModel:
 
         self.__requests += 1
         log.debug(f"[model] request #{self.__requests}: {len(messages)} messages, last one from {messages[-1]['role'] if messages else None}")
-        thinking: str = ""
         stats: dict = {}
 
         shown: int = 0
@@ -132,7 +131,7 @@ class OllamaModel:
                     if reply.ttft is None and any(message.get(key) for key in ("content", "thinking", "tool_calls")):
                         reply.ttft = round(time.perf_counter() - start, 3)
                     if thought := message.get("thinking"):
-                        thinking += thought
+                        reply.thinking += thought
                         if on_thinking is not None:
                             on_thinking(thought)
                     if text := message.get("content"):
@@ -169,14 +168,14 @@ class OllamaModel:
         reply.load, reply.prompt_eval, reply.generation = (
             round(stats.get(key, 0) / 1e9, 3) for key in ("load_duration", "prompt_eval_duration", "eval_duration")
         )
-        OllamaModel.__log_reply(reply, thinking, stats)
+        OllamaModel.__log_reply(reply, stats)
         return reply
 
     @staticmethod
-    def __log_reply(reply: Reply, thinking: str, stats: dict) -> None:
+    def __log_reply(reply: Reply, stats: dict) -> None:
         """ Log what the model thought and answered, and how long Ollama took """
-        if thinking:
-            log.debug(f"[model] thinking:\n{thinking}")
+        if reply.thinking:
+            log.debug(f"[model] thinking:\n{reply.thinking}")
         if reply.content:
             log.info(f"[model] reply:\n{reply.content}")
         for call in reply.tool_calls:

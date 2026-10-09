@@ -13,6 +13,10 @@
 ##   rag     one look-up in the knowledge base: its query, how it searched, what it found, how long it took
 ##   turn    one message of the user answered: how it ended, how long the whole answer took, what it cost
 ##   structured  a reply asked as JSON (/json, --ask): its schema, whether it matched, after how many replies
+##   step    a step of the reasoning loop (/react): what the model thought, the tools it called
+##   check   the check of a draft of the reasoning loop: whether it went, its problems, whether it was written again
+## An llm record tells what the call was for (purpose): a reply, JSON, the check of a draft, a summary of the context.
+## Only the replies make the rounds and the output of a turn: the JSON of a check is no answer
 ##   eval    an answer judged (eval/): its scores, and the claims its sources do not support. Written by the thread of
 ##           the judge, once the turn is over: it names the answer by the session, the prompt and the model instead
 ## The records of a turn share its id. The long texts are cut: the whole conversation is in the database and the log.
@@ -26,8 +30,9 @@ from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, GUARD_TRIGGERED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, RAG_RETRIEVED, STRUCTURED_REPLY
-from events.event_list import EVAL_SCORED
+from events.event_list import REASONING_STEP, REASONING_CHECK, EVAL_SCORED
 from config.settings import settings as default_settings
+from config.prompt import REACT_PROMPT
 from logger.logger import log, scrub
 import hashlib
 import json
@@ -101,6 +106,13 @@ class Turn:
     tool_errors      : int        = 0
     guard            : int        = 0
     waited           : float      = 0.0
+    # The reasoning loop (/react): its steps, the checks of its drafts, the drafts written again, and whether the
+    # answer was given with problems left
+    react            : bool       = False
+    steps            : int        = 0
+    checks           : int        = 0
+    revised          : int        = 0
+    left             : bool       = False
 
 class Recorder:
     """
@@ -143,6 +155,8 @@ class Recorder:
         bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_structured, STRUCTURED_REPLY)
+        bus.subscribe(self.__on_step, REASONING_STEP)
+        bus.subscribe(self.__on_check, REASONING_CHECK)
         bus.subscribe(self.__on_retrieved, RAG_RETRIEVED)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
         bus.subscribe(self.__on_eval, EVAL_SCORED)
@@ -176,11 +190,14 @@ class Recorder:
 
         reply: dict = data["reply"] or {}
         turn: Turn | None = self.__turn
+        # Older traces have no purpose: every call was a reply then
+        purpose: str = data.get("purpose", "reply")
         self.__write(
             "llm",
             turn=turn.id if turn else None,
             session=self.__session,
             round=turn.rounds if turn else None,
+            purpose=purpose,
             model=data["model"],
             prompt=version,
             think=data["think"],
@@ -203,14 +220,19 @@ class Recorder:
         )
         if turn is None:
             return
-        # The request of the user is the last message the first call is given (the nudge comes later)
-        if turn.rounds == 0:
-            turn.input = next((m.get("content") for m in reversed(data["messages"]) if m["role"] == "user"), None)
-        turn.rounds += 1
-        turn.model, turn.prompt, turn.think = data["model"], version, data["think"]
+        # Every call costs the turn, only the replies make it: a check or a summary is no round, nor its answer
         turn.llm_time += data["latency"]
         turn.prompt_tokens += reply.get("prompt_tokens", 0)
         turn.completion_tokens += reply.get("completion_tokens", 0)
+        if purpose not in ("reply", "structured"):
+            return
+        # The request of the user is the last message the first call is given (the nudge comes later), without how
+        # the reasoning loop told it to reason
+        if turn.rounds == 0:
+            asked: str | None = next((m.get("content") for m in reversed(data["messages"]) if m["role"] == "user"), None)
+            turn.input = asked.removesuffix(REACT_PROMPT) if asked else asked
+        turn.rounds += 1
+        turn.model, turn.prompt, turn.think = data["model"], version, data["think"]
         if reply.get("content"):
             turn.output = reply["content"]
 
@@ -281,6 +303,37 @@ class Recorder:
             errors=[text(error, RESULT_CHARS) for error in event.data["errors"]]
         )
 
+    def __on_step(self, event: Event) -> None:
+        """ A step of the reasoning loop: what the model thought before it acted, and the tools it called """
+        if self.__turn is not None:
+            self.__turn.react = True
+            self.__turn.steps += 1
+        self.__write(
+            "step",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            step=event.data["step"],
+            thought=text(event.data["thought"], INPUT_CHARS),
+            tools=event.data["tools"]
+        )
+
+    def __on_check(self, event: Event) -> None:
+        """ The check of a draft: whether it went, what was wrong with it, whether it was written again """
+        data: dict = event.data
+        if self.__turn is not None:
+            self.__turn.checks += 1
+            self.__turn.revised += data["revise"]
+            self.__turn.left = not data["ok"] and not data["revise"]
+        self.__write(
+            "check",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            attempt=data["attempt"],
+            ok=data["ok"],
+            revise=data["revise"],
+            problems=[text(problem, RESULT_CHARS) for problem in data["problems"]]
+        )
+
     def __on_retrieved(self, event: Event) -> None:
         """
             A look-up in the knowledge base: the query (cleaned as any text), the paths it found with their scores, not
@@ -335,7 +388,12 @@ class Recorder:
             tool_errors=turn.tool_errors,
             guard=turn.guard,
             input=text(turn.input, INPUT_CHARS),
-            output=text(turn.output, OUTPUT_CHARS)
+            output=text(turn.output, OUTPUT_CHARS),
+            react=turn.react,
+            steps=turn.steps,
+            checks=turn.checks,
+            revised=turn.revised,
+            left=turn.left
         )
 
     def __on_eval(self, event: Event) -> None:

@@ -4,7 +4,7 @@
 ## File description:
 ## Context window: what the model sees of a session, cut down before it overflows
 ##
-from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT, SUMMARY_ASKED, SUMMARY_TITLE
+from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT, REVISE_PROMPT, SUMMARY_ASKED, SUMMARY_TITLE
 from collections.abc import Callable
 import json
 
@@ -146,10 +146,11 @@ class ContextWindow:
         """
         # The last reply of the model, and the results of its calls after it, are what it works on: never cut
         last: int = max((i for i, message in enumerate(history) if message["role"] == "assistant"), default=len(history))
-        # The request being answered is never left out (the nudge is no request)
+        # The request being answered is never left out (the nudge, and the problems of a draft to fix, are no request)
         request: int = max(
             (i for i, message in enumerate(history) if message["role"] == "user" and message["content"] != NUDGE_PROMPT
-             and not message["content"].startswith(EMPTY_PROMPT.split("{")[0])),
+             and not message["content"].startswith(EMPTY_PROMPT.split("{")[0])
+             and not message["content"].startswith(REVISE_PROMPT.split("{")[0])),
             default=len(history)
         )
         messages: list[dict | None] = [self.__shown(message, i, request) for i, message in enumerate(history)]

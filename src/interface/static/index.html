@@ -1179,6 +1179,19 @@
   .reply-stats { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; cursor: default; }
   .reply-stats .slow { color: var(--warn); }
 
+  /* The reasoning loop (/react): each step, what the model thinks before it acts, then the check of its answer */
+  .step { border-left: 2px solid var(--border); padding-left: 12px; color: var(--muted); font-size: 13.5px; animation: rise 0.18s ease-out; }
+  .step-head { font-weight: 550; }
+  .step-head .step-tools { font-weight: 400; }
+  .step-thought { margin-top: 4px; white-space: pre-wrap; font-style: italic; }
+  .check { font-size: 13px; color: var(--muted); }
+  .check-head::before { margin-right: 6px; }
+  .check[data-state="ok"] .check-head::before { content: "✓"; color: var(--ok); }
+  .check[data-state="revise"] .check-head::before { content: "✗"; color: var(--danger); }
+  .check[data-state="left"] .check-head::before { content: "⚠"; color: var(--warn); }
+  .check[data-state="left"] .check-head { color: var(--warn); }
+  .check ul { margin: 4px 0 0 22px; padding: 0; }
+
   /* The passages the knowledge base gave to a search_knowledge call */
   .call-sources { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 22px; }
   .source {
@@ -1304,6 +1317,12 @@
         </svg>
         Réflexion
       </button>
+      <button class="chip" id="react" type="button" aria-pressed="false" hidden>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h9"/>
+        </svg>
+        Pas à pas
+      </button>
       <span class="chip model" id="model" hidden>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>
@@ -1426,7 +1445,7 @@
   const THEMES = ["system", "light", "dark", "ultravision"];
   const THEME_NAMES = { system: "système", light: "clair", dark: "sombre", ultravision: "UltraVision" };
   // What belongs to a reply of Louis, grouped under its mark
-  const REPLY = new Set(["text", "thinking", "tool", "permission", "note", "stats"]);
+  const REPLY = new Set(["text", "thinking", "tool", "permission", "note", "stats", "step", "check"]);
   // The dot on the icon of a hidden tab: Louis waits for an answer, or has replied
   const DOTS = { asking: "#e8a93a", done: "#1f9d55" };
   const TITLES = { asking: "(!) Louis attend ta réponse", done: "✓ Louis a répondu" };
@@ -1434,7 +1453,7 @@
   const $ = (id) => document.getElementById(id);
   const scroller = $("scroller"), logEl = $("log"), form = $("form"), input = $("input");
   const send = $("send"), hint = $("hint"), statusEl = $("status"), statusText = $("status-text");
-  const modelChip = $("model"), modelName = $("model-name"), thinkBtn = $("think");
+  const modelChip = $("model"), modelName = $("model-name"), thinkBtn = $("think"), reactBtn = $("react");
   const gauge = $("gauge"), gaugeFill = $("gauge-fill"), gaugeText = $("gauge-text");
   const menuEl = $("menu"), menuList = $("menu-list");
   const sidebar = $("sidebar"), sessionsEl = $("sessions"), backdrop = $("backdrop"), burger = $("burger");
@@ -1545,6 +1564,8 @@
       case "user": return drawUser(item);
       case "text": return drawText(item);
       case "thinking": return drawThinking(item);
+      case "step": return drawStep(item);
+      case "check": return drawCheck(item);
       case "tool": return drawTool(item);
       case "permission": return drawPermission(item);
       case "card": return drawCard(item);
@@ -1615,6 +1636,35 @@
     const summary = el("summary");
     summary.append(el("span", "", item.done ? "Réflexion" : "Réflexion…"));
     node.append(summary, el("div", "reasoning-text", item.text));
+    return node;
+  }
+
+  // A step of the reasoning loop: its number and its tools, then what the model thinks before it acts
+  function drawStep(item) {
+    const node = el("div", "step");
+    const head = el("div", "step-head", `Étape ${item.step}`);
+    head.append(el("span", "step-tools", item.draft ? " · réponse écrite" : ` → ${item.tools.join(", ")}`));
+    node.append(head);
+    if (item.thought) node.append(el("div", "step-thought", item.thought));
+    return node;
+  }
+
+  // The check of a draft: verified, to fix (written again), or given with the problems left
+  function drawCheck(item) {
+    const state = item.ok ? "ok" : item.revise ? "revise" : "left";
+    const node = el("div", "check");
+    node.dataset.state = state;
+    const head = {
+      ok: item.attempt > 1 ? `Réponse vérifiée (vérification ${item.attempt})` : "Réponse vérifiée",
+      revise: `Vérification ${item.attempt} : à corriger`,
+      left: `Vérification ${item.attempt} : problèmes restants, réponse donnée quand même`,
+    }[state];
+    node.append(el("div", "check-head", head));
+    if (item.problems.length) {
+      const list = el("ul");
+      item.problems.forEach((problem) => list.append(el("li", "", problem)));
+      node.append(list);
+    }
     return node;
   }
 
@@ -2020,6 +2070,10 @@
     thinkBtn.hidden = !info.model;
     thinkBtn.setAttribute("aria-pressed", String(!!info.think));
     thinkBtn.title = info.think ? "Réflexion activée : clique pour la couper (/think)" : "Réflexion désactivée : clique pour l'activer (/think)";
+    reactBtn.hidden = !info.model;
+    reactBtn.setAttribute("aria-pressed", String(!!info.react));
+    reactBtn.title = info.react ? "Raisonnement pas à pas activé, réponse vérifiée avant d'être donnée : clique pour le couper (/react)"
+      : "Raisonnement pas à pas désactivé : clique pour l'activer (/react)";
 
     const context = info.context;
     gauge.hidden = !context || !context.size;
@@ -2212,6 +2266,7 @@
   });
 
   thinkBtn.addEventListener("click", () => sendText("/think", false));
+  reactBtn.addEventListener("click", () => sendText("/react", false));
 
   /* ---------- Status ---------- */
 
@@ -2275,6 +2330,7 @@
     input.disabled = !!info.closed;
     input.placeholder = info.closed ? "Louis s'est arrêté : relance-le pour continuer" : "Écris un message, ou / pour les commandes";
     thinkBtn.disabled = !canSend();
+    reactBtn.disabled = !canSend();
     logEl.querySelectorAll(".suggestion, .resume, .card button, .perm-actions button").forEach((button) => {
       if (button.closest(".perm-actions")) button.disabled = !state.connected || !!info.closed;
       else button.disabled = !canSend();

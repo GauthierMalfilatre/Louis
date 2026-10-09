@@ -7,6 +7,9 @@
 # The thinking mode of the model, switched by /think: it thinks before every reply from then on
 THINKING_ENABLED  = "chat.thinking.enabled"    # data: none
 THINKING_DISABLED = "chat.thinking.disabled"   # data: none
+# The reasoning loop (ReAct), switched by /react: the messages are answered step by step from then on
+REASONING_ENABLED  = "chat.reasoning.enabled"    # data: none
+REASONING_DISABLED = "chat.reasoning.disabled"   # data: none
 
 # The conversation, as it goes: the app never prints, the interfaces show these their own way
 CHAT_TURN_STARTED = "chat.turn.started"   # data: none (the model starts answering a message of the user)
@@ -17,6 +20,14 @@ CHAT_REPLY        = "chat.reply"          # data: content (the whole reply, "" i
 # matches, or why the last one did not (the turn then ends with the reason "invalid")
 STRUCTURED_REPLY  = "chat.structured"     # data: schema (its name), valid, data (the JSON, None if not valid), attempts (replies asked), errors ([] if valid)
 CHAT_NUDGED       = "chat.nudged"         # data: none (the model announced an action without doing it: it is told to)
+# A step of the reasoning loop (/react), once the model replied: what it thought (masked with the guard, as the replies
+# are), and the tools it decided to call, their results coming in TOOL_CALL_ENDED. A step that calls none is a draft
+# of the answer, checked next with reason.verify. step counts from 1 for each message
+REASONING_STEP    = "chat.reasoning.step"   # data: step, thought ("" if the model wrote none), tools (their names, [] for a draft)
+# The model checked its draft (reason.verify): ok, or what is wrong with it, for it to answer again (attempt counts
+# from 1, reason.attempts + 1 at most: the last answer is checked too, and given whatever its check says). A check the
+# model could not give counts as ok: it never holds the answer back
+REASONING_CHECK   = "chat.reasoning.check"  # data: attempt, ok, problems ([] if ok, masked with the guard), revise (it is written again; False and not ok: given with its problems)
 # How full the context of the model is: measured by Ollama after each reply, estimated when the session changes
 CHAT_CONTEXT      = "chat.context"        # data: used, size (tokens), estimated
 CHAT_THINKING     = "chat.thinking.text"  # data: text (a piece of what the model thinks before replying, with /think)
@@ -27,7 +38,8 @@ CHAT_COMPACTED    = "chat.compacted"      # data: results (cut down this time), 
 # One request to the model, however it went: what the monitoring records. status is "ok", "error" (error tells why) or
 # "cancelled" (Ctrl+C); latency the seconds of the whole request; system the prompt of the session, without the context
 # put after it (the date changes it every day); reply the Reply as a dict (tokens, timings...), None if there is none
-MODEL_CALL        = "model.call"          # data: model, system, messages (as sent), tools (the names offered), think, status, error, latency, reply
+# purpose: what the call is for, "reply" (to the user), "structured" (JSON for /json), "check" (of a draft, /react) or "summary"
+MODEL_CALL        = "model.call"          # data: model, purpose, system, messages (as sent), tools (the names offered), think, status, error, latency, reply
 
 # A rail of the guard changed a message: the user's before the model reads it, the model's before it is shown,
 # a tool call of the model before it runs, or the result of a tool that reads what Louis does not own (the knowledge
@@ -56,6 +68,8 @@ RAG_FORGOTTEN      = "rag.forgotten"        # data: source, chunks (removed)
 # and dropped those under its threshold. Without it, score is the fusion of the index and nothing is dropped
 RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), path, kind and after (the filters on the files, None: none; after: "2026-09-30"), files (how many the filters kept, None without them), mode ("hybrid": keywords and meaning, "keyword"), reranker (its model, None if it did not rerank), candidates (found by the index), dropped (under the threshold), hits: [{source, path, start, end, score, fused (the score of the index, None if not reranked)}], rerank (seconds, None), duration (seconds, all of it)
 
+APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), react (True if /react is on), commands: [{name, usage, description}]
+
 # The judge (eval/): an answer of Louis read again by a model, after its turn, against the sources its tools read.
 # claims: [{text, verdict ("supported", "contradicted", "unverifiable"), source (its number from 1, 0: none), evidence
 # (the passage quoted, "" none), quoted (the quote is really in the source), reason}]. faithfulness is the share of the
@@ -67,7 +81,6 @@ EVAL_STARTED      = "eval.started"        # data: id (of the answer, as EVAL_SCO
 EVAL_SCORED       = "eval.scored"         # data: id, session, model, prompt (its version), question, answer, sources: [{tool, arguments, chars}], judge (its model), status ("ok", "error"), error, faithfulness, relevance, relevance_reason, coherence, coherence_reason, claims, duration (seconds)
 EVAL_REPORT       = "eval.report"         # data: the same as EVAL_SCORED
 
-APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), commands: [{name, usage, description}]
 APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
 
 # A tool asks before acting: the interface shows the request, and answers with the same id.

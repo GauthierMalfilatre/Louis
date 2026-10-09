@@ -105,3 +105,30 @@ NUDGE_PROMPT: str = (
     "write_file pour en créer un). "
     "Si tout est déjà fait, dis-le en une phrase."
 )
+
+# The reasoning loop (/react): put after the request of the user, for this request only (the session keeps it as the
+# user asked it). The model writes its thought in its reply, beside its tool calls: a model that does not think
+# (think) still reasons in the open, and the thought is what the trace keeps of each step
+REACT_PROMPT: str = (
+    "\n\nRaisonne étape par étape, à voix haute. À chaque étape, avant d'appeler un outil, écris en une à trois "
+    "phrases ce que tu sais déjà, ce qui te manque, et ce que tu vas faire pour l'obtenir, puis appelle l'outil dans "
+    "la même réponse. Lis le résultat avant de décider de l'étape suivante. Quand tu en sais assez, réponds sans "
+    "appeler d'outil, en t'appuyant uniquement sur ce que tu as lu ou fait."
+)
+# Asked once the model has a draft of its answer (reason.verify), after it in the conversation: it checks it against
+# what it read, as JSON (app/app.py gives the schema), without tools
+VERIFY_PROMPT: str = (
+    "Avant que ta réponse ne parte, vérifie-la, comme si un autre l'avait écrite : ne la crois pas juste parce que "
+    "c'est la tienne. D'abord, refais toi-même chaque vérification, pas à pas : refais chaque calcul, retrouve chaque "
+    "fait, nom, chemin ou valeur dans ce que tes outils t'ont vraiment renvoyé, contrôle chaque action qu'elle dit "
+    "avoir faite, relis le code qu'elle propose. Donne la source de chacun : la réponse elle-même n'en est pas une, et "
+    "ce qu'aucun outil n'a renvoyé est introuvable. Ensuite seulement, conclus : répond-elle à toute la demande, sans "
+    "rien d'inventé ni de faux ? Ne relève que les vrais problèmes, pas le style : s'il n'y en a aucun, dis que la "
+    "réponse est bonne."
+)
+# Sent when the check found problems: the model goes on, may call tools again, and writes a new answer
+REVISE_PROMPT: str = (
+    "Ta vérification a trouvé ces problèmes dans ta réponse :\n{problems}\n"
+    "Corrige-les : vérifie avec tes outils ce qui doit l'être, puis écris de nouveau ta réponse entière, comme si "
+    "la précédente n'avait pas été envoyée."
+)

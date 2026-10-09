@@ -34,6 +34,7 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--web", action="store_true", help="chat from a browser instead of the terminal; it also serves the public links of /share")
     parser.add_argument("--host", type=str, default=None, help=f"with --web: the address to listen on (default: {HOST}, this computer only; 0.0.0.0 opens Louis to the network, without a password)")
     parser.add_argument("--port", type=int, default=None, help=f"with --web: the port to listen on (default: {PORT})")
+    parser.add_argument("--react", action="store_true", help="answer by the reasoning loop from the start: step by step, the answer checked before it is given (/react switches it)")
     parser.add_argument("--dashboard", action="store_true", help="write the metrics of the recorded calls, open them, and quit")
     parser.add_argument("--schema", type=str, help="with --ask: name or file of the JSON Schema the reply must match")
     parser.add_argument("--ask", type=str, help="with --schema: answer this question with JSON only, print it and quit "
@@ -154,6 +155,8 @@ if __name__ == "__main__":
     if args.index:
         sys.exit(index_folder(args.index, args.name, args.exclude, args.describe))
 
+    if args.react:
+        settings["reason.enabled"] = True
     log.info(f"===== louis started in {os.getcwd()} =====")
     log.debug(f"[app] settings: {settings}")
 

@@ -10,7 +10,7 @@ from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_CONTEXT, CHAT_THINKING, APP_STARTED
 from events.event_list import SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, THINKING_ENABLED, THINKING_DISABLED
-from events.event_list import EVAL_STARTED, EVAL_SCORED
+from events.event_list import REASONING_ENABLED, REASONING_DISABLED, EVAL_STARTED, EVAL_SCORED
 import curses
 import locale
 import os
@@ -122,7 +122,8 @@ class CursesCLI(CLI):
         self.__session   : int | None                 = None
         self.__model     : str                        = ""
         self.__think     : bool                       = False
-        self.__context   : tuple[int, int, bool] | None = None
+        self.__react     : bool                       = False
+        self.__context  : tuple[int, int, bool] | None = None
         self.__hint      : str                        = ""
         self.__commands  : list[str]                  = []
         # Since when the judge reads an answer again (None: it does not), its word, since when, and whether the user is
@@ -177,6 +178,8 @@ class CursesCLI(CLI):
         bus.subscribe(lambda event: self.__set(session=event.data["id"]), SESSION_RESUMED)
         bus.subscribe(lambda event: self.__set(think=True), THINKING_ENABLED)
         bus.subscribe(lambda event: self.__set(think=False), THINKING_DISABLED)
+        bus.subscribe(lambda event: self.__set(react=True), REASONING_ENABLED)
+        bus.subscribe(lambda event: self.__set(react=False), REASONING_DISABLED)
         bus.subscribe(self.__on_context, CHAT_CONTEXT)
         bus.subscribe(self.__on_judging, EVAL_STARTED, EVAL_SCORED)
         return self
@@ -208,6 +211,20 @@ class CursesCLI(CLI):
             self.__styled(self.__markdown.flush())
             self.__end_thinking()
             super()._on_reply(event)
+            self.__follow()
+
+    def _on_reasoning_step(self, event: Event) -> None:
+        """ A step of the reasoning loop: the thinking of the model (/think) ends before it, folded if it was long """
+        with self.__lock:
+            self.__end_thinking()
+            super()._on_reasoning_step(event)
+            self.__follow()
+
+    def _on_reasoning_check(self, event: Event) -> None:
+        """ The check of the draft, under it """
+        with self.__lock:
+            self.__end_thinking()
+            super()._on_reasoning_check(event)
             self.__follow()
 
     def _on_tool_started(self, event: Event) -> None:
@@ -461,7 +478,7 @@ class CursesCLI(CLI):
     def __on_started(self, event: Event) -> None:
         """ The model and the commands, for the status bar and for Tab """
         self.__commands = [command["name"] for command in event.data["commands"]]
-        self.__set(model=event.data["model"], think=event.data["think"])
+        self.__set(model=event.data["model"], think=event.data["think"], react=event.data.get("react", False))
 
     def __on_session_created(self, event: Event) -> None:
         """ The user, in the status bar: saved or not. The new session has no number before its first message """
@@ -737,7 +754,7 @@ class CursesCLI(CLI):
             self.__bar()
 
     def __bar(self) -> None:
-        """ ● eratz · #12 · qwen3:8b · ✻ réflexion, green for a saved user and red otherwise, and on the right: contexte 23% """
+        """ ● eratz · #12 · qwen3:8b · ✻ réflexion, green for a saved user and red otherwise, then the step by step mode, and on the right: contexte 23% """
         self.__status_bar.erase()
         width: int = curses.COLS - 1
         right: str = ""
@@ -775,6 +792,9 @@ class CursesCLI(CLI):
             x += 2 + len(details)
             if self.__think and x + 14 < room:
                 self.__status_bar.addstr(0, x, " · ✻ réflexion", self.__colors.get("accent", curses.A_DIM))
+                x += 14
+            if self.__react and x + 14 < room:
+                self.__status_bar.addstr(0, x, " · ⟳ pas à pas", self.__colors.get("accent", curses.A_DIM))
         if right and len(right) < width - 4:
             self.__status_bar.addstr(0, width - len(right), right, right_attr)
         self.__status_bar.refresh()

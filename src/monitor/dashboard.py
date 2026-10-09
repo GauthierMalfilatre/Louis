@@ -317,6 +317,12 @@ function renderKpis(s) {
     tiles.push(["JSON replies", fmt.percent(s.structured.valid_rate) + " valid",
       fmt.count(s.structured.replies) + " asked · " + fmt.percent(s.structured.first_try_rate) + " at once"]);
   }
+  // Only once the reasoning loop answered (/react): the drafts that went at once, and what a check costs
+  if (s.reasoning && s.reasoning.answers) {
+    const r = s.reasoning;
+    tiles.push(["Step by step", r.checked ? fmt.percent(r.first_try_rate) + " right at once" : fmt.count(r.answers) + " answers",
+      fmt.count(r.answers) + " answers · " + (r.steps === null ? "–" : r.steps.toFixed(1)) + " steps · "
+        + fmt.percent(r.revised_rate) + " fixed · " + fmt.percent(r.left_rate) + " left · check " + fmt.seconds(r.check_p50)]);
   // Only once the judge scored answers (eval.enabled, /eval)
   if (s.eval && s.eval.answers) {
     const grade = (v) => v == null ? "–" : v.toFixed(1) + "/5";

@@ -47,6 +47,12 @@ settings: dict[str] = {
     # giving up on one that does not match its schema
     "structured.dir"       : "schemas",
     "structured.attempts"  : 3,
+    # Reasoning loop (ReAct, /react): the model says what it knows and what it will do before each action, every step
+    # is traced, and with reason.verify it checks its answer before giving it (asked again with what is wrong,
+    # reason.attempts times at most). On at the start with reason.enabled; its steps are those of chat.tools.maxdepth
+    "reason.enabled"       : False,
+    "reason.verify"        : True,
+    "reason.attempts"      : 2,
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
     "guard.enabled"        : True,

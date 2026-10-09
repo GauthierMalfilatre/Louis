@@ -122,6 +122,24 @@ def structured_stats(replies: list[dict]) -> dict:
         "attempts"      : mean([reply.get("attempts", 1) for reply in replies]),
     }
 
+def reasoning_stats(turns: list[dict], calls: list[dict]) -> dict:
+    """
+        The answers of the reasoning loop (/react): their steps, how many of the checked ones went at once, were written
+        again, or were given with problems left, and how long the model took to check a draft
+    """
+    answers: list[dict] = [turn for turn in turns if turn.get("react")]
+    checked: list[dict] = [turn for turn in answers if turn.get("checks")]
+    checks: list[float] = [call["latency"] for call in calls if call.get("purpose") == "check" and call.get("status") == "ok"]
+    return {
+        "answers"       : len(answers),
+        "steps"         : mean([turn.get("steps", 0) for turn in answers]),
+        "checked"       : len(checked),
+        "first_try_rate": ratio(sum(1 for turn in checked if not turn.get("revised") and not turn.get("left")), len(checked)),
+        "revised_rate"  : ratio(sum(1 for turn in checked if turn.get("revised")), len(checked)),
+        "left_rate"     : ratio(sum(1 for turn in checked if turn.get("left")), len(checked)),
+        "check_p50"     : percentile(checks, 0.50),
+    }
+
 def judged(evals: list[dict]) -> dict:
     """
         What the judge said of some answers: the means of their scores, and the share of their claims flagged.
@@ -360,6 +378,7 @@ def summarize(records: list[dict], *, days: float | None = None, by: str | None 
         "tools": {"calls": len(tools), "errors": sum(1 for tool in tools if not tool.get("ok"))},
         "guard": sum(1 for record in records if record["type"] == "guard"),
         "structured": structured_stats([record for record in records if record["type"] == "structured"]),
+        "reasoning": reasoning_stats(turns, calls),
         "eval": eval_stats([record for record in records if record["type"] == "eval"]),
         "series": series(records, start, end, by),
         "configurations": rows,
