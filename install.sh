@@ -37,9 +37,10 @@ elif [[ $# -gt 0 ]]; then
     die "Unknown option '$1'. Usage: $0 [--uninstall]"
 fi
 
-# src/ nests the same quotes inside f-strings, which needs Python 3.12 (PEP 701)
+# src/ nests the same quotes inside f-strings, which needs Python 3.12 (PEP 701).
+# 3.14 comes last: NeMo Guardrails (guard.enabled) does not support it yet (3.10 to 3.13)
 PYTHON=""
-for candidate in python3.14 python3.13 python3.12 python3; do
+for candidate in python3.13 python3.12 python3.14 python3; do
     if command -v "$candidate" >/dev/null \
         && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; then
         PYTHON="$(command -v "$candidate")"
