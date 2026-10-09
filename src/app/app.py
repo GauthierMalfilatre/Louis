@@ -204,7 +204,7 @@ class App:
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
 
         # NOTE: Raisable. Loaded after the model: a model that does not answer fails before NeMo takes its time to load
-        self.__guard: Guard | None = Guard(self.__bus, context=settings.get("chat.context", 12288)) \
+        self.__guard: Guard | None = Guard(self.__bus, settings) \
             if settings.get("guard.enabled", False) else None
         # The calls the guard refused in the current turn, by tool: counted again from 0 on each message
         self.__refused: Counter[str] = Counter()

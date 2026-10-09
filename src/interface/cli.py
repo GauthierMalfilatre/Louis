@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
 from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
-from events.event_list import EVAL_REPORT, GUARD_RELOADS
+from events.event_list import EVAL_REPORT
 import json
 import os
 import re
@@ -163,7 +163,6 @@ class CLI(Interface):
         bus.subscribe(self.__on_rag_sources, RAG_SOURCES)
         bus.subscribe(self.__on_rag_forgotten, RAG_FORGOTTEN)
         bus.subscribe(self.__on_eval_report, EVAL_REPORT)
-        bus.subscribe(lambda event: (self._newline(), self.out(f"⚠ {event.data['message']}", dim=True)), GUARD_RELOADS)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
