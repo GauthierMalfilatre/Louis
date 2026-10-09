@@ -1639,7 +1639,7 @@
     return node;
   }
 
-  // A step of the reasoning loop: Étape 2 → Lecture, then what the model thinks before it acts
+  // A step of the reasoning loop: its number and its tools, then what the model thinks before it acts
   function drawStep(item) {
     const node = el("div", "step");
     const head = el("div", "step-head", `Étape ${item.step}`);

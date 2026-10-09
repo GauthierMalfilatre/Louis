@@ -754,7 +754,7 @@ class CursesCLI(CLI):
             self.__bar()
 
     def __bar(self) -> None:
-        """ ● eratz · #12 · qwen3:8b · ✻ réflexion · ⟳ pas à pas, green for a saved user and red otherwise, and on the right: contexte 23% """
+        """ ● eratz · #12 · qwen3:8b · ✻ réflexion, green for a saved user and red otherwise, then the step by step mode, and on the right: contexte 23% """
         self.__status_bar.erase()
         width: int = curses.COLS - 1
         right: str = ""

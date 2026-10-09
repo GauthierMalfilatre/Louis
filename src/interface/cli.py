@@ -109,7 +109,7 @@ def preview(text: str) -> str:
 def thought_lines(thought: str) -> list[str]:
     """
         A thought of the reasoning loop as it is shown: its lines, without the Markdown bold nor the number the model
-        gives its step itself (« **Étape 1 :** »), the interfaces number them
+        sometimes gives its step itself, the interfaces number them
     """
     text: str = re.sub(r"^\s*(?:étape|step)\s*\d+\s*[:.)-]?\s*", "", thought.replace("**", ""), flags=re.IGNORECASE)
     return [line.strip() for line in text.splitlines() if line.strip()]
@@ -261,9 +261,8 @@ class CLI(Interface):
 
     def _on_reasoning_step(self, event: Event) -> None:
         """
-            What the model thinks before it acts, dim, its calls below it:
-              ⟳ Étape 2 : Je dois lire le fichier pour voir ses champs.
-            A draft only says it was written: its check comes next, and the answer once checked
+            A step of the reasoning loop, dim, on its own line: its number and what the model thinks before it acts,
+            its tool calls below it. A draft is only said to be written: its check comes next, the answer once checked
         """
         self._newline()
         lines: list[str] = thought_lines(event.data["thought"])
@@ -275,10 +274,8 @@ class CLI(Interface):
 
     def _on_reasoning_check(self, event: Event) -> None:
         """
-            What the check of the draft found:
-              ✔ Réponse vérifiée
-              ✘ Vérification 1 : à corriger, then its problems, one per line
-              ⚠ Vérification 3 : problèmes restants, réponse donnée quand même
+            What the check of the draft found, dim: ✔ when it goes, ✘ when it is written again, ⚠ when it is given with
+            problems left (the attempts are spent). The problems follow, one per line
         """
         self._newline()
         data: dict = event.data
