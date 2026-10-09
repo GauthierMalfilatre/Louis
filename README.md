@@ -89,11 +89,13 @@ Chaque appel au modèle et aux outils est enregistré, une ligne JSON par évén
 | -------- | ----------------- |
 | `run`    | un lancement de Louis : le modèle, les réglages qui jouent sur la vitesse |
 | `prompt` | un prompt système, en entier, la première fois qu'il est vu : les autres lignes le nomment par sa version (début de son hash) |
-| `llm`    | une requête au modèle : ce qu'on lui donne, sa réponse, les outils demandés, la latence, le temps jusqu'au premier token, les tokens (prompt / réponse), le temps de chargement, le statut (`ok`, `error`, `cancelled`) |
+| `llm`    | une requête au modèle : à quoi elle sert (`purpose` : `reply`, `structured`, `check`, `summary`), ce qu'on lui donne, sa réponse, les outils demandés, la latence, le temps jusqu'au premier token, les tokens (prompt / réponse), le temps de chargement, le statut (`ok`, `error`, `cancelled`) |
 | `tool`   | un appel d'outil : arguments, succès, durée, début du résultat, et le temps passé à attendre ta permission (`waited`) |
 | `guard`  | un rail du garde-fou a modifié un message |
 | `rag`    | une recherche dans la base de connaissances : la requête, le mode (`hybrid` ou `keyword`), les passages trouvés, la durée |
-| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours |
+| `step`   | une étape du raisonnement pas à pas (`/react`) : ce que le modèle pensait, les outils qu'il a appelés |
+| `check`  | la vérification d'un brouillon du raisonnement pas à pas : s'il est passé, ses problèmes, s'il a été réécrit |
+| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours ; en pas à pas, les étapes, les vérifications, les brouillons réécrits |
 
 Les lignes d'un même tour partagent son `turn`. Le temps que tu mets à répondre à une demande de permission est retiré des latences du tableau de bord. Les textes longs sont coupés, et masqués comme dans `louis.log` quand le garde-fou est actif.
 
@@ -134,6 +136,30 @@ louis --schema ./mon_schema.json --ask "..." | jq '.champ'
 ```
 
 Code de retour : `0` réponse valide, `1` réponse invalide ou modèle injoignable, `2` schéma introuvable ou invalide. Le tableau de bord (`louis --dashboard`) montre la part des réponses valides, et celles valides du premier coup.
+
+## Raisonnement pas à pas (ReAct)
+
+Louis peut répondre **pas à pas**, en rendant son raisonnement visible et vérifiable : utile quand la façon d'arriver à la réponse compte autant que la réponse.
+
+- **Chaque étape est dite** : avant chaque action, le modèle écrit ce qu'il sait, ce qui lui manque et ce qu'il va faire, puis lit le résultat de ses outils avant l'étape suivante.
+- **La réponse est vérifiée avant d'être donnée** : un fichier qu'elle cite sans qu'aucun outil l'ait lu la fait refuser tout de suite ; sinon le modèle reprend chacune de ses affirmations avec sa source (le résultat d'un outil, un calcul refait) et conclut. Une réponse refusée est réécrite avec ses problèmes (`reason.attempts` fois au plus) ; la dernière est donnée quoi qu'il arrive, avec ce qui reste à redire.
+- **Tu ne vois que la réponse vérifiée.** Les brouillons refusés restent dans la session, comme trace, mais pas dans `/export`, `/share` ni `/resume`.
+
+```
+> /react
+> Quels champs a la classe Reply, et lequel dit si la réponse a été coupée ?
+  ⟳ Étape 1 : Je dois trouver où est définie la classe Reply.
+  ● Recherche « class Reply »
+    ⎿ 1 résultat
+  ⟳ Étape 2 : Elle est dans model/reply.py : je le lis pour voir ses champs.
+  ● Lecture model/reply.py
+    ⎿ 33 lignes lues
+  ⟳ Étape 3 : réponse écrite
+  ✔ Réponse vérifiée
+…
+```
+
+`/react` l'active et le coupe (le bouton « Pas à pas » de l'interface web), `louis --react` démarre avec, comme le réglage `reason.enabled`. `reason.verify` coupe la vérification. C'est **plus lent** : chaque vérification est une requête de plus au modèle, d'une à plusieurs minutes sur un processeur sans carte graphique. Il est indépendant de `/think`, qui fait réfléchir le modèle avant chaque réponse dans les deux modes. Le tableau de bord montre la part des réponses justes du premier coup, réécrites, ou données avec des problèmes, et le temps d'une vérification.
 
 ## Notes
 

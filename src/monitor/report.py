@@ -58,6 +58,7 @@ def text(summary: dict, alerts: list[dict], path: str) -> str:
     """ The summary of all the calls, and the drift alerts, for the terminal """
     calls, turns, tools = summary["calls"], summary["turns"], summary["tools"]
     structured: dict = summary.get("structured") or {"replies": 0}
+    reasoning: dict = summary.get("reasoning") or {"answers": 0}
     lines: list[str] = [
         f"Louis monitoring · {path}",
         f"  {when(summary['start'])} → {when(summary['end'])} · {summary['runs']} run{'s' if summary['runs'] != 1 else ''}",
@@ -69,6 +70,9 @@ def text(summary: dict, alerts: list[dict], path: str) -> str:
         f"  tool calls   {count(tools['calls']):>7}   could not do it {percent(tools['errors'] / tools['calls'] if tools['calls'] else None)}",
         *([f"  json replies {count(structured['replies']):>7}   valid {percent(structured['valid_rate'])} · "
            f"at once {percent(structured['first_try_rate'])}"] if structured["replies"] else []),
+        *([f"  step by step {count(reasoning['answers']):>7}   right at once {percent(reasoning['first_try_rate'])} · "
+           f"fixed {percent(reasoning['revised_rate'])} · left {percent(reasoning['left_rate'])} · "
+           f"check {seconds(reasoning['check_p50'])}"] if reasoning["answers"] else []),
         "",
         "Drift",
     ]

@@ -431,11 +431,13 @@ class App:
             text = "[…]\n" + text[-room:]
         try:
             block: str = self.__chat([{"role": "system", "content": SUMMARY_PROMPT},
-                                      {"role": "user", "content": text}], [], None, think=False).content.strip()
+                                      {"role": "user", "content": text}], [], None, think=False,
+                                      purpose="summary").content.strip()
             summary: str = f"{previous}\n{block}".strip()
             if len(summary) > SUMMARY_CHARS:
                 summary = self.__chat([{"role": "system", "content": MERGE_PROMPT},
-                                       {"role": "user", "content": summary}], [], None, think=False).content.strip()
+                                       {"role": "user", "content": summary}], [], None, think=False,
+                                      purpose="summary").content.strip()
         except ModelException as e:
             log.warning(f"[app] {len(left)} messages left out of the context without a summary: {e.message}")
             return None
@@ -534,7 +536,7 @@ class App:
 
             while attempts < most:
                 attempts += 1
-                reply: Reply = self.__chat(messages, [], None, schema=schema)
+                reply: Reply = self.__chat(messages, [], None, schema=schema, purpose="structured")
                 if reply.cut:
                     data, errors = None, [f"réponse coupée : elle a dépassé {self.__settings.get('chat.predict')} tokens"]
                 else:
@@ -881,7 +883,7 @@ class App:
             {"role": "user", "content": VERIFY_PROMPT + instruction(CRITIQUE)}
         ]
         try:
-            reply: Reply = self.__chat(messages, [], None, schema=CRITIQUE, think=False)
+            reply: Reply = self.__chat(messages, [], None, schema=CRITIQUE, think=False, purpose="check")
         except ModelException as e:
             log.warning(f"[app] the draft could not be checked, it goes as it is: {e.message}")
             return True, []
@@ -904,12 +906,13 @@ class App:
         return ok, [] if ok else problems
 
     def __chat(self, messages: list[dict], tools: list[dict], stream: Callable | None,
-               schema: dict | None = None, think: bool | None = None) -> Reply:
+               schema: dict | None = None, think: bool | None = None, purpose: str = "reply") -> Reply:
         """
             Ask the model for its next reply, and tell how the request went (MODEL_CALL), even when it fails or the
             user cancels it: the monitoring records every call, with its latency and its tokens.
             With a schema, the reply is JSON that matches it, and the model does not think first: what it would
-            think is no JSON
+            think is no JSON. purpose tells the monitoring what the call is for: "reply" (to the user), "structured"
+            (JSON for /json), "check" (of a draft, /react) or "summary" (of what left the context)
         """
         start: float = time.perf_counter()
         reply: Reply | None = None
@@ -934,6 +937,7 @@ class App:
             self.__bus.dispatch(
                 MODEL_CALL,
                 model=self.__model.model,
+                purpose=purpose,
                 system=self.__prompt(),
                 messages=messages,
                 tools=[tool["function"]["name"] for tool in tools],

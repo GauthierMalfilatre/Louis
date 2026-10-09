@@ -38,7 +38,8 @@ CHAT_COMPACTED    = "chat.compacted"      # data: results (cut down this time), 
 # One request to the model, however it went: what the monitoring records. status is "ok", "error" (error tells why) or
 # "cancelled" (Ctrl+C); latency the seconds of the whole request; system the prompt of the session, without the context
 # put after it (the date changes it every day); reply the Reply as a dict (tokens, timings...), None if there is none
-MODEL_CALL        = "model.call"          # data: model, system, messages (as sent), tools (the names offered), think, status, error, latency, reply
+# purpose: what the call is for, "reply" (to the user), "structured" (JSON for /json), "check" (of a draft, /react) or "summary"
+MODEL_CALL        = "model.call"          # data: model, purpose, system, messages (as sent), tools (the names offered), think, status, error, latency, reply
 
 # A rail of the guard changed a message: the user's before the model reads it, the model's before it is shown,
 # a tool call of the model before it runs, or the result of a tool that reads what Louis does not own (the knowledge
