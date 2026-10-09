@@ -1,0 +1,32 @@
+{
+  "_help": [
+    "Questions posées à Louis par le benchmark, chacune dans une nouvelle session : cd src && python -m eval.bench ../docs/eval_questions.json --save ../avant.json",
+    "Puis, après un changement (prompt, modèle, code) : python -m eval.bench ../docs/eval_questions.json --baseline ../avant.json --save ../apres.json",
+    "Louis répond avec ses outils (lecture seule : personne n'accorde de permission), dans le dossier où le benchmark est lancé : ici, src/ de Louis",
+    "kind : regroupe les chiffres. reference (facultatif) : la bonne réponse, lue par RAGAS (ses métriques qui comparent à une référence). Une question qui commence par TODO est laissée de côté"
+  ],
+  "questions": [
+    {
+      "kind": "code du projet",
+      "question": "Combien de fois au plus un même appel d'outil peut-il être refait pour un message, et où est-ce réglé ?",
+      "reference": "Deux fois (SAME_CALLS = 2 dans app/app.py) : le troisième est refusé, et après MAX_REFUSED = 3 refus le tour s'arrête."
+    },
+    {
+      "kind": "code du projet",
+      "question": "Quels modèles le garde-fou utilise-t-il pour juger les messages ?",
+      "reference": "Le même modèle que le chat, qwen3.5:9b par Ollama (guard/config/config.yml, models: type main)."
+    },
+    {
+      "kind": "code du projet",
+      "question": "Que fait la commande /share ?"
+    },
+    {
+      "kind": "connaissance générale",
+      "question": "Quelle est la différence entre une liste et un tuple en Python ?"
+    },
+    {
+      "kind": "hors projet",
+      "question": "TODO une question sur une source de la base de connaissances (search_knowledge)"
+    }
+  ]
+}

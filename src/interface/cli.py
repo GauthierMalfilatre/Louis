@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
 from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
-from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK
+from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT, GUARD_RELOADS
 import json
 import os
 import re
@@ -174,6 +174,8 @@ class CLI(Interface):
         bus.subscribe(self.__on_rag_indexed, RAG_INDEXED)
         bus.subscribe(self.__on_rag_sources, RAG_SOURCES)
         bus.subscribe(self.__on_rag_forgotten, RAG_FORGOTTEN)
+        bus.subscribe(self.__on_eval_report, EVAL_REPORT)
+        bus.subscribe(lambda event: (self._newline(), self.out(f"⚠ {event.data['message']}", dim=True)), GUARD_RELOADS)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -444,6 +446,45 @@ class CLI(Interface):
         self.out(json.dumps(event.data["data"], ensure_ascii=False, indent=2))
         attempts: int = event.data["attempts"]
         self.out(f"(schéma {event.data['schema']}{f', {attempts} essais' if attempts > 1 else ''})", dim=True)
+
+    def __on_eval_report(self, event: Event) -> None:
+        """
+            The scores of the last answer (/eval), then the claims its sources do not support:
+              ✗ contredite   « ... »  [2] cat_file {"path": "src/app.py"} : « the passage »
+              ? invérifiable « ... »
+        """
+        data: dict = event.data
+        self._newline()
+        if data["status"] != "ok":
+            self.out(f"⚖ Le juge ({data['judge']}) n'a pas pu évaluer la dernière réponse : {data['error']}\n")
+            return
+        claims: list[dict] = data["claims"]
+        supported: int = sum(1 for claim in claims if claim["verdict"] == "supported")
+        sources: int = len(data["sources"])
+        if data["faithfulness"] is not None:
+            faithful: str = (f"{round(data['faithfulness'] * 100)} %  ({supported} affirmation{'s' if supported > 1 else ''}"
+                             f" sur {len(claims)} appuyée{'s' if supported > 1 else ''} par {sources} source{'s' if sources > 1 else ''})")
+        else:
+            faithful = "aucune source lue : réponse de mémoire" if not sources else "aucun fait à vérifier"
+        spent: dict = data["spent"]
+        detail: str = f", dont {spent['generation']:.0f} s à écrire {spent['completion_tokens']} tokens"
+        if spent["load"] >= 1.0:
+            detail += f" et {spent['load']:.0f} s à recharger le modèle"
+        self.out(f"⚖ Dernière réponse, notée par {data['judge']} en {data['duration']:.1f} s{detail}")
+        self.out(f"  fidélité aux sources  {faithful}")
+        self.out(f"  pertinence            {data['relevance']}/5  {data['relevance_reason']}", dim=True)
+        self.out(f"  cohérence             {data['coherence']}/5  {data['coherence_reason']}", dim=True)
+        labels: dict[str, str] = {"contradicted": "✗ contredite  ", "unverifiable": "? invérifiable"}
+        for claim in sorted((c for c in claims if c["verdict"] != "supported"), key=lambda c: c["verdict"] != "contradicted"):
+            self.out(f"  {labels[claim['verdict']]} « {claim['text']} »")
+            if claim["source"]:
+                source: dict = data["sources"][claim["source"] - 1]
+                where: str = f"[{claim['source']}] {LABELS.get(source['tool'], source['tool'])} {call_detail(source['tool'], source['arguments'])}"
+                quote: str = f" : « {shorten(claim['evidence'], PREVIEW_LENGTH)} »" if claim["evidence"] else ""
+                self.out(f"      {where}{quote}{'' if claim['quoted'] or not claim['evidence'] else ' (citation introuvable dans la source)'}", dim=True)
+            elif claim["reason"]:
+                self.out(f"      {claim['reason']}", dim=True)
+        self.out("")
 
     def __on_schema_list(self, event: Event) -> None:
         """ One schema per line: its name for /json, what it is for, and where it comes from """

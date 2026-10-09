@@ -10,7 +10,7 @@ from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_CONTEXT, CHAT_THINKING, APP_STARTED
 from events.event_list import SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, THINKING_ENABLED, THINKING_DISABLED
-from events.event_list import REASONING_ENABLED, REASONING_DISABLED
+from events.event_list import REASONING_ENABLED, REASONING_DISABLED, EVAL_STARTED, EVAL_SCORED
 import curses
 import locale
 import os
@@ -25,6 +25,11 @@ PAD_LINES  : int   = 3000   # Lines of conversation kept: the oldest ones scroll
 BUSY       : list[str] = ["Gamberging", "Gooning", "Phasing", "Zioning", "Larping", "Yapping", "Blablating", "Doomscrolling", "Asking my mom", "Taking coffee"]
 BUSY_EVERY : float = 3.0
 SPINNER    : str   = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+# The words of the status bar while the judge reads an answer again (eval/), changed as often as those of BUSY
+JUDGING    : list[str] = ["Fact-checking", "Squinting", "Cross-examining", "Nitpicking", "Grading", "Sniffing sources",
+                          "Double-checking", "Raising an eyebrow"]
+# While the user types, the keys are waited for this long at most (ms): the judge's spinner turns in between
+TICK       : int   = 100
 BELOW      : int   = 2      # The lines below the conversation: the one being edited, and the status bar
 FULL       : float = 0.8    # From this share of the context used on, its percentage is a warning
 FOLD_LINES : int   = 15     # A diff, or a thinking, longer than this is folded
@@ -121,6 +126,13 @@ class CursesCLI(CLI):
         self.__context  : tuple[int, int, bool] | None = None
         self.__hint      : str                        = ""
         self.__commands  : list[str]                  = []
+        # Since when the judge reads an answer again (None: it does not), its word, since when, and whether the user is
+        # typing: the bar is then drawn between the keys, by the thread that reads them
+        self.__judging   : float | None               = None
+        self.__judge_word: str                        = JUDGING[0]
+        self.__judge_since: float                     = 0.0
+        self.__judge_shown: bool                      = False
+        self.__reading   : bool                       = False
         self.__lock      : threading.RLock            = threading.RLock()
         self.__stop      : threading.Event            = threading.Event()
 
@@ -169,6 +181,7 @@ class CursesCLI(CLI):
         bus.subscribe(lambda event: self.__set(react=True), REASONING_ENABLED)
         bus.subscribe(lambda event: self.__set(react=False), REASONING_DISABLED)
         bus.subscribe(self.__on_context, CHAT_CONTEXT)
+        bus.subscribe(self.__on_judging, EVAL_STARTED, EVAL_SCORED)
         return self
 
     # --- What the CLI shows ---------------------------------------------------------------------------
@@ -296,11 +309,31 @@ class CursesCLI(CLI):
             own), PageUp, PageDown and the wheel to scroll the conversation. "" on Ctrl+D
         """
         text, pos, index = "", 0, len(self.__history)
+        self.__reading = True
+        try:
+            return self.__edit(prompt, text, pos, index)
+        finally:
+            self.__reading = False
+
+    def __edit(self, prompt: str, text: str, pos: int, index: int) -> str:
+        """ The loop of _read_line: the keys waited for a tick at most, for the judge's spinner to turn in between """
+        redraw: bool = True
         while True:
-            with self.__lock:
-                self.__cursor(True)
-                self.__draw(prompt, text, pos)
-            key = self.__key()
+            if redraw:
+                with self.__lock:
+                    self.__cursor(True)
+                    self.__draw(prompt, text, pos)
+            key = self.__key(tick=True)
+            # A tick without a key changed nothing of the line: it is not drawn again
+            redraw = key is not None
+            if key is None:
+                # No key in this tick: the bar of the judge goes on (and is drawn once more when it is done)
+                with self.__lock:
+                    if self.__judging is not None or self.__judge_shown:
+                        self.__bar()
+                        # The bar took the cursor: back where the user types
+                        self.__input.refresh()
+                continue
             if self.__hint:
                 self.__set(hint="")
             if key in ("\n", "\r", curses.KEY_ENTER):
@@ -418,6 +451,18 @@ class CursesCLI(CLI):
             self.__end_thinking()
             self.__busy = False
             self.__status()
+
+    def __on_judging(self, event: Event) -> None:
+        """
+            The judge starts or ends an answer. From its thread: nothing is drawn here, the thread reading the keys or
+            the spinner's draw the bar (two threads in curses at once garble the screen)
+        """
+        with self.__lock:
+            if event.name == EVAL_STARTED:
+                self.__judging = time.monotonic()
+                self.__judge_word, self.__judge_since = random.choice(JUDGING), self.__judging
+            else:
+                self.__judging = None
 
     def __on_thinking(self, event: Event) -> None:
         """ What the model thinks, dim, as it thinks it: folded once it replies if it was long """
@@ -696,6 +741,10 @@ class CursesCLI(CLI):
                         self.__pad.move(y, x)
                         self.__refresh()
                     self.__status(frame)
+                # The judge's bar, when nobody types (a turn, /eval waiting for it): the keys' thread draws it otherwise
+                if (self.__judging is not None or self.__judge_shown) and not self.__reading and not self.__asking \
+                        and not self.__stop.is_set():
+                    self.__bar()
 
     def __set(self, **values) -> None:
         """ Change what the status bar shows, and draw it again """
@@ -717,7 +766,19 @@ class CursesCLI(CLI):
             right = f"contexte {'~' if estimated else ''}{round(100 * used / size)}%"
             if used >= FULL * size:
                 right_attr = self.__colors.get("danger", curses.A_BOLD)
-        room: int = max(0, width - len(right) - 2)
+        # The judge at work, before the context:  ⚖ Squinting ⠹ 42s · contexte 23%
+        judge: str = ""
+        self.__judge_shown = self.__judging is not None and not self.__hint
+        if self.__judge_shown:
+            now: float = time.monotonic()
+            if now - self.__judge_since >= BUSY_EVERY:
+                self.__judge_word = random.choice([word for word in JUDGING if word != self.__judge_word] or JUDGING)
+                self.__judge_since = now
+            judge = f"⚖ {self.__judge_word} {SPINNER[int(now * 10) % len(SPINNER)]} {int(now - self.__judging)}s"
+            judge += " · " if right else ""
+        if judge and len(judge) + len(right) < width - 4:
+            self.__status_bar.addstr(0, width - len(right) - len(judge), judge, self.__colors.get("accent", curses.A_DIM))
+        room: int = max(0, width - len(right) - len(judge) - 2)
         x: int = 1
         if self.__user is not None and room > 3:
             name, saved = self.__user
@@ -740,9 +801,16 @@ class CursesCLI(CLI):
 
     # --- Reading --------------------------------------------------------------------------------------
 
-    def __key(self) -> str | int | None:
-        """ The next key: curses reads most of them, the escape sequences it does not know are read here """
-        key = self.__input.get_wch()
+    def __key(self, tick: bool = False) -> str | int | None:
+        """
+            The next key: curses reads most of them, the escape sequences it does not know are read here.
+            With tick, None when no key came in TICK ms
+        """
+        self.__input.timeout(TICK if tick else -1)
+        try:
+            key = self.__input.get_wch()
+        except curses.error:
+            return None
         if key != "\x1b":
             return key
         # A lone Escape, or a sequence of an unknown key: nothing

@@ -323,6 +323,14 @@ function renderKpis(s) {
     tiles.push(["Step by step", r.checked ? fmt.percent(r.first_try_rate) + " right at once" : fmt.count(r.answers) + " answers",
       fmt.count(r.answers) + " answers · " + (r.steps === null ? "–" : r.steps.toFixed(1)) + " steps · "
         + fmt.percent(r.revised_rate) + " fixed · " + fmt.percent(r.left_rate) + " left · check " + fmt.seconds(r.check_p50)]);
+  // Only once the judge scored answers (eval.enabled, /eval)
+  if (s.eval && s.eval.answers) {
+    const grade = (v) => v == null ? "–" : v.toFixed(1) + "/5";
+    tiles.push(["Faithful to sources", fmt.percent(s.eval.faithfulness),
+      fmt.count(s.eval.answers) + " judged · " + fmt.percent(s.eval.flagged_rate) + " claims flagged · " +
+      fmt.count(s.eval.contradicted) + " contradicted"]);
+    tiles.push(["Relevance · coherence", grade(s.eval.relevance) + " · " + grade(s.eval.coherence),
+      "by the judge, " + fmt.count(s.eval.versions.length) + (s.eval.versions.length === 1 ? " version" : " versions")]);
   }
   document.getElementById("kpis").replaceChildren(...tiles.map(([label, value, sub]) =>
     el("div", { class: "card kpi" }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }),

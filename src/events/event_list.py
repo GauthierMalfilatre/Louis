@@ -51,6 +51,11 @@ MODEL_CALL        = "model.call"          # data: model, purpose, system, messag
 # the sensitive data replaced, the model reads the rest
 GUARD_TRIGGERED   = "guard.triggered"     # data: stage ("input", "output", "tool_call", "tool_result"), action ("masked", "refused"), rails (the names of those that refused), content (what goes on instead), tool (its name, for "tool_call" and "tool_result" only)
 
+# NeMo asks Ollama through its OpenAI API (/v1), which can not set num_ctx: Ollama loads the model with its own
+# default context there, and loads it again with Louis' for the next request of the chat (or of the judge). Told once,
+# after the first check, when the context Ollama loaded is not chat.context: it is set where Ollama starts
+GUARD_RELOADS     = "guard.reloads"       # data: model, loaded (the context Ollama loaded it with for NeMo), expected (chat.context), message
+
 # producer: who wanted the call, "model" (the model asked for it), "user" (a command) or "system" (Louis itself)
 TOOL_CALL_STARTED = "tool.call.started"   # data: name, arguments (masked with the guard: to show, not to run), producer
 TOOL_CALL_ENDED   = "tool.call.ended"     # data: name, producer, ok (False if it did not do it: unknown, crashed, failed or refused), result, duration (seconds)
@@ -69,6 +74,18 @@ RAG_FORGOTTEN      = "rag.forgotten"        # data: source, chunks (removed)
 RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), path, kind and after (the filters on the files, None: none; after: "2026-09-30"), files (how many the filters kept, None without them), mode ("hybrid": keywords and meaning, "keyword"), reranker (its model, None if it did not rerank), candidates (found by the index), dropped (under the threshold), hits: [{source, path, start, end, score, fused (the score of the index, None if not reranked)}], rerank (seconds, None), duration (seconds, all of it)
 
 APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), react (True if /react is on), commands: [{name, usage, description}]
+
+# The judge (eval/): an answer of Louis read again by a model, after its turn, against the sources its tools read.
+# claims: [{text, verdict ("supported", "contradicted", "unverifiable"), source (its number from 1, 0: none), evidence
+# (the passage quoted, "" none), quoted (the quote is really in the source), reason}]. faithfulness is the share of the
+# claims supported, None when the answer read no source or holds no fact; relevance and coherence go from 1 to 5.
+# EVAL_SCORED is told once per judgment, from the thread of the judge when it runs in the background: only the
+# monitoring and the log listen to it. EVAL_REPORT is what /eval shows, from the thread of the app: the interfaces
+# EVAL_STARTED: the judge starts on an answer (from its thread too), until its EVAL_SCORED: the interfaces may show it works
+EVAL_STARTED      = "eval.started"        # data: id (of the answer, as EVAL_SCORED names it)
+EVAL_SCORED       = "eval.scored"         # data: id, session, model, prompt (its version), question, answer, sources: [{tool, arguments, chars}], judge (its model), status ("ok", "error"), error, faithfulness, relevance, relevance_reason, coherence, coherence_reason, claims, duration (seconds)
+EVAL_REPORT       = "eval.report"         # data: the same as EVAL_SCORED
+
 APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
 
 # A tool asks before acting: the interface shows the request, and answers with the same id.
