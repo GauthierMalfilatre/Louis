@@ -5,6 +5,7 @@
 ## Pull request tool: list, read, open, comment and merge the pull requests of the project, through gh
 ##
 from tool.tool import Tool
+from tool.risk import Risk, NONE, IRREVERSIBLE
 from tool.impl.git.tool_git import run, current_branch, valid_branch, has_ref, fetch, unknown_arguments, REFUSED
 import json
 
@@ -86,6 +87,26 @@ class PullRequestTool(Tool):
                 "required": ["action"]
             }
         )
+
+    def risk(self, app, **kwargs) -> Risk:
+        """
+            What the action would do: list and view only read. What is created, said or merged on GitHub is seen by
+            the team at once, and stays in its history whatever is done after
+        """
+        action = kwargs.get("action")
+        number = kwargs.get("number")
+        which: str = f"la PR #{number}" if number else "la PR"
+        if action == "create":
+            head: str = kwargs.get("head") or current_branch() or "la branche courante"
+            base: str = kwargs.get("base") or "la branche par défaut"
+            return Risk(IRREVERSIBLE, f"une PR de {head} vers {base} sera ouverte sur GitHub, l'équipe notifiée : "
+                                      "fermée, elle reste dans l'historique")
+        if action == "comment":
+            return Risk(IRREVERSIBLE, f"un commentaire public sur {which}, ses participants notifiés")
+        if action == "merge":
+            return Risk(IRREVERSIBLE, f"{which} sera fusionnée dans sa branche de base : seul un revert, dans une "
+                                      "nouvelle PR, la défait")
+        return NONE
 
     def handle(self, app, **kwargs) -> str:
         """ Run the pull request action asked for """
