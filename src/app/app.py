@@ -24,6 +24,7 @@ from tool.impl.git.tool_pr import PullRequestTool
 from tool.impl.exec.tool_run import RunTool, available as sandbox_available
 from tool.impl.rag.tool_knowledge import KnowledgeTool
 from tool.permission import PermissionManager
+from tool.risk import Risk, IRREVERSIBLE
 from rag.knowledge import Knowledge
 from guard.guard import Guard
 from guard.verdict import Verdict
@@ -900,6 +901,17 @@ class App:
             return (f"Erreur : le garde-fou n'a pas pu vérifier le résultat de '{call.name}' ({type(e).__name__}), "
                     "il ne t'est pas donné.")
 
+    def __risk(self, tool: Tool, call: ToolCall) -> Risk:
+        """
+            What the call would do, as its tool judges it. A tool that can not judge it (it crashes) makes it
+            irreversible: a risk that is not known is never taken for none
+        """
+        try:
+            return tool.risk(self, **call.arguments)
+        except Exception:
+            log.exception(f"[tool] the risk of {call.name} could not be judged: taken as irreversible")
+            return Risk(IRREVERSIBLE)
+
     def __call(self, call: ToolCall, producer: str = "model", *, refused: str | None = None,
                most: float = MAX_RESULT) -> str:
         """
@@ -922,7 +934,12 @@ class App:
             result = refusal
         else:
             try:
-                result = tool.handle(self, **call.arguments)
+                # A call that can not be undone is confirmed each time, whatever "always" was said to its tool
+                self.__permissions.strict = self.__risk(tool, call).at_least(IRREVERSIBLE)
+                try:
+                    result = tool.handle(self, **call.arguments)
+                finally:
+                    self.__permissions.strict = False
                 result = self.__screen_result(call, result if isinstance(result, str) else str(result))
             except Exception as e:
                 log.exception(f"[tool] {call.name} failed")

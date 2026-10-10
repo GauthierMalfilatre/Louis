@@ -16,6 +16,9 @@ class PermissionManager:
         self.__answer : bool | None = None
         self.__pending: int | None  = None
         self.__last   : int         = 0
+        # True while a call that can not be undone runs (a push, a merge): the app sets it, then sets it back.
+        # Whatever the call asks is then asked every time, never granted by an "always" given to its tool
+        self.strict   : bool        = False
         bus.subscribe(self.__on_grant, TOOL_GRANT_PERMISSION)
 
     def request(self, tool: str, summary: str, preview: str = "", *, every_time: bool = False) -> bool:
@@ -24,8 +27,10 @@ class PermissionManager:
             The bus is synchronous: whoever handles the request answers before dispatch returns.
             A request nobody answers is refused, so a missing or broken handler never lets a tool act.
             With several interfaces, the first answer counts: a later one can not overturn it.
-            every_time: asked even if the user said "always" to the tools (a link made public, not a file written)
+            every_time: asked even if the user said "always" to the tools (a link made public, not a file written),
+            as every request while strict is True
         """
+        every_time = every_time or self.strict
         self.__last += 1
         self.__pending, self.__answer = self.__last, None
         try:
