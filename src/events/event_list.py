@@ -96,6 +96,8 @@ TOOL_GRANT_PERMISSION  = "tool.permission.grant"    # data: id, granted
 # to the model. Nobody answering means no, as for a permission
 PLAN_PROPOSED = "plan.proposed"   # data: id, intent, actions: [{tool, arguments (masked with the guard), risk ("safe", "reversible", "irreversible"), consequence, undo, preview}]
 PLAN_DECIDED  = "plan.decided"    # data: id, approved, feedback
+# What /plan set, or what it is when asked without arguments: whether the plans are shown, and from which risk on
+PLAN_SETTINGS = "plan.settings"   # data: enabled, level ("irreversible" or "reversible")
 
 # What the commands tell the user. The data is raw and JSON-friendly (full texts, raw paths): each
 # interface lays it out its own way, the CLI as text, a web page as it likes

@@ -12,7 +12,7 @@ from config.prompt import SYSTEM_PROMPT
 from config.settings import settings
 from events.event import Event
 from events.event_list import PLAN_PROPOSED, PLAN_DECIDED, TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
-from events.event_list import CHAT_TURN_ENDED
+from events.event_list import CHAT_TURN_ENDED, PLAN_SETTINGS, COMMAND_ERROR
 from interface.interface import Interface
 from model.model import OllamaModel
 from model.reply import Reply
@@ -176,3 +176,31 @@ def test_only_the_first_answer_to_a_plan_counts():
         bus.dispatch(PLAN_DECIDED, id=event.data["id"], approved=True, feedback="")
     bus.subscribe(answer, PLAN_PROPOSED)
     assert permissions.propose("but", []) == (False, "non")
+
+def settings_told(user: Person) -> list[dict]:
+    return [event.data for event in user.events if event.name == PLAN_SETTINGS]
+
+def test_plan_turns_the_plans_on_and_off_and_sets_their_level(louis):
+    user = Person()
+    app, tools = louis([], user, **{"hitl.enabled": False})
+    for typed in ("/plan on", "/plan reversible", "/plan off", "/plan irréversible", "/plan"):
+        app._App__commands.fetch(typed, app)
+    assert settings_told(user) == [
+        {"enabled": True, "level": IRREVERSIBLE}, {"enabled": True, "level": REVERSIBLE},
+        {"enabled": False, "level": REVERSIBLE}, {"enabled": True, "level": IRREVERSIBLE},
+        {"enabled": True, "level": IRREVERSIBLE},
+    ]
+
+def test_plan_with_a_word_it_does_not_know_changes_nothing(louis):
+    user = Person()
+    app, tools = louis([], user)
+    app._App__commands.fetch("/plan peut-être", app)
+    assert settings_told(user) == [] and app.settings["hitl.enabled"] is True
+    assert [event.data["reason"] for event in user.events if event.name == COMMAND_ERROR] == ["usage"]
+
+def test_a_plan_turned_off_by_the_command_lets_the_tools_ask_as_before(louis):
+    user = Person()
+    app, tools = louis([Reply(content="", tool_calls=[ToolCall("push", {})]), Reply(content="Fait.")], user)
+    app._App__commands.fetch("/plan off", app)
+    app._App__answer("Pousse")
+    assert user.plans == [] and user.asked == ["push"]

@@ -47,6 +47,7 @@ from command.command import CommandTree
 from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
 from command.impl.command_react import ToggleReactCommand
+from command.impl.command_plan import PlanCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
 from command.impl.command_json import JsonCommand
@@ -160,6 +161,7 @@ class App:
             .register(UnshareCommand())\
             .register(ToggleThinkCommand())\
             .register(ToggleReactCommand())\
+            .register(PlanCommand())\
             .register(IndexCommand())\
             .register(UnindexCommand())\
             .register(EvalCommand())\

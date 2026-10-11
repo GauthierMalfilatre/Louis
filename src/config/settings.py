@@ -53,6 +53,13 @@ settings: dict[str] = {
     "reason.enabled"       : False,
     "reason.verify"        : True,
     "reason.attempts"      : 2,
+    # Human in the loop (/plan): a reply of the model with a call as risky as hitl.level ("irreversible": a push, a merge,
+    # a file whose content would be lost; "reversible": any change) is suspended before its first call runs, and its plan
+    # shown, what the model meant and each call with what it would change. Its calls run once the user approves it,
+    # without asking again; refused, none does, and what the user said is told to the model.
+    # NOTE: off until the interfaces show the plans and answer them: a plan nobody answers is refused
+    "hitl.enabled"         : False,
+    "hitl.level"           : "irreversible",
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
     "guard.enabled"        : True,

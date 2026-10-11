@@ -17,6 +17,7 @@ from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG
 from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT
+from events.event_list import PLAN_SETTINGS
 import json
 import os
 import re
@@ -114,6 +115,14 @@ def thought_lines(thought: str) -> list[str]:
     text: str = re.sub(r"^\s*(?:étape|step)\s*\d+\s*[:.)-]?\s*", "", thought.replace("**", ""), flags=re.IGNORECASE)
     return [line.strip() for line in text.splitlines() if line.strip()]
 
+def plan_settings(data: dict) -> str:
+    """ What /plan set, said to the user """
+    if not data["enabled"]:
+        return "Plan avant d'agir désactivé : chaque outil demande ton accord comme d'habitude. /plan on pour le remettre."
+    which: str = ("seulement ce qui ne s'annule pas (un push, un merge, un fichier dont le contenu serait perdu)"
+                  if data["level"] == "irreversible" else "toute action qui change quelque chose")
+    return f"Plan avant d'agir activé, pour {which} : Louis te montre ce qu'il va faire et attend ton accord. /plan off pour le couper."
+
 def short_path(path: str) -> str:
     """ A path, with ~ for the home folder """
     home: str = os.path.expanduser("~")
@@ -167,6 +176,7 @@ class CLI(Interface):
         bus.subscribe(self.__on_reasoning_disabled, REASONING_DISABLED)
         bus.subscribe(self._on_reasoning_step, REASONING_STEP)
         bus.subscribe(self._on_reasoning_check, REASONING_CHECK)
+        bus.subscribe(self.__on_plan_settings, PLAN_SETTINGS)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_rag_indexing, RAG_INDEXING)
         bus.subscribe(self.__on_rag_progress, RAG_INDEX_PROGRESS)
@@ -258,6 +268,10 @@ class CLI(Interface):
     def __on_reasoning_disabled(self, event: Event) -> None:
         """ Back to the usual replies """
         self.out("\nRaisonnement pas à pas désactivé : Louis répond comme d'habitude.\n")
+
+    def __on_plan_settings(self, event: Event) -> None:
+        """ Whether the plans are shown, and for which actions """
+        self.out(f"\n{plan_settings(event.data)}\n")
 
     def _on_reasoning_step(self, event: Event) -> None:
         """

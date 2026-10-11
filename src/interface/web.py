@@ -5,7 +5,8 @@
 ## Web interface: Louis in a browser (louis --web), and the pages of the public links of /share
 ##
 from interface.interface import Interface
-from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, preview as one_line
+from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings
+from interface.cli import preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import APP_STARTED, APP_STOPPED, THINKING_ENABLED, THINKING_DISABLED
@@ -18,7 +19,7 @@ from events.event_list import EXPORT_DONE, SHARE_CREATED, SHARE_LIST, SHARE_REVO
 from events.event_list import COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_DESCRIBE_PROGRESS, RAG_INDEXED, RAG_SOURCES
 from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
-from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK
+from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, PLAN_SETTINGS
 from config.settings import settings
 from export.render_html import MARKDOWN, render
 from session.database import Database, now
@@ -316,6 +317,7 @@ class WebInterface(Interface):
         bus.subscribe(self.__on_reasoning_switched, REASONING_ENABLED, REASONING_DISABLED)
         bus.subscribe(self.__on_reasoning_step, REASONING_STEP)
         bus.subscribe(self.__on_reasoning_check, REASONING_CHECK)
+        bus.subscribe(lambda event: self.__notice(plan_settings(event.data)), PLAN_SETTINGS)
         bus.subscribe(self.__on_export_done, EXPORT_DONE)
         bus.subscribe(self.__on_share_created, SHARE_CREATED)
         bus.subscribe(self.__on_share_list, SHARE_LIST)
