@@ -69,13 +69,20 @@ class WriteTool(Tool):
         full = resolve_path(app, path) if isinstance(path, str) and path else None
         if full is None or os.path.isdir(full):
             return NONE
+        content = kwargs.get("content")
+        content = fix_newlines(full, content) if isinstance(content, str) else ""
         if not os.path.exists(full):
             shown: str = display_path(full)
-            return Risk(REVERSIBLE, f"{shown} sera créé", f"supprimer {shown}")
+            return Risk(REVERSIBLE, f"{shown} sera créé", f"supprimer {shown}", diff_preview("", content))
         # Without overwrite, the tool refuses: nothing is written
         if str(kwargs.get("overwrite", False)).lower() != "true":
             return NONE
-        return change_risk(full)
+        try:
+            with open(full, "r", encoding="utf-8", newline="") as f:
+                before = f.read()
+        except (OSError, UnicodeDecodeError):
+            before = ""
+        return change_risk(full, diff_preview(before, content))
 
     def handle(self, app, **kwargs) -> str:
         """Create a file, or replace it when overwrite is set."""

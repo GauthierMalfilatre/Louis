@@ -126,3 +126,13 @@ UNSOURCED: str = (
     "{path} : aucun outil ne l'a lu, listé ni écrit dans cette session, ce que la réponse en dit n'a pas de source. "
     "Lis-le avant d'en parler, ou dis que tu ne l'as pas lu."
 )
+
+# Human in the loop: the result of each call of a plan the user did not approve, none of them made. With what the user
+# said instead, or else what to do
+REFUSED_PLAN: str = (
+    "Refusé : l'utilisateur n'a pas approuvé le plan de ta réponse, cet appel n'a pas été fait (ni les autres de ta "
+    "réponse). Ne le retente pas tel quel. "
+)
+PLAN_FEEDBACK: str = "Ce qu'il a répondu : « {feedback} ». Tiens-en compte avant de proposer autre chose."
+PLAN_NO_FEEDBACK: str = "Demande-lui ce qu'il veut à la place, et ne dis jamais avoir fait ce qui n'a pas été fait."
+

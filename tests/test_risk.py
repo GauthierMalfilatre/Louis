@@ -33,7 +33,10 @@ def test_a_tool_that_reads_changes_nothing(folder, app):
     assert CatTool().risk(app, path="a.py") == NONE
 
 def test_a_new_file_or_folder_can_be_removed_again(folder, app):
-    assert WriteTool().risk(app, path="new.py", content="x") == Risk(REVERSIBLE, "/new.py sera créé", "supprimer /new.py")
+    risk: Risk = WriteTool().risk(app, path="new.py", content="x = 1\n")
+    assert (risk.level, risk.consequence, risk.undo) == (REVERSIBLE, "/new.py sera créé", "supprimer /new.py")
+    # What the plan shows of it: the lines the file would hold
+    assert "+x = 1" in risk.preview
     assert MkdirTool().risk(app, path="docs").level == REVERSIBLE
     # Judged only: nothing is written, nobody is asked
     assert not (folder / "new.py").exists() and not (folder / "docs").exists() and app.permissions.asked == []
@@ -96,3 +99,12 @@ def test_a_git_risk_names_the_branch(repo, app):
 ])
 def test_what_is_said_or_merged_on_github_can_not_be_undone(repo, app, arguments, level):
     assert PullRequestTool().risk(app, **arguments).level == level
+
+def test_the_preview_shows_what_would_change(repo, app):
+    risk: Risk = EditTool().risk(app, path="README.md", old_str="# Projet", new_str="# Louis")
+    assert "-# Projet" in risk.preview and "+# Louis" in risk.preview
+    replaced: Risk = WriteTool().risk(app, path="README.md", content="# Autre\n", overwrite=True)
+    assert "-# Projet" in replaced.preview and "+# Autre" in replaced.preview
+    commit: Risk = GitTool().risk(app, action="commit", paths=["README.md"], message="docs: titre")
+    assert commit.preview == "docs: titre\n  README.md"
+    assert "Titre" in PullRequestTool().risk(app, action="create", title="Titre", body="Corps").preview

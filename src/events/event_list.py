@@ -89,6 +89,14 @@ APP_STOPPED       = "app.stopped"         # data: reason ("eof", "interrupt")
 TOOL_BEGFOR_PERMISSION = "tool.permission.begfor"   # data: id, tool, summary (one sentence), preview (a diff, or ""), every_time
 TOOL_GRANT_PERMISSION  = "tool.permission.grant"    # data: id, granted
 
+# Human in the loop (hitl.enabled): a reply of the model with a call as risky as hitl.level is suspended before its
+# first call runs, and its plan shown: what the model meant (intent: its text, or its thought with /react), then each
+# of its calls in order, with what it would do. The interface answers with the same id: approved, the calls run
+# without asking again; refused, none runs, and feedback (what the user would rather have, "" if nothing) is given
+# to the model. Nobody answering means no, as for a permission
+PLAN_PROPOSED = "plan.proposed"   # data: id, intent, actions: [{tool, arguments (masked with the guard), risk ("safe", "reversible", "irreversible"), consequence, undo, preview}]
+PLAN_DECIDED  = "plan.decided"    # data: id, approved, feedback
+
 # What the commands tell the user. The data is raw and JSON-friendly (full texts, raw paths): each
 # interface lays it out its own way, the CLI as text, a web page as it likes
 SESSION_CREATED = "session.created"   # data: user, persistent (saved from the first message of the user on), custom_prompt

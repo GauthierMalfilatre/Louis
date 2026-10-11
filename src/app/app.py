@@ -24,7 +24,7 @@ from tool.impl.git.tool_pr import PullRequestTool
 from tool.impl.exec.tool_run import RunTool, available as sandbox_available
 from tool.impl.rag.tool_knowledge import KnowledgeTool
 from tool.permission import PermissionManager
-from tool.risk import Risk, IRREVERSIBLE
+from tool.risk import Risk, NONE, LEVELS, SAFE, IRREVERSIBLE
 from rag.knowledge import Knowledge
 from guard.guard import Guard
 from guard.verdict import Verdict
@@ -32,7 +32,8 @@ from tool.seen_files import SeenFiles
 from app.constants import (
     ANNOUNCE, UNLOGGED, CONTEXT, CANCELLED_TOOL, SAME_CALLS, MAX_REFUSED, REPEATED_CALL, MAX_CALLS, MIN_ROOM,
     IGNORED_CALLS, NO_ROOM, EMPTY_MESSAGE, GONE_TOOLS, LOOP_MESSAGE, SUMMARY_MESSAGE, SUMMARY_RESULT, SUMMARY_SHARE,
-    SUMMARY_CHARS, REFUSED_CALLS, MAX_PROBLEMS, PROBLEM_CHARS, CRITIQUE, CITED_FILE, UNSOURCED,
+    SUMMARY_CHARS, REFUSED_CALLS, MAX_PROBLEMS, PROBLEM_CHARS, CRITIQUE, CITED_FILE, UNSOURCED, REFUSED_PLAN,
+    PLAN_FEEDBACK, PLAN_NO_FEEDBACK,
 )
 from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND, CHARS_PER_TOKEN
 from events.event_bus import EventBus, Event
@@ -554,7 +555,7 @@ class App:
                     self.session.add("user", NUDGE_PROMPT)
                     continue
 
-                repeats += self.__run_calls(reply.tool_calls, ignored, made)
+                repeats += self.__run_calls(reply.tool_calls, ignored, made, reply.content)
                 if repeats >= MAX_REFUSED:
                     log.warning(f"[app] {repeats} calls refused for being the same again: the model goes round in circles")
                     self.__bus.dispatch(CHAT_TURN_ENDED, reason="loop", message=LOOP_MESSAGE)
@@ -635,7 +636,7 @@ class App:
 
                 if reply.tool_calls:
                     self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
-                    repeats += self.__run_calls(reply.tool_calls, ignored, made)
+                    repeats += self.__run_calls(reply.tool_calls, ignored, made, thought)
                     if repeats >= MAX_REFUSED:
                         log.warning(f"[app] {repeats} calls refused for being the same again: the model goes round in circles")
                         self.__bus.dispatch(CHAT_TURN_ENDED, reason="loop", message=LOOP_MESSAGE)
@@ -732,30 +733,42 @@ class App:
         reply.tool_calls = calls
         return ignored
 
-    def __run_calls(self, calls: list[ToolCall], ignored: int, made: Counter) -> int:
+    def __run_calls(self, calls: list[ToolCall], ignored: int, made: Counter, intent: str = "") -> int:
         """
             Run the calls of a reply, each result kept in the session, the last one telling the ignored calls. A call
             made SAME_CALLS times already for this message (counted in made) is refused, as one whose results would
             no longer fit in the context. How many were refused for being the same again: the model goes round in
-            circles. Cancelled, each call not answered yet still gets an answer
+            circles. Cancelled, each call not answered yet still gets an answer.
+            With a call as risky as hitl.level, none runs before the user approved the plan of the reply (what the
+            model meant, intent, and each call): approved, they run without asking again; refused, none does
         """
         pending: list[ToolCall] = list(calls)
         repeats: int = 0
         # The share of the context the results of this round may still take
         room: float = ROUND
         try:
+            approved: bool = False
+            refusal: str | None = None
+            if (plan := self.__plan(calls)) is not None:
+                approved, feedback = self.__permissions.propose(intent, plan)
+                log.info(f"[app] plan of {len(plan)} calls {'approved' if approved else 'refused'}"
+                         f"{f': {feedback}' if feedback else ''}")
+                if not approved:
+                    refusal = REFUSED_PLAN + (PLAN_FEEDBACK.format(feedback=feedback) if feedback else PLAN_NO_FEEDBACK)
             while pending:
                 call: ToolCall = pending[0]
                 key: str = f"{call.name} {json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)}"
                 reason: str | None = None
-                if made[key] >= SAME_CALLS:
+                if refusal is not None:
+                    reason = refusal
+                elif made[key] >= SAME_CALLS:
                     reason = REPEATED_CALL
                     repeats += 1
                 elif room < MIN_ROOM:
                     reason = NO_ROOM
                 else:
                     made[key] += 1
-                result: str = self.__call(call, refused=reason, most=min(MAX_RESULT, room))
+                result: str = self.__call(call, refused=reason, most=min(MAX_RESULT, room), approved=approved)
                 room -= share(result, self.__window.size, self.__window.ratio)
                 if ignored and len(pending) == 1:
                     result += IGNORED_CALLS.format(ignored)
@@ -901,6 +914,31 @@ class App:
             return (f"Erreur : le garde-fou n'a pas pu vérifier le résultat de '{call.name}' ({type(e).__name__}), "
                     "il ne t'est pas donné.")
 
+    def __plan(self, calls: list[ToolCall]) -> list[dict] | None:
+        """
+            The plan of the calls of a reply, to show before any of them runs: each one with its risk, what it would
+            do and change. None when none is as risky as hitl.level (or with hitl.enabled off): they run as usual,
+            each tool asking what it asks. With the guard, what is shown is masked, as the calls are
+        """
+        if not self.__settings.get("hitl.enabled", False):
+            return None
+        level: str = self.__settings.get("hitl.level", IRREVERSIBLE)
+        # A safe call never needs a plan: every reply would wait for the user
+        level = level if level in LEVELS and level != SAFE else IRREVERSIBLE
+        actions: list[dict] = []
+        needed: bool = False
+        for call in calls:
+            tool: Tool | None = self.__toolManager.get(call.name)
+            risk: Risk = self.__risk(tool, call) if tool is not None else NONE
+            needed = needed or risk.at_least(level)
+            action: dict = {"tool": call.name, "arguments": call.arguments, "risk": risk.level,
+                            "consequence": risk.consequence, "undo": risk.undo, "preview": risk.preview}
+            if self.__guard is not None:
+                action = {**action, "arguments": self.__guard.hide(call.arguments),
+                          "preview": self.__guard.hide({"preview": risk.preview})["preview"]}
+            actions.append(action)
+        return actions if needed else None
+
     def __risk(self, tool: Tool, call: ToolCall) -> Risk:
         """
             What the call would do, as its tool judges it. A tool that can not judge it (it crashes) makes it
@@ -913,7 +951,7 @@ class App:
             return Risk(IRREVERSIBLE)
 
     def __call(self, call: ToolCall, producer: str = "model", *, refused: str | None = None,
-               most: float = MAX_RESULT) -> str:
+               most: float = MAX_RESULT, approved: bool = False) -> str:
         """
             Run a tool, asked for by producer ("model", "user" or "system"): whatever goes wrong comes back
             as text, for the model to react. A call refused by the app is not run: refused is its result. The result
@@ -934,12 +972,14 @@ class App:
             result = refusal
         else:
             try:
-                # A call that can not be undone is confirmed each time, whatever "always" was said to its tool
-                self.__permissions.strict = self.__risk(tool, call).at_least(IRREVERSIBLE)
+                # A call of a plan the user approved asks nothing more: they said yes to it, its diff in the plan.
+                # Else, a call that can not be undone is confirmed each time, whatever "always" was said to its tool
+                self.__permissions.granted = approved
+                self.__permissions.strict = not approved and self.__risk(tool, call).at_least(IRREVERSIBLE)
                 try:
                     result = tool.handle(self, **call.arguments)
                 finally:
-                    self.__permissions.strict = False
+                    self.__permissions.granted = self.__permissions.strict = False
                 result = self.__screen_result(call, result if isinstance(result, str) else str(result))
             except Exception as e:
                 log.exception(f"[tool] {call.name} failed")

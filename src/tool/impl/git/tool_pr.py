@@ -99,10 +99,14 @@ class PullRequestTool(Tool):
         if action == "create":
             head: str = kwargs.get("head") or current_branch() or "la branche courante"
             base: str = kwargs.get("base") or "la branche par défaut"
+            title, body = kwargs.get("title"), kwargs.get("body")
+            text: str = "\n\n".join(part for part in (title, body) if isinstance(part, str) and part)
             return Risk(IRREVERSIBLE, f"une PR de {head} vers {base} sera ouverte sur GitHub, l'équipe notifiée : "
-                                      "fermée, elle reste dans l'historique")
+                                      "fermée, elle reste dans l'historique", preview=text)
         if action == "comment":
-            return Risk(IRREVERSIBLE, f"un commentaire public sur {which}, ses participants notifiés")
+            body = kwargs.get("body")
+            return Risk(IRREVERSIBLE, f"un commentaire public sur {which}, ses participants notifiés",
+                        preview=body if isinstance(body, str) else "")
         if action == "merge":
             return Risk(IRREVERSIBLE, f"{which} sera fusionnée dans sa branche de base : seul un revert, dans une "
                                       "nouvelle PR, la défait")

@@ -145,9 +145,15 @@ class GitTool(Tool):
         if action == "pull":
             return Risk(REVERSIBLE, f"{branch} reçoit les commits d'origin", "git reset --keep ORIG_HEAD")
         if action == "commit":
-            return Risk(REVERSIBLE, f"un commit sur {branch}", "git reset --soft HEAD~1 (les changements restent)")
+            files: str = "\n".join(f"  {path}" for path in as_list(kwargs.get("paths")) if isinstance(path, str))
+            message = kwargs.get("message")
+            return Risk(REVERSIBLE, f"un commit sur {branch}", "git reset --soft HEAD~1 (les changements restent)",
+                        f"{message if isinstance(message, str) else ''}\n{files}".strip())
         if action == "push":
-            return Risk(IRREVERSIBLE, f"les commits de {branch} seront sur origin, visibles par toute l'équipe")
+            # The commits no remote has yet: what the team will see
+            _, ahead = run("git", "log", "--oneline", "HEAD", "--not", "--remotes")
+            return Risk(IRREVERSIBLE, f"les commits de {branch} seront sur origin, visibles par toute l'équipe",
+                        preview=ahead)
         if action == "delete_branch" and isinstance(name, str) and name:
             return Risk(IRREVERSIBLE, f"la branche {name} sera supprimée ici (git la garde si son travail n'est ni "
                                       "fusionné ni sur origin)")

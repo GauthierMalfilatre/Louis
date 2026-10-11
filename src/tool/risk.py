@@ -18,13 +18,15 @@ LEVELS: tuple[str, ...] = (SAFE, REVERSIBLE, IRREVERSIBLE)
 @dataclass(frozen=True)
 class Risk:
     """
-        What a tool call would do, judged before it runs: its level, what follows from it, and how to undo it. The
-        texts are shown to the user. An irreversible call has no undo: what can be done after it (closing a pull
-        request) leaves its trace, it is told in its consequence
+        What a tool call would do, judged before it runs: its level, what follows from it, how to undo it, and what
+        it would change (a diff, the commits pushed...), shown in the plan the user approves. The texts are shown to
+        the user. An irreversible call has no undo: what can be done after it (closing a pull request) leaves its
+        trace, it is told in its consequence
     """
     level      : str = SAFE
     consequence: str = ""
     undo       : str = ""
+    preview    : str = ""
 
     def at_least(self, level: str) -> bool:
         """ Whether the call is as risky as level, or more """
@@ -54,16 +56,19 @@ def file_state(full: str) -> str:
     changed = git("status", "--porcelain", "--", path)
     return "clean" if changed is not None and not changed.stdout.strip() else "modified"
 
-def change_risk(full: str) -> Risk:
+def change_risk(full: str, preview: str = "") -> Risk:
     """
-        A file of the project its content is changed in: reversible while git has it as it is now, irreversible
-        when what it holds now is nowhere else (never committed, or changed since)
+        A file of the project its content is changed in (preview: the diff): reversible while git has it as it is
+        now, irreversible when what it holds now is nowhere else (never committed, or changed since)
     """
     shown: str = utils.path.display_path(full)
     match file_state(full):
         case "clean":
-            return Risk(REVERSIBLE, f"{shown} sera modifié", f"git restore {os.path.relpath(full, utils.path.ROOT)}")
+            return Risk(REVERSIBLE, f"{shown} sera modifié", f"git restore {os.path.relpath(full, utils.path.ROOT)}",
+                        preview)
         case "modified":
-            return Risk(IRREVERSIBLE, f"{shown} sera modifié, et ses changements non commités perdus : git ne les a pas")
+            return Risk(IRREVERSIBLE, f"{shown} sera modifié, et ses changements non commités perdus : git ne les a pas",
+                        preview=preview)
         case _:
-            return Risk(IRREVERSIBLE, f"{shown} sera modifié, et son contenu actuel perdu : git n'en a aucune copie")
+            return Risk(IRREVERSIBLE, f"{shown} sera modifié, et son contenu actuel perdu : git n'en a aucune copie",
+                        preview=preview)
