@@ -22,6 +22,9 @@ from events.event_bus import EventBus
 from tool.risk import Risk, REVERSIBLE, IRREVERSIBLE
 from tool.tool import Tool
 from tool.tool_call import ToolCall
+from monitor.recorder import Recorder
+from monitor.metrics import load, summarize
+from monitor.report import text
 
 class Acting(Tool):
     """ A tool that asks before it acts, of the risk given: what it ran is kept """
@@ -73,14 +76,19 @@ class Person(Interface):
         return [event for event in self.events if event.name == CHAT_TURN_ENDED][-1].data["reason"]
 
 @pytest.fixture
-def louis(folder, monkeypatch):
-    """ An app with a reversible tool (write) and one that can not be undone (push), its model answering replies """
+def louis(folder, monkeypatch, tmp_path):
+    """
+        An app with a reversible tool (write) and one that can not be undone (push), its model answering replies, its
+        calls recorded in app.traces
+    """
     monkeypatch.setattr(OllamaModel, "_OllamaModel__probe", staticmethod(lambda uri, model: {"tools"}))
 
     def make(replies: list[Reply], user: Person, **options) -> tuple[App, dict[str, Acting]]:
         conf = {**settings, "scribe.model": "", "rag.enabled": False, "sandbox.enabled": False, "guard.enabled": False,
                 "eval.enabled": False, "hitl.enabled": True, **options}
-        app = App(conf, SYSTEM_PROMPT, Account.anonymous(), user)
+        traces = tmp_path / f"traces-{len(list(tmp_path.glob('traces-*')))}.jsonl"
+        app = App(conf, SYSTEM_PROMPT, Account.anonymous(), user, Recorder(str(traces), conf))
+        app.traces = traces
         tools: dict[str, Acting] = {"write": Acting("write", REVERSIBLE), "push": Acting("push", IRREVERSIBLE)}
         for tool in tools.values():
             app._App__toolManager.register(tool)
@@ -204,3 +212,120 @@ def test_a_plan_turned_off_by_the_command_lets_the_tools_ask_as_before(louis):
     app._App__commands.fetch("/plan off", app)
     app._App__answer("Pousse")
     assert user.plans == [] and user.asked == ["push"]
+
+# --- What the interfaces show of a plan, and how the user answers it ----------------------------------------------
+
+import http.client
+import json
+import threading
+import time
+from interface.cli import CLI
+from interface.web import WebInterface
+
+PLAN: list[dict] = [
+    {"tool": "git", "arguments": {"action": "commit"}, "risk": REVERSIBLE, "consequence": "un commit sur feat/x",
+     "undo": "git reset --soft HEAD~1", "preview": "docs: titre"},
+    {"tool": "git", "arguments": {"action": "push"}, "risk": IRREVERSIBLE,
+     "consequence": "les commits de feat/x seront sur origin", "undo": "", "preview": "a1b2c3d docs: titre"},
+]
+
+class Typing(CLI):
+    """ The CLI, its user typing the answers given: a letter for the question, then a text if asked one """
+    def __init__(self, answers: list[str]):
+        super().__init__()
+        self.answers: list[str] = list(answers)
+
+    def _choose(self, question: str, choices: str) -> str:
+        answer: str = self.answers.pop(0)
+        return answer if answer in choices else "n"
+
+    def ask(self, question: str) -> str:
+        return self.answers.pop(0)
+
+@pytest.mark.parametrize("typed, decision", [
+    (["y"], (True, "")), (["n"], (False, "")), (["r", "fais une branche d'abord"], (False, "fais une branche d'abord")),
+    (["a"], (False, "")),                       # always is no answer to a plan
+])
+def test_the_cli_shows_the_plan_and_reads_the_answer(capsys, typed, decision):
+    bus = EventBus()
+    Typing(typed).bind(bus)
+    assert PermissionManager(bus).propose("Je commite puis je pousse.", PLAN) == decision
+    shown: str = capsys.readouterr().out
+    assert "Mon plan : Je commite puis je pousse." in shown
+    assert "1. Git action=commit · réversible" in shown and "2. Git action=push · IRRÉVERSIBLE" in shown
+    assert "a1b2c3d docs: titre" in shown
+
+def ask(web: WebInterface, method: str, path: str, body: dict | None = None) -> int:
+    port: int = int(web.url.rsplit(":", 1)[1])
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    connection.request(method, path, json.dumps(body) if body is not None else None,
+                       {"Content-Type": "application/json"} if body is not None else {})
+    status: int = connection.getresponse().status
+    connection.close()
+    return status
+
+def test_a_page_approves_or_refuses_the_plan_with_its_answer(tmp_path):
+    web = WebInterface("127.0.0.1", 0, str(tmp_path / "louis.db"))
+    bus = EventBus()
+    web.bind(bus)
+    permissions = PermissionManager(bus)
+
+    def page(choice: str, feedback: str = "") -> None:
+        """ The page answers once the plan is shown """
+        for _ in range(200):
+            log: list[dict] = json.loads(web.subscribe().get_nowait())["log"]
+            pending = [item for item in log if item["kind"] == "plan" and item["status"] == "pending"]
+            if pending:
+                ask(web, "POST", "/api/permission", {"id": pending[0]["request"], "choice": choice, "feedback": feedback})
+                return
+            time.sleep(0.01)
+
+    with web:
+        answering = threading.Thread(target=page, args=("y",))
+        answering.start()
+        assert permissions.propose("Je pousse.", PLAN) == (True, "")
+        answering.join()
+        answering = threading.Thread(target=page, args=("n", "pas encore"))
+        answering.start()
+        assert permissions.propose("Je pousse.", PLAN) == (False, "pas encore")
+        answering.join()
+        plans = [item for item in json.loads(web.subscribe().get_nowait())["log"] if item["kind"] == "plan"]
+        assert [(plan["status"], plan["feedback"]) for plan in plans] == [("approved", ""), ("refused", "pas encore")]
+        assert plans[0]["actions"][1] == {"title": "Git action=push", "risk": IRREVERSIBLE,
+                                          "details": "les commits de feat/x seront sur origin",
+                                          "preview": "a1b2c3d docs: titre"}
+        # A text too long, or a plan no longer asked
+        assert ask(web, "POST", "/api/permission", {"id": 1, "choice": "n", "feedback": "x" * 3000}) == 400
+        assert ask(web, "POST", "/api/permission", {"id": plans[0]["request"], "choice": "y"}) == 409
+
+
+# --- What the traces keep of the plans ---------------------------------------------------------------------------
+
+def test_the_traces_keep_each_plan_its_decision_and_the_time_the_user_took(louis):
+    user = Person(plan=(True, ""))
+    app, tools = louis([Reply(content="", tool_calls=BOTH), Reply(content="Fait."),
+                        Reply(content="", tool_calls=BOTH), Reply(content="Je ne pousse pas.")], user)
+    app._App__answer("Pousse")
+    user.plan = (False, "pas maintenant")
+    app._App__answer("Pousse encore")
+    records, _ = load(str(app.traces))
+    plans = [record for record in records if record["type"] == "plan"]
+    assert [(plan["approved"], plan["answered"], plan["feedback"]) for plan in plans] == [
+        (True, True, None), (False, True, "pas maintenant")
+    ]
+    assert plans[0]["actions"] == [{"tool": "write", "risk": REVERSIBLE}, {"tool": "push", "risk": IRREVERSIBLE}]
+    assert plans[0]["irreversible"] == 1 and plans[0]["waited"] >= 0
+    turns = [record for record in records if record["type"] == "turn"]
+    assert [(turn["plans"], turn["refused_plans"]) for turn in turns] == [(1, 0), (1, 1)]
+    summary = summarize(records)
+    assert (summary["plans"]["plans"], summary["plans"]["approved_rate"], summary["plans"]["feedback_rate"]) == (2, 0.5, 1.0)
+    assert "plans" in text(summary, [], str(app.traces))
+
+def test_a_plan_nobody_answered_is_recorded_as_refused(louis):
+    user = Person(plan=None)
+    app, tools = louis([Reply(content="", tool_calls=BOTH), Reply(content="Je ne peux pas.")], user)
+    app._App__answer("Pousse")
+    records, _ = load(str(app.traces))
+    [plan] = [record for record in records if record["type"] == "plan"]
+    assert (plan["answered"], plan["approved"]) == (False, False)
+    assert summarize(records)["plans"]["unanswered"] == 1

@@ -140,6 +140,22 @@ def reasoning_stats(turns: list[dict], calls: list[dict]) -> dict:
         "check_p50"     : percentile(checks, 0.50),
     }
 
+def plan_stats(plans: list[dict]) -> dict:
+    """
+        The plans shown to the user (/plan): how many they approved, refused, or left without an answer, how many
+        refusals told what they would rather have, and how long they took to decide
+    """
+    answered: list[dict] = [plan for plan in plans if plan.get("answered")]
+    refused: list[dict] = [plan for plan in answered if not plan.get("approved")]
+    return {
+        "plans"        : len(plans),
+        "approved_rate": ratio(sum(1 for plan in answered if plan.get("approved")), len(plans)),
+        "refused_rate" : ratio(len(refused), len(plans)),
+        "unanswered"   : len(plans) - len(answered),
+        "feedback_rate": ratio(sum(1 for plan in refused if plan.get("feedback")), len(refused)),
+        "decision_p50" : percentile([plan.get("waited", 0.0) for plan in answered], 0.50),
+    }
+
 def judged(evals: list[dict]) -> dict:
     """
         What the judge said of some answers: the means of their scores, and the share of their claims flagged.
@@ -379,6 +395,7 @@ def summarize(records: list[dict], *, days: float | None = None, by: str | None 
         "guard": sum(1 for record in records if record["type"] == "guard"),
         "structured": structured_stats([record for record in records if record["type"] == "structured"]),
         "reasoning": reasoning_stats(turns, calls),
+        "plans": plan_stats([record for record in records if record["type"] == "plan"]),
         "eval": eval_stats([record for record in records if record["type"] == "eval"]),
         "series": series(records, start, end, by),
         "configurations": rows,

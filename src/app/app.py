@@ -922,7 +922,7 @@ class App:
             do and change. None when none is as risky as hitl.level (or with hitl.enabled off): they run as usual,
             each tool asking what it asks. With the guard, what is shown is masked, as the calls are
         """
-        if not self.__settings.get("hitl.enabled", False):
+        if not self.__settings.get("hitl.enabled", True):
             return None
         level: str = self.__settings.get("hitl.level", IRREVERSIBLE)
         # A safe call never needs a plan: every reply would wait for the user

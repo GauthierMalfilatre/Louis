@@ -973,6 +973,21 @@
   .permission[data-status="granted"] .perm-status, .permission[data-status="always"] .perm-status,
   .permission[data-status="auto"] .perm-status { color: var(--ok); }
   .permission[data-status="refused"] .perm-status { color: var(--danger); }
+
+  /* The plan of a reply that would do something risky (/plan): each action with its risk, then the answer */
+  .msg.assistant .plan-intent { margin: 0; white-space: pre-wrap; }
+  .msg.assistant .plan-actions { margin: 0; padding-left: 22px; display: grid; gap: 10px; }
+  .plan-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .plan-title { font-weight: 550; overflow-wrap: anywhere; }
+  .plan-risk { font-size: 12px; padding: 0 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
+  .plan-actions li[data-risk="reversible"] .plan-risk { color: var(--warn); border-color: var(--warn); }
+  .plan-actions li[data-risk="irreversible"] .plan-risk { color: var(--danger); border-color: var(--danger); font-weight: 650; }
+  .msg.assistant .plan-details { margin: 2px 0 6px; color: var(--muted); font-size: 13px; }
+  .plan-reply {
+    width: 100%; box-sizing: border-box; resize: vertical; padding: 8px 10px; font: inherit; font-size: 13.5px;
+    color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .permission.plan[data-status="approved"] .perm-status { color: var(--ok); }
   .permission[data-status="auto"] { padding: 8px 14px; }
 
   .notice { white-space: pre-line; border-radius: 14px; max-width: min(92%, 620px); }
@@ -1445,7 +1460,7 @@
   const THEMES = ["system", "light", "dark", "ultravision"];
   const THEME_NAMES = { system: "système", light: "clair", dark: "sombre", ultravision: "UltraVision" };
   // What belongs to a reply of Louis, grouped under its mark
-  const REPLY = new Set(["text", "thinking", "tool", "permission", "note", "stats", "step", "check"]);
+  const REPLY = new Set(["text", "thinking", "tool", "permission", "plan", "note", "stats", "step", "check"]);
   // The dot on the icon of a hidden tab: Louis waits for an answer, or has replied
   const DOTS = { asking: "#e8a93a", done: "#1f9d55" };
   const TITLES = { asking: "(!) Louis attend ta réponse", done: "✓ Louis a répondu" };
@@ -1568,6 +1583,7 @@
       case "check": return drawCheck(item);
       case "tool": return drawTool(item);
       case "permission": return drawPermission(item);
+      case "plan": return drawPlan(item);
       case "card": return drawCard(item);
       case "stats": return drawStats(item);
       case "note": return el("div", "reply-note", item.text);
@@ -1754,6 +1770,61 @@
     } else {
       node.append(el("p", "perm-status", PERMISSION_STATUS[item.status]?.(item) ?? ""));
     }
+    return node;
+  }
+
+  const PLAN_STATUS = {
+    approved: () => "C'est parti.",
+    refused: (item) => item.feedback ? `D'accord, je ne fais rien de tout ça. Tu m'as répondu : « ${item.feedback} »`
+      : "D'accord, je ne fais rien de tout ça.",
+    cancelled: () => "Plan annulé.",
+  };
+  const RISK_NAMES = { safe: "sans risque", reversible: "réversible", irreversible: "irréversible" };
+
+  // The plan of a reply that would do something risky: what Louis means, each action with its risk and its diff,
+  // then Approve, Refuse, or an answer that refuses it with what the user would rather have
+  function drawPlan(item) {
+    const node = el("div", "permission plan");
+    node.dataset.status = item.status;
+    node.append(el("p", "perm-ask", "Avant d'agir, voici mon plan :"));
+    if (item.intent) node.append(el("p", "plan-intent", item.intent));
+    const list = el("ol", "plan-actions");
+    for (const action of item.actions) {
+      const row = el("li");
+      row.dataset.risk = action.risk;
+      const head = el("div", "plan-head");
+      head.append(el("span", "plan-title", action.title), el("span", "plan-risk", RISK_NAMES[action.risk] ?? action.risk));
+      row.append(head);
+      if (action.details) row.append(el("p", "plan-details", action.details));
+      if (action.preview) row.append(diff(action.preview));
+      list.append(row);
+    }
+    node.append(list);
+    if (item.status !== "pending") {
+      node.append(el("p", "perm-status", PLAN_STATUS[item.status]?.(item) ?? ""));
+      return node;
+    }
+    const reply = el("textarea", "plan-reply");
+    reply.rows = 2;
+    reply.maxLength = 2000;
+    reply.placeholder = "Ou dis-moi ce que tu préfères : je ne ferai rien de ce plan.";
+    const actions = el("div", "perm-actions");
+    const choices = [["y", "Approuver", "btn primary", "O"], ["n", "Refuser", "btn", "N"], ["r", "Répondre", "btn", null]];
+    for (const [choice, label, className, key] of choices) {
+      const button = el("button", className, label);
+      button.type = "button";
+      if (key) button.append(el("kbd", "", key));
+      button.addEventListener("click", () => {
+        const text = reply.value.trim();
+        if (choice === "r" && !text) {
+          reply.focus();
+          return;
+        }
+        answer(item, choice === "r" ? "n" : choice, choice === "r" ? text : "");
+      });
+      actions.append(button);
+    }
+    node.append(reply, actions);
     return node;
   }
 
@@ -2468,9 +2539,9 @@
     if (was.turn && !info.turn) nod();
     if (!document.hidden) return;
     if (info.asking && !was.asking) {
-      const asked = [...state.log].reverse().find((item) => item.kind === "permission" && item.status === "pending");
+      const asked = [...state.log].reverse().find((item) => ["permission", "plan"].includes(item.kind) && item.status === "pending");
       attention("asking");
-      notify(TITLES.asking, asked?.summary ?? "");
+      notify(TITLES.asking, asked?.summary ?? asked?.intent ?? "");
     } else if (was.turn && !info.turn) {
       const last = [...state.log].reverse().find((item) => item.kind === "text" || item.kind === "notice");
       const text = (last?.text ?? "").replace(/\s+/g, " ").trim();
@@ -2554,25 +2625,26 @@
     }
   }
 
-  async function answer(item, choice) {
+  async function answer(item, choice, feedback = "") {
     const node = els.get(item.id);
     node?.querySelectorAll(".perm-actions button").forEach((button) => { button.disabled = true; });
-    const error = await api("/api/permission", { id: item.request, choice });
+    const error = await api("/api/permission", { id: item.request, choice, feedback });
     if (error) {
       setHint(error, true);
       node?.querySelectorAll(".perm-actions button").forEach((button) => { button.disabled = false; });
     }
   }
 
-  // The keys of the permission asked, when nothing is being typed: O (or Y) yes, N no, T (or A) always
+  // The keys of the permission or the plan asked, when nothing is being typed: O (or Y) yes, N no, T (or A) always
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeDrawer();
     if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
     if (e.target.closest?.("textarea, input, dialog")) return;
-    const asked = [...state.log].reverse().find((item) => item.kind === "permission" && item.status === "pending");
+    const asked = [...state.log].reverse().find((item) => ["permission", "plan"].includes(item.kind) && item.status === "pending");
     if (!asked) return;
     const choice = { o: "y", y: "y", n: "n", t: "a", a: "a" }[e.key.toLowerCase()];
-    if (!choice || (choice === "a" && asked.every_time)) return;
+    // Always is no answer to a plan, nor to what is asked every time
+    if (!choice || (choice === "a" && (asked.every_time || asked.kind === "plan"))) return;
     e.preventDefault();
     answer(asked, choice);
   });

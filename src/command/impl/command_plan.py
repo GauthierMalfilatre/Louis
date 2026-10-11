@@ -39,5 +39,5 @@ class PlanCommand(Command):
             if key == "hitl.level":
                 app.settings["hitl.enabled"] = True
         level: str = app.settings.get("hitl.level", IRREVERSIBLE)
-        app.events.dispatch(PLAN_SETTINGS, enabled=bool(app.settings.get("hitl.enabled", False)),
+        app.events.dispatch(PLAN_SETTINGS, enabled=bool(app.settings.get("hitl.enabled", True)),
                             level=level if level in (REVERSIBLE, IRREVERSIBLE) else IRREVERSIBLE)
