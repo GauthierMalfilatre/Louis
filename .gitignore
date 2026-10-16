@@ -20,6 +20,8 @@ venv/
 
 # Monitoring: the traces of the calls, and their dashboard
 *.jsonl
+# ...but the seed of the semantic cache is part of Louis
+!src/cache/seed/*.jsonl
 louis.dashboard.html
 
 # Export: the sessions written by /export

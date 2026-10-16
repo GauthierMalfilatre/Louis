@@ -51,7 +51,7 @@ RUN_SETTINGS: tuple[str, ...] = (
     "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth", "guard.enabled",
     "rag.enabled", "rag.rerank.enabled", "rag.rerank.model", "rag.rerank.pool", "rag.rerank.min_score",
     "rag.rerank.max_chars", "rag.embed.gpu", "eval.enabled", "eval.model", "cache.enabled", "cache.threshold",
-    "cache.rerank.enabled", "cache.rerank.min_score"
+    "cache.rerank.enabled", "cache.rerank.min_score", "cache.seed.min_score"
 )
 
 # Characters kept of each text: enough to know what it was about

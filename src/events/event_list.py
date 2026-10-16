@@ -69,21 +69,22 @@ RAG_FORGOTTEN      = "rag.forgotten"        # data: source, chunks (removed)
 RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), path, kind and after (the filters on the files, None: none; after: "2026-09-30"), files (how many the filters kept, None without them), mode ("hybrid": keywords and meaning, "keyword"), reranker (its model, None if it did not rerank), candidates (found by the index), dropped (under the threshold), hits: [{source, path, start, end, score, fused (the score of the index, None if not reranked)}], rerank (seconds, None), duration (seconds, all of it)
 
 # The semantic cache (cache/): a question close enough in meaning to one already answered gets its answer back without
-# the model. Looked up after the input rails of the guard, before the model: a hit is told by CACHE_HIT, then its turn
-# goes on as any reply does (CHAT_TEXT, CHAT_REPLY, CHAT_TURN_ENDED "done"). Only the answers safe to give again are
-# stored, once their turn is done (cache/rules.py): CACHE_STORED
-# CACHE_LOOKUP: each message the cache was asked about. reason tells why it was not looked up ("followup": not the first
-# message of the session, "timely": it depends on the time, "project": on the project as it is now, "embed": the embedding
+# the model, or by the seed (answers written by the team, cache/seed/). Looked up after the input rails of the guard,
+# before the model: a hit is told by CACHE_HIT, then its turn goes on as any reply does (CHAT_TEXT, CHAT_REPLY,
+# CHAT_TURN_ENDED "done"). Only the answers safe to give again are stored, once their turn is done (cache/rules.py):
+# CACHE_STORED
+# CACHE_LOOKUP: each message the cache was asked about. reason tells why it was not looked up ("followup": it leans on
+# what was said before, "timely": it depends on the time, "project": on the project as it is now, "embed": the embedding
 # model does not answer), None if it was
 CACHE_LOOKUP   = "cache.lookup"     # data: hit, score (the closest entry, None without one), duration (seconds), reason
-CACHE_HIT      = "cache.hit"        # data: id, score (closeness in meaning, 0 to 1), verified (the reranker: they ask the same, 0 to 1, None if not checked), question (the one answered before), age (seconds), hits (served, this one included)
+CACHE_HIT      = "cache.hit"        # data: id, score (closeness in meaning, 0 to 1), verified (the reranker: they ask the same, 0 to 1, None if not checked), question (the one answered before), age (seconds), hits (served, this one included), seed (written by the team)
 CACHE_STORED   = "cache.stored"     # data: id, tools (the ones the answer used)
 CACHE_ENABLED  = "cache.enabled"    # data: none
 CACHE_DISABLED = "cache.disabled"   # data: none
 # Entries removed: "all" (/cache clear, those of the user), "last" (/cache forget, the answer served last), "rag" (the
 # knowledge base changed: the answers that looked it up)
 CACHE_CLEARED  = "cache.cleared"    # data: scope, entries (removed)
-CACHE_STATS    = "cache.stats"      # data: enabled, entries, hits (served, ever), lookups and served (this run), hit_rate (this run, None before any lookup), threshold, file
+CACHE_STATS    = "cache.stats"      # data: enabled, entries (answers of the model), seeds (questions of the seed), shared (by the users), hits (served, ever), lookups and served (this run), hit_rate (this run, None before any lookup), threshold, file
 
 APP_STARTED       = "app.started"        # data: model (its name), think (True if /think is on), react (True if /react is on), commands: [{name, usage, description}]
 

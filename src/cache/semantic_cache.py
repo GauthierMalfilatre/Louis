@@ -4,25 +4,36 @@
 ## File description:
 ## SemanticCache class: the answers given before, given again to a question that means the same, without the model
 ##
-## Usage:  cache = SemanticCache.from_settings(settings, bus, user_id, guard=True)
-##         hit = cache.lookup(question, model=..., prompt=..., first=True)   before the model (CACHE_LOOKUP tells how)
+## Usage:  cache = SemanticCache.from_settings(settings, bus, user, guard=True)
+##         hit = cache.lookup(question, model=..., prompt=..., history=...)   before the model (CACHE_LOOKUP tells how)
 ##         ...the turn goes on: the cache listens to the bus, and stores its answer once done if it is safe to give again
+##
+## The answers are shared by the users (cache.shared): a question asked by one is answered at once for the others. And
+## the seed (cache/seed/, cache/seeding.py), answers written by the team, makes it useful from the first question on a
+## new install: stored on the first lookup, and again each time its files change
 ##
 ## A lookup goes in two steps, as a search of the knowledge base does. The embeddings find the questions close in
 ## meaning (cache.threshold), then the cross-encoder of the reranker reads each one with the new question, and only gives
 ## its answer when it finds they ask the same (cache.rerank.min_score). The embeddings alone can not tell apart the
 ## questions that only differ by a word: "lire un fichier JSON" and "écrire un fichier JSON" are 0.975 apart with
 ## nomic-embed-text, more than most questions asked in other words (python -m cache.evaluate, docs/CACHE.md). Without
-## the reranker (fastembed missing), nothing is given: the answers are still stored, for when it is there
+## the reranker (fastembed missing), nothing is given but the same question written the same way: the answers are still
+## stored, for when it is there.
+## The reranker was trained to tell whether a passage answers a question, not whether two questions are the same: it
+## reads an answer of the model against the question it was given for (an answer about reading JSON also "answers"
+## a question about writing it: 0.977), but an answer of the seed against the new question (cache.seed.min_score): those
+## answers tell all of what Louis does about something, and the questions of code that look like them do not get them
 ##
-## The app looks a question up once the guard let it through, before the model: on a hit, it gives the answer as a
-## reply (CACHE_HIT). On a miss, the vector of the question is kept for the end of the turn: its answer is stored with
-## it when the turn is done, used no tool but those of cache.tools, none of them failed, the guard did not refuse the
-## reply, and the reasoning loop gave no answer it found wrong. What is stored is what the user read: the question as
-## the guard let it through (masked), the reply as it was shown
+## The app looks a question up once the guard let it through, before the model, wherever it comes in the session as
+## long as it stands alone (cache/rules.py): on a hit, it gives the answer as a reply (CACHE_HIT). On a miss in a clean
+## session (the model read nothing of the project in it yet), the vector of the question is kept for the end of the
+## turn: its answer is stored with it when the turn is done, used no tool but those of cache.tools, none of them failed,
+## the guard did not refuse the reply, the reasoning loop gave no answer it found wrong, and it does not name the user.
+## What is stored is what the user read: the question as the guard let it through (masked), the reply as it was shown
 ##
-from cache.rules import why_not, same_specifics
-from cache.store import Store, Scope, Entry, normalized
+from cache.rules import why_not, same_specifics, same_text, clean, personal
+from cache.seeding import SEED_DIR, load as load_seed
+from cache.store import Store, Scope, Entry, normalized, SEED
 from rag.embedder import Embedder, EmbedError
 from rag.reranker import Reranker, RerankError
 from events.event import Event
@@ -31,6 +42,7 @@ from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_REPLY, TO
 from events.event_list import REASONING_CHECK, RAG_INDEXED, RAG_FORGOTTEN
 from events.event_list import CACHE_LOOKUP, CACHE_STORED, CACHE_CLEARED
 from monitor.recorder import prompt_version
+from session.user import User
 from config.settings import settings as default_settings
 from logger.logger import log
 from collections.abc import Callable
@@ -52,7 +64,7 @@ def cache_path() -> str:
 class Hit:
     """
         An answer given before, to give again: score is how close the questions are in meaning (0 to 1), verified how
-        sure the reranker is they ask the same (0 to 1, None without it), age its seconds
+        sure the reranker is they ask the same (0 to 1, None without it), age its seconds, seed whether the team wrote it
     """
     id      : int
     question: str
@@ -61,6 +73,7 @@ class Hit:
     verified: float | None
     age     : float
     hits    : int
+    seed    : bool = False
 
 @dataclass
 class Pending:
@@ -82,15 +95,17 @@ class SemanticCache:
     """ Looked up by the app before the model, fed by the bus once a turn is done """
     def __init__(self, bus: EventBus, store: Store, embedder: Embedder | None, *, enabled: bool = True,
                  threshold: float = 0.80, reranker: Reranker | None = None, verify: bool = True,
-                 min_score: float = 0.35, ttl: float = 7 * 24 * 3600, most: int = 1000,
-                 tools: list[str] | None = None, scope: str = "first", user_id: int | None = None, guard: bool = False,
-                 clock: Callable[[], float] = time.time):
+                 min_score: float = 0.35, seed_min_score: float = 0.75, ttl: float = 7 * 24 * 3600, most: int = 1000,
+                 tools: list[str] | None = None, user_id: int | None = None, user_name: str | None = None,
+                 guard: bool = False, seed: str | None = None, clock: Callable[[], float] = time.time):
         """
             Init the cache on the bus of the app. With verify, a question close enough in meaning (threshold) must also be
-            the same for the reranker (min_score): without one, nothing is given. Without verify, the meaning is enough
-            (questions that differ by one word get each other's answer). user_id is None for a cache the users share.
-            guard: the guard checks the replies, an answer stored without it is never given while it does. clock gives
-            the time (the tests)
+            the same for the reranker (min_score; seed_min_score for its answer, against an answer of the seed): without
+            one, nothing is given but the same question written the same way. Without verify, the meaning is enough
+            (questions that differ by one word get each other's answer). user_id is None for a cache the users share;
+            user_name: an answer that names them is never stored (None: the anonymous user). guard: the guard checks the
+            replies, an answer stored without it is never given while it does. seed: the folder of the seed files (None:
+            no seed). clock gives the time (the tests)
         """
         self.__bus      : EventBus        = bus
         self.__store    : Store           = store
@@ -100,12 +115,16 @@ class SemanticCache:
         self.__reranker : Reranker | None = reranker
         self.__verify   : bool            = verify
         self.__min_score: float           = min_score
-        self.__ttl      : float           = ttl
+        self.__seed_min : float           = seed_min_score
+        self.__ttl     : float           = ttl
         self.__most     : int             = most
         self.__tools    : frozenset[str]  = frozenset(tools if tools is not None else RAG_TOOLS)
-        self.__scope    : str             = scope
         self.__user_id  : int | None      = user_id
+        self.__user_name: str | None      = user_name
         self.__guard    : bool            = guard
+        self.__seed     : str | None      = seed
+        # The seed is stored once per run at most, on the first lookup the embedding model answers
+        self.__seeded   : bool            = False
         self.__clock    : Callable[[], float] = clock
         self.__pending  : Pending | None  = None
         self.__turn     : Turn | None     = None
@@ -127,11 +146,11 @@ class SemanticCache:
         bus.subscribe(self.__on_knowledge, RAG_INDEXED, RAG_FORGOTTEN)
 
     @classmethod
-    def from_settings(cls, settings: dict, bus: EventBus, user_id: int | None, guard: bool = False,
+    def from_settings(cls, settings: dict, bus: EventBus, user: User, guard: bool = False,
                       reranker: Reranker | None = None) -> "SemanticCache":
         """
-            The cache the settings describe, with the embedding model of the knowledge base on the CPU, and its reranker
-            when it is given one (the same model is loaded once), else one of its own
+            The cache the settings describe for the user, with the embedding model of the knowledge base on the CPU, and
+            its reranker when it is given one (the same model is loaded once), else one of its own
         """
         model: str | None = settings.get("rag.embed.model")
         embedder: Embedder | None = Embedder(
@@ -140,20 +159,23 @@ class SemanticCache:
         ) if model else None
         verify: bool = bool(settings.get("cache.rerank.enabled", True))
         if verify and (reranker is None or reranker.model != settings.get("rag.rerank.model")):
-            reranker = Reranker(settings.get("rag.rerank.model", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"))
+            reranker = Reranker(settings.get("rag.rerank.model", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"),
+                                max_chars=settings.get("rag.rerank.max_chars", 0))
         return cls(
             bus, Store(cache_path()), embedder,
-            enabled=bool(settings.get("cache.enabled", False)),
+            enabled=bool(settings.get("cache.enabled", True)),
             threshold=float(settings.get("cache.threshold", 0.80)),
             reranker=reranker if verify else None,
             verify=verify,
             min_score=float(settings.get("cache.rerank.min_score", 0.35)),
+            seed_min_score=float(settings.get("cache.seed.min_score", 0.75)),
             ttl=float(settings.get("cache.ttl", 7 * 24 * 3600)),
             most=int(settings.get("cache.max_entries", 1000)),
             tools=list(settings.get("cache.tools", RAG_TOOLS)),
-            scope=settings.get("cache.scope", "first"),
-            user_id=None if settings.get("cache.shared", False) else user_id,
-            guard=guard
+            user_id=None if settings.get("cache.shared", True) else user.id,
+            user_name=None if user.is_anonymous else user.name,
+            guard=guard,
+            seed=SEED_DIR if settings.get("cache.seed", True) else None
         )
 
     @property
@@ -172,17 +194,18 @@ class SemanticCache:
         """ Get the file of the cache """
         return self.__store.path
 
-    def lookup(self, question: str, *, model: str, prompt: str, first: bool) -> Hit | None:
+    def lookup(self, question: str, *, model: str, prompt: str, history: list[dict]) -> Hit | None:
         """
-            The answer given before to a question that means the same, None if there is none. prompt is the system
-            prompt of the session (without its context), first whether the user said nothing yet in it. A miss keeps
-            the vector of the question: the answer of the turn is stored with it. Told by CACHE_LOOKUP
+            The answer given before (or by the seed) to a question that means the same, None if there is none. prompt is
+            the system prompt of the session (without its context), history the session in the format of the model API.
+            A miss in a clean session keeps the vector of the question: the answer of the turn is stored with it. Told
+            by CACHE_LOOKUP
         """
         self.__pending = None
         if not self.__enabled:
             return None
         start: float = time.perf_counter()
-        reason: str | None = why_not(question, first, self.__scope)
+        reason: str | None = why_not(question)
         if reason is None and self.__embedder is None:
             reason = "embed"
         vector: np.ndarray | None = None
@@ -202,6 +225,7 @@ class SemanticCache:
 
         scope: Scope = Scope(self.__user_id, model, prompt_version(prompt), self.__embedder.model)
         now: float = self.__clock()
+        self.__plant(now)
         candidates: list[tuple[Entry, float]] = self.__store.nearest(scope, vector, now - self.__ttl, CANDIDATES)
         best: float | None = round(candidates[0][1], 4) if candidates else None
         close: list[tuple[Entry, float]] = []
@@ -216,16 +240,19 @@ class SemanticCache:
             close.append((entry, score))
         found: Hit | None = None
         for (entry, score), verified in zip(close, self.__verified(question, [entry for entry, _ in close])):
-            if verified is None or verified >= self.__min_score:
+            if verified is None or verified >= (self.__seed_min if entry.origin == SEED else self.__min_score):
                 found = Hit(entry.id, entry.question, entry.answer, round(score, 4),
-                            round(verified, 4) if verified is not None else None, now - entry.created_at, entry.hits + 1)
+                            round(verified, 4) if verified is not None else None, now - entry.created_at, entry.hits + 1,
+                            entry.origin == SEED)
                 break
             log.info(f"[cache] {score:.3f} close to #{entry.id}, but not the same question for the reranker "
                      f"({verified:.3f}): {entry.question!r}")
 
         self.__lookups += 1
         if found is None:
-            self.__pending = Pending(scope, question, vector)
+            # Once the model read the project in this session, what it says next may lean on it
+            if clean(history, self.__tools):
+                self.__pending = Pending(scope, question, vector)
         else:
             self.__store.hit(found.id, now)
             self.__served = found.id
@@ -235,30 +262,61 @@ class SemanticCache:
                             duration=round(time.perf_counter() - start, 3), reason=None)
         return found
 
+    def __plant(self, now: float) -> None:
+        """
+            Store the questions of the seed files, embedded by the model of the cache, if they changed since they were
+            (or the seed was turned off: the old ones are removed). Once per run: a few seconds the first time (~30 ms a
+            question), nothing after. The embedding model failing, it is tried again on the next lookup
+        """
+        if self.__seeded:
+            return
+        version, pairs = load_seed(self.__seed)
+        stored: str | None = self.__store.seed_version(self.__embedder.model)
+        # No seed, and none stored before: nothing to remove, the file is not created for it
+        if stored != version and (pairs or stored is not None):
+            try:
+                entries = [(question, answer, normalized(self.__embedder.query(question))) for question, answer in pairs]
+            except EmbedError as e:
+                log.warning(f"[cache] the seed is not stored yet: {e.message}")
+                return
+            count: int = self.__store.replace_seed(
+                self.__embedder.model, version, [entry for entry in entries if entry[2] is not None], now
+            )
+            log.info(f"[cache] seed {version}: {count} questions stored")
+        self.__seeded = True
+
     def __verified(self, question: str, entries: list[Entry]) -> list[float | None]:
         """
-            How sure the reranker is that each entry asks the same as the question (0 to 1), in the same order. Without
-            verify, None for each: the meaning was enough. Without a reranker that answers, 0 for each: nothing is given
+            How sure the reranker is that each entry is the answer to the question (0 to 1), in the same order: its
+            question read against the question, or its answer for the seed. Without verify, None for each: the meaning
+            was enough. The same question written the same way is 1 without asking it. Without a reranker that answers,
+            0 for the others: they are not given
         """
-        if not entries:
-            return []
         if not self.__verify:
             return [None] * len(entries)
-        if self.__reranker is not None:
+        scores: list[float] = [1.0 if same_text(question, entry.question) else 0.0 for entry in entries]
+        unsure: list[int] = [i for i, score in enumerate(scores) if score < 1.0]
+        if unsure and self.__reranker is not None:
             try:
-                return self.__reranker.score(question, [entry.question for entry in entries])
+                read: list[float] = self.__reranker.score(
+                    question, [entries[i].answer if entries[i].origin == SEED else entries[i].question for i in unsure]
+                )
+                for i, score in zip(unsure, read):
+                    scores[i] = score
             except RerankError as e:
                 if not self.__unverified:
-                    log.warning(f"[cache] no answer given, they can not be checked: {e.message}")
+                    log.warning(f"[cache] only the same questions are given, the others can not be checked: {e.message}")
                     self.__unverified = True
-        return [0.0] * len(entries)
+        return scores
 
     def stats(self) -> dict:
         """ What /cache shows: as CACHE_STATS tells it """
-        entries, hits = self.__store.count(self.__user_id)
+        entries, hits, seeds = self.__store.count(self.__user_id)
         return {
             "enabled"  : self.__enabled,
             "entries"  : entries,
+            "seeds"    : seeds,
+            "shared"   : self.__user_id is None,
             "hits"     : hits,
             "lookups"  : self.__lookups,
             "served"   : self.__hits,
@@ -277,7 +335,10 @@ class SemanticCache:
         return removed
 
     def clear(self) -> int:
-        """ Remove every answer of the user: how many, told by CACHE_CLEARED """
+        """
+            Remove every answer of the model to the user (to all of them when shared), never the seed: how many, told by
+            CACHE_CLEARED
+        """
         removed: int = self.__store.clear(self.__user_id)
         self.__served = None
         self.__bus.dispatch(CACHE_CLEARED, scope="all", entries=removed)
@@ -318,6 +379,9 @@ class SemanticCache:
             return
         if not turn.tools <= self.__tools:
             log.info(f"[cache] not stored: the answer used {', '.join(sorted(turn.tools - self.__tools))}")
+            return
+        if personal(turn.answer, self.__user_name):
+            log.info("[cache] not stored: the answer names the user")
             return
         now: float = self.__clock()
         identifier: int = self.__store.add(pending.scope, pending.question, turn.answer, pending.vector,

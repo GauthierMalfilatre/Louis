@@ -60,7 +60,6 @@ from eval.evaluator import Evaluator
 from command.impl.command_find import FindCommand
 from command.impl.command_cache import CacheCommand
 from cache.semantic_cache import SemanticCache, Hit
-from cache.rules import first
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -176,11 +175,11 @@ class App:
         # The calls the guard refused in the current turn, by tool: counted again from 0 on each message
         self.__refused: Counter[str] = Counter()
 
-        # The answers given before, given again without the model to a question that means the same (cache.enabled, or
-        # /cache on). It listens to the bus to store the answers once their turn is done: nothing is opened on the disk
-        # before the first one is stored. It checks the questions with the reranker of the knowledge base: loaded once
+        # The answers given before, given again without the model to a question that means the same (cache.enabled,
+        # /cache on|off). It listens to the bus to store the answers once their turn is done: nothing is opened on the
+        # disk before the first lookup. It checks the questions with the reranker of the knowledge base: loaded once
         self.__cache: SemanticCache = SemanticCache.from_settings(
-            settings, self.__bus, user.id, guard=self.__guard is not None,
+            settings, self.__bus, user, guard=self.__guard is not None,
             reranker=self.__knowledge.reranker if self.__knowledge is not None else None
         )
 
@@ -525,13 +524,11 @@ class App:
                     return
                 question = verdict.content
 
-            # Before the question is added: whether the user said anything yet in the session
-            fresh: bool = first(self.session.messages)
             saved: bool = self.session.saved
             self.session.add("user", question)
             if not saved and self.session.saved:
                 self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
-            if self.__cached(question, fresh):
+            if self.__cached(question):
                 return
 
             for _ in range(rounds):
@@ -624,12 +621,11 @@ class App:
                     return
                 question = verdict.content
 
-            fresh: bool = first(self.session.messages)
             saved: bool = self.session.saved
             self.session.add("user", question)
             if not saved and self.session.saved:
                 self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
-            if self.__cached(question, fresh):
+            if self.__cached(question):
                 return
 
             for step in range(1, rounds + 1):
@@ -703,15 +699,16 @@ class App:
         log.warning(f"[app] reasoning stopped after {rounds} steps")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} étapes de raisonnement.")
 
-    def __cached(self, question: str, fresh: bool) -> bool:
+    def __cached(self, question: str) -> bool:
         """
             Answer the question (already in the session, as the guard let it through) from the semantic cache, when it
             holds the answer to one that means the same: the model is not asked. The answer is kept in the session as any
-            reply, the conversation goes on from it. fresh: the user said nothing before in the session. A cache that
-            fails never fails the turn: the model answers. Whether it answered
+            reply, the conversation goes on from it. The cache reads the session: what the model read in it tells if the
+            answer may be stored. A cache that fails never fails the turn: the model answers. Whether it answered
         """
         try:
-            hit: Hit | None = self.__cache.lookup(question, model=self.__model.model, prompt=self.__prompt(), first=fresh)
+            hit: Hit | None = self.__cache.lookup(question, model=self.__model.model, prompt=self.__prompt(),
+                                                  history=self.session.history)
         except Exception:
             log.exception("[cache] the lookup failed: the model answers")
             return False
@@ -719,7 +716,7 @@ class App:
             return False
         self.session.add("assistant", hit.answer)
         self.__bus.dispatch(CACHE_HIT, id=hit.id, score=hit.score, verified=hit.verified, question=hit.question,
-                            age=round(hit.age, 1), hits=hit.hits)
+                            age=round(hit.age, 1), hits=hit.hits, seed=hit.seed)
         self.__bus.dispatch(CHAT_TEXT, text=hit.answer)
         self.__bus.dispatch(CHAT_REPLY, content=hit.answer, tools=[])
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="done", message=None)

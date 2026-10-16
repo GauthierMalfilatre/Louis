@@ -131,6 +131,8 @@ def ago(seconds: float) -> str:
 
 def cache_hit(data: dict) -> str:
     """ Where an answer of the cache comes from:  ⚡ Réponse du cache (similarité 0.95), donnée il y a 2 h à « ... » """
+    if data.get("seed"):
+        return f"⚡ Réponse de l'aide de Louis (similarité {data['score']:.2f}), à « {preview(data['question'])} »"
     return f"⚡ Réponse du cache (similarité {data['score']:.2f}), donnée {ago(data['age'])} à « {preview(data['question'])} »"
 
 def cache_cleared(data: dict) -> str:
@@ -149,8 +151,9 @@ def cache_stats(data: dict) -> list[str]:
     state: str = "activé (/cache off pour le couper)" if data["enabled"] else "désactivé (/cache on pour l'activer)"
     return [
         f"Cache sémantique {state}",
-        f"  {data['entries']} réponse{'s' if data['entries'] != 1 else ''} gardée{'s' if data['entries'] != 1 else ''}, "
-        f"données {data['hits']} fois en tout",
+        f"  {data['entries']} réponse{'s' if data['entries'] != 1 else ''} gardée{'s' if data['entries'] != 1 else ''}"
+        f"{' (partagées entre les utilisateurs)' if data.get('shared') else ''}, {data.get('seeds', 0)} question"
+        f"{'s' if data.get('seeds', 0) != 1 else ''} de l'aide de Louis, données {data['hits']} fois en tout",
         f"  depuis le lancement : {data['served']} sur {data['lookups']} question{'s' if data['lookups'] != 1 else ''} "
         f"({rate})",
         f"  seuil de similarité {data['threshold']:.2f} · {short_path(data['file'])}",

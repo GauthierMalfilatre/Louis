@@ -133,11 +133,12 @@ settings: dict[str] = {
     "rag.rerank.max_chars" : 1000,
     # Semantic cache (cache/, docs/CACHE.md): a question that means the same as one already answered gets its answer back
     # at once, without the chat model. Its meaning is read by the embedding model of the knowledge base (rag.embed.model,
-    # on the CPU: ~30 ms). Only the answers safe to give again are stored: to a question that does not depend on the
-    # time, that used no tool but those of cache.tools, and that the guard let through. The cache is in the working
-    # directory, unless LOUIS_CACHE gives another path (the launcher of install.sh: the global one). /cache to see it.
-    # Off by default: a wrong answer given at once is worse than a right one given slowly, until the threshold is measured
-    "cache.enabled"        : False,
+    # on the CPU: ~30 ms). Any question that stands alone is looked up ("et pour la deuxième ?" is not), and only the
+    # answers safe to give again are stored: to a question that does not depend on the time nor the project, in a session
+    # where the model read nothing of the project yet, using no tool but those of cache.tools, let through by the guard.
+    # The cache is in the working directory, unless LOUIS_CACHE gives another path (the launcher of install.sh: the
+    # global one). /cache to see it. Without the embedding model or the reranker, it does nothing: the model answers
+    "cache.enabled"        : True,
     "cache.file"           : "louis.cache.db",
     # A question is looked up in two steps, as the knowledge base is. threshold: how close in meaning (cosine, 0 to 1) a
     # question stored must be to be read again by the reranker (rag.rerank.model, the same model loaded once), which gives
@@ -154,11 +155,19 @@ settings: dict[str] = {
     # The tools an answer may have used and still be given again: their sources are known, and the cache forgets the answers
     # when they change (/index, /unindex). An answer that read the project, ran code or searched the web is never stored
     "cache.tools"          : ["search_knowledge"],
-    # "first": only the first message of a session is looked up and stored, the others may lean on what was said before
-    # ("et la deuxième ?"). "any": every message
-    "cache.scope"          : "first",
-    # Whether the users share their answers. Off: each user gets only their own (an answer may tell what they indexed)
-    "cache.shared"         : False,
+    # Whether the users share their answers: a question one asked is answered at once for the others (an answer that
+    # names its user is never stored). Off: each user gets only their own, for a louis --web open to people who must not
+    # read each other's answers
+    "cache.shared"         : True,
+    # The seed: answers written by the team (src/cache/seed/*.jsonl), about Louis itself, useful from the first question
+    # of a new install. Stored on the first lookup, again when its files change; never removed by /cache clear
+    "cache.seed"           : True,
+    # The reranker reads an answer of the seed against the new question (they tell all Louis does about something),
+    # where it reads the answers of the model against the question they were given for: a score of its own. Measured
+    # with python -m cache.evaluate: "valider un JSON avec un schéma en Python" gets 0.74 against the answer about /json,
+    # the questions about Louis asked otherwise 0.06 to 1. Strict: the questions written in the seed files are always
+    # given (the same text needs no reranker), the way to answer more of them is to write more of them there
+    "cache.seed.min_score" : 0.75,
     # Evaluation (eval/): a model, the judge, reads each answer of Louis again once its turn is done. It splits it into
     # claims and checks each one against what the tools read (the sources): supported, contradicted, or unverifiable.
     # It also scores the relevance and the coherence of the answer, from 1 to 5. The scores go to the traces
