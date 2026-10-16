@@ -17,6 +17,7 @@ from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG
 from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT
+from events.event_list import CACHE_HIT, CACHE_ENABLED, CACHE_DISABLED, CACHE_CLEARED, CACHE_STATS
 import json
 import os
 import re
@@ -119,6 +120,42 @@ def short_path(path: str) -> str:
     home: str = os.path.expanduser("~")
     return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
 
+def ago(seconds: float) -> str:
+    """ How long ago, in a few words: « il y a 3 h » """
+    if seconds < 60:
+        return "à l'instant"
+    for unit, length in (("j", 86400), ("h", 3600), ("min", 60)):
+        if seconds >= length:
+            return f"il y a {int(seconds // length)} {unit}"
+    return "à l'instant"
+
+def cache_hit(data: dict) -> str:
+    """ Where an answer of the cache comes from:  ⚡ Réponse du cache (similarité 0.95), donnée il y a 2 h à « ... » """
+    return f"⚡ Réponse du cache (similarité {data['score']:.2f}), donnée {ago(data['age'])} à « {preview(data['question'])} »"
+
+def cache_cleared(data: dict) -> str:
+    """ The answers the cache forgot, and why """
+    count: int = data["entries"]
+    answers: str = f"{count} réponse{'s' if count != 1 else ''}"
+    if data["scope"] == "rag":
+        return f"La base de connaissances a changé : {answers} du cache oubliée{'s' if count != 1 else ''}."
+    if data["scope"] == "last":
+        return "Réponse oubliée : la prochaine fois, le modèle répondra." if count else "Cette réponse n'était plus dans le cache."
+    return f"Cache effacé : {answers} oubliée{'s' if count != 1 else ''}."
+
+def cache_stats(data: dict) -> list[str]:
+    """ The lines of /cache """
+    rate: str = f"{data['hit_rate'] * 100:.0f} %" if data["hit_rate"] is not None else "–"
+    state: str = "activé (/cache off pour le couper)" if data["enabled"] else "désactivé (/cache on pour l'activer)"
+    return [
+        f"Cache sémantique {state}",
+        f"  {data['entries']} réponse{'s' if data['entries'] != 1 else ''} gardée{'s' if data['entries'] != 1 else ''}, "
+        f"données {data['hits']} fois en tout",
+        f"  depuis le lancement : {data['served']} sur {data['lookups']} question{'s' if data['lookups'] != 1 else ''} "
+        f"({rate})",
+        f"  seuil de similarité {data['threshold']:.2f} · {short_path(data['file'])}",
+    ]
+
 class CLI(Interface):
     """ Class CLI to interact with the user in the terminal """
     def __init__(self, prompt: str = "> "):
@@ -175,6 +212,14 @@ class CLI(Interface):
         bus.subscribe(self.__on_rag_sources, RAG_SOURCES)
         bus.subscribe(self.__on_rag_forgotten, RAG_FORGOTTEN)
         bus.subscribe(self.__on_eval_report, EVAL_REPORT)
+        # Before the answer it gives: where it comes from
+        bus.subscribe(lambda event: self.out(cache_hit(event.data), dim=True), CACHE_HIT)
+        bus.subscribe(lambda event: self.out("\nCache sémantique activé : les questions déjà posées sont répondues sans "
+                                             "le modèle. /cache off pour le couper.\n"), CACHE_ENABLED)
+        bus.subscribe(lambda event: self.out("\nCache sémantique désactivé : le modèle répond à chaque question.\n"),
+                      CACHE_DISABLED)
+        bus.subscribe(self.__on_cache_cleared, CACHE_CLEARED)
+        bus.subscribe(lambda event: self.out("\n" + "\n".join(cache_stats(event.data)) + "\n"), CACHE_STATS)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -359,6 +404,11 @@ class CLI(Interface):
             lines.append(f"  {source['name']:16} {source['files']:>6} fichiers {source['chunks']:>7} passages  "
                          f"[{short_path(source['root'])}]{words}{described}{excluded}")
         self.out("\n".join(lines) + "\n")
+
+    def __on_cache_cleared(self, event: Event) -> None:
+        """ What the cache forgot: dim when it did it alone (the knowledge base changed) """
+        self._newline()
+        self.out(cache_cleared(event.data), dim=event.data["scope"] == "rag")
 
     def __on_rag_forgotten(self, event: Event) -> None:
         """ The source removed """

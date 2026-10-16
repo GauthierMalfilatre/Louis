@@ -17,6 +17,8 @@
 ##   check   the check of a draft of the reasoning loop: whether it went, its problems, whether it was written again
 ## An llm record tells what the call was for (purpose): a reply, JSON, the check of a draft, a summary of the context.
 ## Only the replies make the rounds and the output of a turn: the JSON of a check is no answer
+##   cache   a question looked up in the semantic cache (cache/): whether its answer was there, how close the closest
+##           one was, how long it took, or why it was not looked up. A turn answered from the cache is cached: no llm record
 ##   eval    an answer judged (eval/): its scores, and the claims its sources do not support. Written by the thread of
 ##           the judge, once the turn is over: it names the answer by the session, the prompt and the model instead
 ## The records of a turn share its id. The long texts are cut: the whole conversation is in the database and the log.
@@ -30,7 +32,7 @@ from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, GUARD_TRIGGERED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, RAG_RETRIEVED, STRUCTURED_REPLY
-from events.event_list import REASONING_STEP, REASONING_CHECK, EVAL_SCORED
+from events.event_list import REASONING_STEP, REASONING_CHECK, EVAL_SCORED, CACHE_LOOKUP, CACHE_HIT
 from config.settings import settings as default_settings
 from config.prompt import REACT_PROMPT
 from logger.logger import log, scrub
@@ -48,7 +50,8 @@ VERSION: int = 1
 RUN_SETTINGS: tuple[str, ...] = (
     "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth", "guard.enabled",
     "rag.enabled", "rag.rerank.enabled", "rag.rerank.model", "rag.rerank.pool", "rag.rerank.min_score",
-    "rag.rerank.max_chars", "rag.embed.gpu", "eval.enabled", "eval.model"
+    "rag.rerank.max_chars", "rag.embed.gpu", "eval.enabled", "eval.model", "cache.enabled", "cache.threshold",
+    "cache.rerank.enabled", "cache.rerank.min_score"
 )
 
 # Characters kept of each text: enough to know what it was about
@@ -113,6 +116,8 @@ class Turn:
     checks           : int        = 0
     revised          : int        = 0
     left             : bool       = False
+    # Answered from the semantic cache, without the model
+    cached           : bool       = False
 
 class Recorder:
     """
@@ -158,6 +163,8 @@ class Recorder:
         bus.subscribe(self.__on_step, REASONING_STEP)
         bus.subscribe(self.__on_check, REASONING_CHECK)
         bus.subscribe(self.__on_retrieved, RAG_RETRIEVED)
+        bus.subscribe(self.__on_lookup, CACHE_LOOKUP)
+        bus.subscribe(self.__on_cache_hit, CACHE_HIT)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
         bus.subscribe(self.__on_eval, EVAL_SCORED)
         return self
@@ -363,6 +370,24 @@ class Recorder:
             duration=data["duration"]
         )
 
+    def __on_lookup(self, event: Event) -> None:
+        """ A question looked up in the semantic cache, or why it was not """
+        data: dict = event.data
+        self.__write(
+            "cache",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            hit=data["hit"],
+            score=data["score"],
+            duration=data["duration"],
+            reason=data["reason"]
+        )
+
+    def __on_cache_hit(self, event: Event) -> None:
+        """ The turn is answered from the cache: its latency is not the model's """
+        if self.__turn is not None:
+            self.__turn.cached = True
+
     def __on_turn_ended(self, event: Event) -> None:
         """ The whole answer: how it ended, how long the user waited, what it cost """
         turn: Turn | None = self.__turn
@@ -393,7 +418,8 @@ class Recorder:
             steps=turn.steps,
             checks=turn.checks,
             revised=turn.revised,
-            left=turn.left
+            left=turn.left,
+            cached=turn.cached
         )
 
     def __on_eval(self, event: Event) -> None:

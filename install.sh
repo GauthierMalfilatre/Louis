@@ -17,6 +17,7 @@ VENV="$LOUIS_HOME/venv"
 DATABASE="$LOUIS_HOME/louis.db"
 TRACES="$LOUIS_HOME/louis.traces.jsonl"
 KNOWLEDGE="$LOUIS_HOME/louis.rag.db"
+CACHE="$LOUIS_HOME/louis.cache.db"
 LAUNCHER="$BIN_DIR/louis"
 
 info() { printf '\033[1;34m::\033[0m %s\n' "$*"; }
@@ -32,6 +33,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     [[ -f "$DATABASE" ]] && info "Your sessions are kept in $DATABASE: delete it yourself if you don't need them."
     [[ -f "$TRACES" ]] && info "The metrics of your calls are kept in $TRACES: delete it yourself if you don't need them."
     [[ -f "$KNOWLEDGE" ]] && info "Your knowledge base is kept in $KNOWLEDGE: delete it yourself if you don't need it."
+    [[ -f "$CACHE" ]] && info "The answers of the semantic cache are kept in $CACHE: delete it yourself if you don't need them."
     exit 0
 elif [[ $# -gt 0 ]]; then
     die "Unknown option '$1'. Usage: $0 [--uninstall]"
@@ -99,6 +101,7 @@ cat > "$LAUNCHER" <<EOF
 export LOUIS_DB=$(printf '%q' "$DATABASE")
 export LOUIS_TRACES=$(printf '%q' "$TRACES")
 export LOUIS_RAG=$(printf '%q' "$KNOWLEDGE")
+export LOUIS_CACHE=$(printf '%q' "$CACHE")
 exec $(printf '%q' "$VENV/bin/python") $(printf '%q' "$REPO/src/main.py") "\$@"
 EOF
 chmod +x "$LAUNCHER"

@@ -58,6 +58,9 @@ from command.impl.command_index import IndexCommand, UnindexCommand
 from command.impl.command_eval import EvalCommand
 from eval.evaluator import Evaluator
 from command.impl.command_find import FindCommand
+from command.impl.command_cache import CacheCommand
+from cache.semantic_cache import SemanticCache, Hit
+from cache.rules import first
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -162,6 +165,7 @@ class App:
             .register(UnindexCommand())\
             .register(EvalCommand())\
             .register(FindCommand())\
+            .register(CacheCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -171,6 +175,14 @@ class App:
             if settings.get("guard.enabled", False) else None
         # The calls the guard refused in the current turn, by tool: counted again from 0 on each message
         self.__refused: Counter[str] = Counter()
+
+        # The answers given before, given again without the model to a question that means the same (cache.enabled, or
+        # /cache on). It listens to the bus to store the answers once their turn is done: nothing is opened on the disk
+        # before the first one is stored. It checks the questions with the reranker of the knowledge base: loaded once
+        self.__cache: SemanticCache = SemanticCache.from_settings(
+            settings, self.__bus, user.id, guard=self.__guard is not None,
+            reranker=self.__knowledge.reranker if self.__knowledge is not None else None
+        )
 
         # The answers judged once their turn is done (eval.enabled), or the last one when /eval asks. It only listens to
         # the bus: what it reads is what the guard let through
@@ -360,6 +372,11 @@ class App:
         return self.__evaluator
 
     @property
+    def cache(self) -> SemanticCache:
+        """ Get the semantic cache, for /cache to show it, switch it, or clear it """
+        return self.__cache
+
+    @property
     def knowledge(self) -> Knowledge | None:
         """ Get the knowledge base the user indexed, None if it is turned off (rag.enabled) """
         return self.__knowledge
@@ -508,10 +525,14 @@ class App:
                     return
                 question = verdict.content
 
+            # Before the question is added: whether the user said anything yet in the session
+            fresh: bool = first(self.session.messages)
             saved: bool = self.session.saved
             self.session.add("user", question)
             if not saved and self.session.saved:
                 self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+            if self.__cached(question, fresh):
+                return
 
             for _ in range(rounds):
                 reply: Reply = self.__chat(
@@ -603,10 +624,13 @@ class App:
                     return
                 question = verdict.content
 
+            fresh: bool = first(self.session.messages)
             saved: bool = self.session.saved
             self.session.add("user", question)
             if not saved and self.session.saved:
                 self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+            if self.__cached(question, fresh):
+                return
 
             for step in range(1, rounds + 1):
                 reply: Reply = self.__chat(
@@ -678,6 +702,29 @@ class App:
 
         log.warning(f"[app] reasoning stopped after {rounds} steps")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} étapes de raisonnement.")
+
+    def __cached(self, question: str, fresh: bool) -> bool:
+        """
+            Answer the question (already in the session, as the guard let it through) from the semantic cache, when it
+            holds the answer to one that means the same: the model is not asked. The answer is kept in the session as any
+            reply, the conversation goes on from it. fresh: the user said nothing before in the session. A cache that
+            fails never fails the turn: the model answers. Whether it answered
+        """
+        try:
+            hit: Hit | None = self.__cache.lookup(question, model=self.__model.model, prompt=self.__prompt(), first=fresh)
+        except Exception:
+            log.exception("[cache] the lookup failed: the model answers")
+            return False
+        if hit is None:
+            return False
+        self.session.add("assistant", hit.answer)
+        self.__bus.dispatch(CACHE_HIT, id=hit.id, score=hit.score, verified=hit.verified, question=hit.question,
+                            age=round(hit.age, 1), hits=hit.hits)
+        self.__bus.dispatch(CHAT_TEXT, text=hit.answer)
+        self.__bus.dispatch(CHAT_REPLY, content=hit.answer, tools=[])
+        self.__bus.dispatch(CHAT_TURN_ENDED, reason="done", message=None)
+        self.__estimate_context()
+        return True
 
     def __reasoning_view(self, question: str) -> list[dict]:
         """

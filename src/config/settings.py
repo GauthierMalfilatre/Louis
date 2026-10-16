@@ -131,6 +131,34 @@ settings: dict[str] = {
     "rag.rerank.min_score" : 0.05,
     # What it reads of each passage: its time grows with it, and the start of a passage tells what it is about
     "rag.rerank.max_chars" : 1000,
+    # Semantic cache (cache/, docs/CACHE.md): a question that means the same as one already answered gets its answer back
+    # at once, without the chat model. Its meaning is read by the embedding model of the knowledge base (rag.embed.model,
+    # on the CPU: ~30 ms). Only the answers safe to give again are stored: to a question that does not depend on the
+    # time, that used no tool but those of cache.tools, and that the guard let through. The cache is in the working
+    # directory, unless LOUIS_CACHE gives another path (the launcher of install.sh: the global one). /cache to see it.
+    # Off by default: a wrong answer given at once is worse than a right one given slowly, until the threshold is measured
+    "cache.enabled"        : False,
+    "cache.file"           : "louis.cache.db",
+    # A question is looked up in two steps, as the knowledge base is. threshold: how close in meaning (cosine, 0 to 1) a
+    # question stored must be to be read again by the reranker (rag.rerank.model, the same model loaded once), which gives
+    # its answer only if it finds they ask the same (rerank.min_score). The meaning alone can not tell apart questions
+    # that differ by one word: "lire un fichier JSON" and "écrire un fichier JSON" are 0.975 close, more than most
+    # questions asked in other words (0.80 to 0.88). Measured with: cd src && python -m cache.evaluate (docs/CACHE.md).
+    # Without the reranker (fastembed missing), nothing is given. rerank.enabled False: the meaning is enough (unsafe)
+    "cache.threshold"      : 0.80,
+    "cache.rerank.enabled" : True,
+    "cache.rerank.min_score": 0.35,
+    # Seconds an answer may be given again (7 days), and the answers kept at most, the ones served least lately dropped first
+    "cache.ttl"            : 7 * 24 * 3600,
+    "cache.max_entries"    : 1000,
+    # The tools an answer may have used and still be given again: their sources are known, and the cache forgets the answers
+    # when they change (/index, /unindex). An answer that read the project, ran code or searched the web is never stored
+    "cache.tools"          : ["search_knowledge"],
+    # "first": only the first message of a session is looked up and stored, the others may lean on what was said before
+    # ("et la deuxième ?"). "any": every message
+    "cache.scope"          : "first",
+    # Whether the users share their answers. Off: each user gets only their own (an answer may tell what they indexed)
+    "cache.shared"         : False,
     # Evaluation (eval/): a model, the judge, reads each answer of Louis again once its turn is done. It splits it into
     # claims and checks each one against what the tools read (the sources): supported, contradicted, or unverifiable.
     # It also scores the relevance and the coherence of the answer, from 1 to 5. The scores go to the traces
