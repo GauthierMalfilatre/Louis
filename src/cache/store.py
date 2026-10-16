@@ -178,6 +178,23 @@ class Store:
         row = db.execute("SELECT value FROM meta WHERE key = ?", (f"seed:{embedder}",)).fetchone()
         return row["value"] if row else None
 
+    def peek_seed_version(self, embedder: str) -> str | None:
+        """
+            As seed_version, on a connection of its own, closed at once: for a thread other than the one of the app
+            (a connection of SQLite stays in the thread that opened it)
+        """
+        if not os.path.exists(self.__path):
+            return None
+        db: sqlite3.Connection = sqlite3.connect(self.__path)
+        try:
+            row = db.execute("SELECT value FROM meta WHERE key = ?", (f"seed:{embedder}",)).fetchone()
+        except sqlite3.OperationalError:
+            # A cache made before the seed: no table meta yet
+            return None
+        finally:
+            db.close()
+        return row[0] if row else None
+
     def replace_seed(self, embedder: str, version: str, entries: list[tuple[str, str, np.ndarray]], now: float) -> int:
         """
             Put the questions of the seed files in place of those stored before, embedded by that model: (question, answer,

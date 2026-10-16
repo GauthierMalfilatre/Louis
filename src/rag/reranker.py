@@ -15,6 +15,7 @@ from logger.logger import log
 import math
 import os
 import sys
+import threading
 import time
 
 # Where the models are kept: fastembed's default is in /tmp, emptied when the machine restarts
@@ -55,6 +56,7 @@ class Reranker:
         self.__encoder                 = None
         # Why it could not load: it is not tried again on every search, each try costs seconds
         self.__broken   : str | None   = None
+        self.__lock     : threading.Lock = threading.Lock()
 
     @property
     def model(self) -> str:
@@ -90,7 +92,17 @@ class Reranker:
         self.__load(local_only=False)
 
     def __load(self, local_only: bool = True):
-        """ The cross-encoder, loaded once """
+        """
+            The cross-encoder, loaded once: the semantic cache loads it in a thread while the user types, a search of the
+            knowledge base may want it meanwhile. The second one waits for the first one's
+        """
+        if self.__encoder is not None:
+            return self.__encoder
+        with self.__lock:
+            return self.__load_once(local_only)
+
+    def __load_once(self, local_only: bool):
+        """ The cross-encoder, loaded if no one did it while we waited for the lock """
         if self.__encoder is not None:
             return self.__encoder
         if self.__broken is not None and local_only:

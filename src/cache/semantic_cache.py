@@ -24,8 +24,10 @@
 ## a question about writing it: 0.977), but an answer of the seed against the new question (cache.seed.min_score): those
 ## answers tell all of what Louis does about something, and the questions of code that look like them do not get them
 ##
-## The app looks a question up once the guard let it through, before the model, wherever it comes in the session as
-## long as it stands alone (cache/rules.py): on a hit, it gives the answer as a reply (CACHE_HIT). On a miss in a clean
+## The app looks a message up as it was typed, before the input rails of the guard and the model, wherever it comes in
+## the session as long as it stands alone (cache/rules.py): on a hit, it gives the answer as a reply (CACHE_HIT), a
+## reply the output rails checked when it was kept. On a miss the guard reads the message (masked by it: never stored,
+## discard), then the model answers. On a miss in a clean
 ## session (the model read nothing of the project in it yet), the vector of the question is kept for the end of the
 ## turn: its answer is stored with it when the turn is done, used no tool but those of cache.tools, none of them failed,
 ## the guard did not refuse the reply, the reasoning loop gave no answer it found wrong, and it does not name the user.
@@ -49,6 +51,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 import numpy as np
 import os
+import threading
 import time
 
 # The tools whose sources are the knowledge base: the answers that used them are forgotten when it changes
@@ -125,6 +128,9 @@ class SemanticCache:
         self.__seed     : str | None      = seed
         # The seed is stored once per run at most, on the first lookup the embedding model answers
         self.__seeded   : bool            = False
+        # warm(): the threads that load the models while the user types, and the seed they embedded (version, entries)
+        self.__warming  : list[threading.Thread] = []
+        self.__prepared : tuple[str, list[tuple[str, str, np.ndarray]]] | None = None
         self.__clock    : Callable[[], float] = clock
         self.__pending  : Pending | None  = None
         self.__turn     : Turn | None     = None
@@ -188,6 +194,47 @@ class SemanticCache:
         """ Look the next questions up, or not """
         self.__enabled = state
         self.__pending = None
+        if state:
+            self.warm()
+
+    def warm(self) -> None:
+        """
+            Get ready while the user types: the embedding model and the reranker loaded, the questions of the seed
+            embedded if they changed, each in a thread of its own. The first lookup waits for them, then stores the seed.
+            Measured on a new install: 6.8s for the seed, 5.8s for the reranker, that the first question no longer waits
+        """
+        if self.__warming or self.__embedder is None:
+            return
+        jobs: list[Callable[[], None]] = [self.__prepare_seed]
+        if self.__verify and self.__reranker is not None:
+            jobs.append(lambda: self.__reranker.score("Louis", ["Louis"]))
+        for job in jobs:
+            thread = threading.Thread(target=self.__quietly, args=(job,), daemon=True, name="louis-cache-warm")
+            self.__warming.append(thread)
+            thread.start()
+
+    def discard(self) -> None:
+        """ Never store the answer of the question looked up last (the guard masked it: it holds sensitive data) """
+        self.__pending = None
+
+    def __quietly(self, job: Callable[[], None]) -> None:
+        """ Run a job of the warm-up: one that fails is done by the first lookup, as without the warm-up """
+        try:
+            job()
+        except (EmbedError, RerankError) as e:
+            log.info(f"[cache] warm-up left to the first lookup: {e.message}")
+        except Exception:
+            log.exception("[cache] the warm-up failed")
+
+    def __prepare_seed(self) -> None:
+        """ Embed the questions of the seed if they changed, else one word: the embedding model is loaded either way """
+        version, pairs = load_seed(self.__seed)
+        stored: str | None = self.__store.peek_seed_version(self.__embedder.model)
+        if stored != version and (pairs or stored is not None):
+            self.__prepared = (version, [(question, answer, normalized(self.__embedder.query(question)))
+                                         for question, answer in pairs])
+        else:
+            self.__embedder.query("Louis")
 
     @property
     def path(self) -> str:
@@ -245,7 +292,8 @@ class SemanticCache:
                             round(verified, 4) if verified is not None else None, now - entry.created_at, entry.hits + 1,
                             entry.origin == SEED)
                 break
-            log.info(f"[cache] {score:.3f} close to #{entry.id}, but not the same question for the reranker "
+            log.info(f"[cache] {score:.3f} close to #{entry.id}, but not "
+                     f"{'its answer' if entry.origin == SEED else 'the same question'} for the reranker "
                      f"({verified:.3f}): {entry.question!r}")
 
         self.__lookups += 1
@@ -270,12 +318,16 @@ class SemanticCache:
         """
         if self.__seeded:
             return
+        for thread in self.__warming:
+            thread.join()
         version, pairs = load_seed(self.__seed)
         stored: str | None = self.__store.seed_version(self.__embedder.model)
         # No seed, and none stored before: nothing to remove, the file is not created for it
         if stored != version and (pairs or stored is not None):
+            prepared, self.__prepared = self.__prepared, None
             try:
-                entries = [(question, answer, normalized(self.__embedder.query(question))) for question, answer in pairs]
+                entries = prepared[1] if prepared is not None and prepared[0] == version else \
+                    [(question, answer, normalized(self.__embedder.query(question))) for question, answer in pairs]
             except EmbedError as e:
                 log.warning(f"[cache] the seed is not stored yet: {e.message}")
                 return

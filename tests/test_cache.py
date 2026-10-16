@@ -17,6 +17,7 @@ from config.prompt import SYSTEM_PROMPT
 from config.settings import settings
 from events.event import Event
 from events.event_bus import EventBus
+from guard.verdict import Verdict, PASS, MASKED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_REPLY, CHAT_TEXT, TOOL_CALL_ENDED
 from events.event_list import GUARD_TRIGGERED, REASONING_CHECK, RAG_INDEXED, RAG_FORGOTTEN
 from events.event_list import CACHE_LOOKUP, CACHE_HIT, CACHE_STORED, CACHE_CLEARED, CACHE_STATS, MODEL_CALL
@@ -52,15 +53,17 @@ def meaning(text: str) -> list[float]:
     return list(known if known is not None else BASE if "17" in text else noise(text))
 
 class FakeEmbedder:
-    """ An embedding model without Ollama: down raises as Ollama stopped would """
+    """ An embedding model without Ollama: down raises as Ollama stopped would. asked keeps what it read """
     model: str = "fake-embed"
 
     def __init__(self, down: bool = False):
         self.down: bool = down
+        self.asked: list[str] = []
 
     def query(self, text: str) -> list[float]:
         if self.down:
             raise EmbedError("Ollama ne répond pas")
+        self.asked.append(text)
         return meaning(text)
 
 class FakeReranker:
@@ -411,6 +414,40 @@ def test_an_answer_of_the_seed_is_checked_by_the_answer_with_its_own_score(cache
     assert reranker.read == [answer]
     assert ask(cache(seed=str(tmp_path / "seed")), "Comment je fais pour indexer un dossier ?").seed
 
+def test_the_warm_up_embeds_the_seed_and_loads_the_reranker_before_the_first_question(cache, tmp_path):
+    embedder, reranker = FakeEmbedder(), FakeReranker()
+    found = cache(embedder, seed=write_seed(tmp_path / "seed"), reranker=reranker)
+    found.warm()
+    assert ask(found, SEED_QUESTION) is not None
+    # The seed embedded once, by the warm-up: the first lookup only embeds its own question
+    assert sorted(embedder.asked) == sorted([SEED_QUESTION, "Comment ajouter de la documentation ?", SEED_QUESTION])
+    assert "Louis" in reranker.read
+
+def test_the_warm_up_does_not_embed_a_seed_already_stored(cache, tmp_path):
+    folder = write_seed(tmp_path / "seed")
+    ask(cache(seed=folder), QUESTION)
+    embedder = FakeEmbedder()
+    found = cache(embedder, seed=folder)
+    found.warm()
+    ask(found, SEED_QUESTION)
+    assert sorted(embedder.asked) == sorted(["Louis", SEED_QUESTION])
+
+def test_a_warm_up_that_fails_is_done_by_the_first_lookup(cache, tmp_path):
+    embedder = FakeEmbedder(down=True)
+    found = cache(embedder, seed=write_seed(tmp_path / "seed"))
+    found.warm()
+    embedder.down = False
+    assert ask(found, SEED_QUESTION) is not None
+
+def test_an_answer_discarded_is_never_stored(cache):
+    found = cache()
+    found.bus.dispatch(CHAT_TURN_STARTED)
+    found.lookup(QUESTION, model="qwen", prompt="prompt", history=[])
+    found.discard()
+    found.bus.dispatch(CHAT_REPLY, content=ANSWER, tools=[])
+    found.bus.dispatch(CHAT_TURN_ENDED, reason="done", message=None)
+    assert told(found, CACHE_STORED) == []
+
 def test_the_seed_never_expires_nor_is_cleared(cache, tmp_path):
     found = cache(seed=write_seed(tmp_path / "seed"), ttl=10, most=0)
     ask(found, QUESTION)
@@ -526,6 +563,48 @@ def test_the_seed_answers_a_new_user_without_the_model(louis):
     assert app.sent == []
     assert probe.told(CACHE_HIT)[0].data["seed"] is True
     assert "/index" in probe.told(CHAT_TEXT)[0].data["text"]
+
+class FakeGuard:
+    """ The guard without NeMo: keeps the messages its input rails read, masks the emails """
+    def __init__(self):
+        self.inputs: list[str] = []
+
+    @staticmethod
+    def mask(text: str) -> str:
+        return text.replace("ada@example.com", "<EMAIL_ADDRESS>")
+
+    def check_input(self, text: str) -> Verdict:
+        self.inputs.append(text)
+        masked = self.mask(text)
+        return Verdict(MASKED if masked != text else PASS, masked)
+
+    def check_output(self, question: str, answer: str) -> Verdict:
+        return Verdict(PASS, answer)
+
+    def hide(self, arguments: dict) -> dict:
+        return arguments
+
+def test_an_answer_of_the_cache_does_not_wait_for_the_input_rails(louis):
+    app, probe = louis([Reply(content=ANSWER)])
+    guard = app._App__guard = FakeGuard()
+    app._App__answer(QUESTION)
+    app._App__answer(PARAPHRASE)
+    assert guard.inputs == [QUESTION] and len(app.sent) == 1 and len(probe.told(CACHE_HIT)) == 1
+
+def test_a_message_answered_by_the_cache_is_kept_masked(louis, monkeypatch):
+    asked = "Comment on lit un fichier JSON avec Python ? Écris-moi à ada@example.com"
+    monkeypatch.setitem(VECTORS, asked, VECTORS[PARAPHRASE])
+    app, _ = louis([Reply(content=ANSWER)])
+    app._App__guard = FakeGuard()
+    app._App__answer(QUESTION)
+    app._App__answer(asked)
+    assert app.session.messages[-2].content == FakeGuard.mask(asked)
+
+def test_a_message_the_rails_masked_is_never_stored(louis):
+    app, probe = louis([Reply(content=ANSWER)])
+    app._App__guard = FakeGuard()
+    app._App__answer("Comment lire un fichier JSON en Python ? Je suis ada@example.com")
+    assert probe.told(CACHE_STORED) == [] and app.cache.stats()["entries"] == 0
 
 def test_the_turn_answered_from_the_cache_is_recorded_as_cached(louis):
     app, _ = louis([Reply(content=ANSWER)])

@@ -69,8 +69,9 @@ RAG_FORGOTTEN      = "rag.forgotten"        # data: source, chunks (removed)
 RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), path, kind and after (the filters on the files, None: none; after: "2026-09-30"), files (how many the filters kept, None without them), mode ("hybrid": keywords and meaning, "keyword"), reranker (its model, None if it did not rerank), candidates (found by the index), dropped (under the threshold), hits: [{source, path, start, end, score, fused (the score of the index, None if not reranked)}], rerank (seconds, None), duration (seconds, all of it)
 
 # The semantic cache (cache/): a question close enough in meaning to one already answered gets its answer back without
-# the model, or by the seed (answers written by the team, cache/seed/). Looked up after the input rails of the guard,
-# before the model: a hit is told by CACHE_HIT, then its turn goes on as any reply does (CHAT_TEXT, CHAT_REPLY,
+# the model, or by the seed (answers written by the team, cache/seed/). Looked up before the input rails of the guard
+# (its answers went through the output rails when they were kept) and the model: a hit is told by CACHE_HIT, with no
+# GUARD_TRIGGERED nor MODEL_CALL in its turn, then its turn goes on as any reply does (CHAT_TEXT, CHAT_REPLY,
 # CHAT_TURN_ENDED "done"). Only the answers safe to give again are stored, once their turn is done (cache/rules.py):
 # CACHE_STORED
 # CACHE_LOOKUP: each message the cache was asked about. reason tells why it was not looked up ("followup": it leans on

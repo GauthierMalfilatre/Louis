@@ -33,7 +33,7 @@ louis
 
 ## Comment c'est fait
 
-La question passe d'abord par le garde-fou (s'il est actif), puis par le cache, avant le modèle :
+La question passe par le cache **avant le garde-fou** et avant le modèle. Le garde-fou ne relit que les questions auxquelles le cache n'a pas de réponse (voir [Garde-fou](#garde-fou)) :
 
 1. **Le sens.** La question est lue par le modèle d'embedding (sur le processeur, ~30 ms) et comparée aux questions gardées. Celles qui en sont assez proches (cosinus ≥ `cache.threshold`, 0.80) sont candidates.
 2. **Les détails.** Un embedding lit la phrase, pas ses détails : « 17 × 23 » et « 17 × 24 » sont à 0.967. Une candidate doit parler des **mêmes nombres, fichiers et noms du code** (`snake_case`, `camelCase`, `NomDeClasse`, `fonction()`, ce qui est entre accents graves) que la question (`cache/rules.py`).
@@ -43,7 +43,17 @@ La question passe d'abord par le garde-fou (s'il est actif), puis par le cache, 
 
    Pourquoi deux façons : le reranker a appris à dire si un passage répond à une question, pas si deux questions sont les mêmes. Relue avec une réponse du modèle sur la lecture d'un JSON, « comment écrire un fichier JSON ? » obtient 0.977 (la réponse parle bien de fichiers JSON) : seules les questions se comparent sans risque. Les réponses de l'aide de Louis, elles, disent tout ce que Louis fait sur un sujet : les relire avec la question en trouve bien plus.
 
-Sans le reranker, les embeddings confondent des questions qui ne diffèrent que d'un mot (voir [Mesurer](#mesurer)). `cache.rerank.enabled: False` se contente du sens, ce qui n'est pas sûr. Le premier passage du reranker le charge (~2 s), les suivants prennent ~20 ms.
+Sans le reranker, les embeddings confondent des questions qui ne diffèrent que d'un mot (voir [Mesurer](#mesurer)). `cache.rerank.enabled: False` se contente du sens, ce qui n'est pas sûr.
+
+**Préchauffage.** Au lancement, pendant que l'utilisateur tape sa première question, deux fils chargent le modèle d'embedding (en lisant les questions de l'aide de Louis si elles ont changé) et le reranker. La première question les attend s'ils n'ont pas fini. Sur une installation neuve, c'était ~12 s de plus sur la première question (6,8 s pour l'aide, 5,8 s pour le reranker, d'après un log) ; préchauffé, la réponse de l'aide arrive en ~0,15 s. Ensuite, une recherche prend ~30 ms pour la question et ~20 ms par candidate relue.
+
+## Garde-fou
+
+Avec le garde-fou actif (`guard.enabled`), chaque message est relu par le modèle contre ses règles avant d'arriver au modèle : plusieurs secondes, et plus d'une minute sur le premier message d'un lancement (79 s dans un log). Le cache passe **avant** lui :
+
+- **Une question à laquelle le cache répond n'est pas relue par le garde-fou.** L'utilisateur ne reçoit qu'une réponse que les rails de sortie ont vérifiée quand elle a été gardée (ou écrite par l'équipe), donnée à une question que les rails d'entrée avaient laissée passer, et que le reranker trouve identique. Au pire, la réponse ne convient pas ; jamais une réponse que le garde-fou aurait refusée. Le message est quand même masqué avant d'être gardé dans la session, par les motifs du garde-fou (adresses, clés, cartes... sans modèle, instantané).
+- **Une question à laquelle il ne répond pas passe par le garde-fou comme avant**, puis par le modèle. Si les rails d'entrée l'ont masquée (elle contenait une adresse, une clé...), sa réponse n'est jamais gardée : le cache l'avait cherchée telle qu'elle était tapée, et la partagerait avec les autres utilisateurs.
+- Une réponse gardée sans garde-fou n'est jamais rendue quand il est actif.
 
 ## Quelles questions, quelles réponses
 
@@ -60,7 +70,7 @@ Les questions qui dépendent **du moment** (« aujourd'hui », « maintenant »,
 - en pas à pas (`/react`), elle n'a pas été donnée avec des problèmes que la vérification y avait trouvés ;
 - ce n'est pas une réponse JSON (`/json`).
 
-Ce qui est gardé, c'est ce que l'utilisateur a lu : la question telle que le garde-fou l'a laissée passer (masquée), et la réponse après ses rails de sortie. Une réponse gardée sans garde-fou n'est jamais rendue quand il est actif.
+Ce qui est gardé, c'est ce que l'utilisateur a lu : la question que le garde-fou a laissée passer sans rien masquer, et la réponse après ses rails de sortie.
 
 ## Partage entre les utilisateurs
 
