@@ -766,7 +766,10 @@ class WebInterface(Interface):
         rows: list[dict] = []
         for server in servers:
             rows.append({"text": f"{server['name']} — {MCP_STATES.get(server['state'], server['state'])}",
-                         "meta": " · ".join(part for part in (mcp_command(server["command"]), server["error"]) if part)})
+                         "meta": " · ".join(part for part in (
+                             mcp_command(server["command"]), server["error"],
+                             f"{plural(server['hidden'], 'outil')} masqués par son réglage" if server.get("hidden") else ""
+                         ) if part)})
             rows += [{"text": f"  {tool['name']}",
                       "meta": " · ".join(part for part in (RISKS.get(tool["risk"], tool["risk"]), tool["description"]) if part)}
                      for tool in server["tools"]]

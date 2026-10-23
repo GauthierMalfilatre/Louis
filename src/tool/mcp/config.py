@@ -26,6 +26,11 @@ class Declaration:
     args   : list[str]              = field(default_factory=list)
     env    : dict[str, str]         = field(default_factory=dict)
     level  : str | None             = None
+    # Started with Louis; else only by /mcp restart
+    enabled: bool                   = True
+    # The tools offered to the model, by their name on the server (globs: "read_*"): all of them without tools
+    tools  : list[str] | None       = None
+    exclude: list[str]              = field(default_factory=list)
     error  : str | None             = None
 
 def expand(value: str) -> str:
@@ -39,15 +44,21 @@ def expand(value: str) -> str:
         raise KeyError(name)
     return VARIABLE.sub(variable, value)
 
+def texts(value) -> bool:
+    """ Whether the value is a list of texts """
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
 def declared(entry, source: str = SETTINGS) -> Declaration:
     """ A server as an entry declares it: its error says what is wrong with it """
     if not isinstance(entry, dict):
         return Declaration("", source, error="réglage invalide : chaque serveur est un dict {name, command, args, env}")
     name, command = entry.get("name"), entry.get("command")
     args, env, level = entry.get("args", []), entry.get("env", {}), entry.get("risk")
+    enabled, tools, exclude = entry.get("enabled", True), entry.get("tools"), entry.get("exclude", [])
     declaration: Declaration = Declaration(
         name if isinstance(name, str) else "", source, command if isinstance(command, str) else "",
-        args if isinstance(args, list) else [], env if isinstance(env, dict) else {}, level if level in LEVELS else None
+        args if isinstance(args, list) else [], env if isinstance(env, dict) else {}, level if level in LEVELS else None,
+        enabled is not False, tools if texts(tools) else None, exclude if texts(exclude) else []
     )
     if not declaration.name.strip():
         declaration.error = "réglage invalide : il lui faut un nom (name)"
@@ -59,6 +70,10 @@ def declared(entry, source: str = SETTINGS) -> Declaration:
         declaration.error = "réglage invalide : env est un dict de textes"
     elif level is not None and level not in LEVELS:
         declaration.error = f"réglage invalide : risk vaut {', '.join(LEVELS)}"
+    elif not isinstance(enabled, bool):
+        declaration.error = "réglage invalide : enabled vaut true ou false"
+    elif (tools is not None and not texts(tools)) or not texts(exclude):
+        declaration.error = 'réglage invalide : tools et exclude sont des listes de noms d\'outils ("read_*")'
     if declaration.error is not None:
         return declaration
     # What the environment gives: a token is named in the file, never written in it

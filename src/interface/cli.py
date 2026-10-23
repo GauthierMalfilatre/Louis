@@ -137,7 +137,8 @@ def plan_settings(data: dict) -> str:
     return f"Plan avant d'agir activé, pour {which} : Louis te montre ce qu'il va faire et attend ton accord. /plan off pour le couper."
 
 # How an MCP server goes, said to the user
-MCP_STATES: dict[str, str] = {"running": "actif", "failed": "n'a pas démarré", "crashed": "s'est arrêté", "stopped": "arrêté"}
+MCP_STATES: dict[str, str] = {"running": "actif", "failed": "n'a pas démarré", "crashed": "s'est arrêté", "stopped": "arrêté",
+                              "disabled": "désactivé"}
 
 NO_MCP: str = "Aucun serveur MCP : déclare-les dans le réglage mcp.servers (voir le README)."
 
@@ -148,7 +149,7 @@ def mcp_started(servers: list[dict]) -> str:
         if server["state"] == "running" else f"{server['name']} : {MCP_STATES.get(server['state'], server['state'])}"
         for server in servers
     ]
-    trouble: bool = any(server["state"] != "running" for server in servers)
+    trouble: bool = any(server["state"] in ("failed", "crashed") for server in servers)
     return f"MCP : {' · '.join(parts)}{' (/mcp pour savoir pourquoi)' if trouble else ''}"
 
 def mcp_changed(data: dict) -> tuple[str, bool]:
@@ -461,6 +462,8 @@ class CLI(Interface):
                          f"[{mcp_command(server['command'])}]")
             if server["error"]:
                 lines.append(f"    {server['error']}")
+            if server.get("hidden"):
+                lines.append(f"    {server['hidden']} outils masqués par son réglage (tools, exclude)")
             for tool in server["tools"]:
                 lines.append(f"    {tool['name']:32} {RISKS.get(tool['risk'], tool['risk']):12} "
                              f"{shorten(tool['description'], PREVIEW_LENGTH)}")

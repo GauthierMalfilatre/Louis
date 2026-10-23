@@ -11,16 +11,18 @@ from tool.mcp.config import Declaration, declarations
 from tool.mcp.transport_stdio import StdioTransport
 from tool.mcp.tool_mcp import McpTool
 import atexit
+import fnmatch
 import shlex
 import threading
 import time
 
 # The states of a server: it answers; it never did (no such command, an error at its start...); it stopped by
-# itself once started; Louis stopped it
-RUNNING: str = "running"
-FAILED : str = "failed"
-CRASHED: str = "crashed"
-STOPPED: str = "stopped"
+# itself once started; Louis stopped it; its declaration says not to start it with Louis
+RUNNING : str = "running"
+FAILED  : str = "failed"
+CRASHED : str = "crashed"
+STOPPED : str = "stopped"
+DISABLED: str = "disabled"
 
 class McpServer:
     """
@@ -44,6 +46,8 @@ class McpServer:
         self.log_level  : str | None     = log_level
         self.client  : McpClient | None  = None
         self.tools   : list[McpTool]     = []
+        # The tools of the server its declaration does not offer (tools, exclude)
+        self.hidden  : int               = 0
         # Why it did not start, None if it did
         self.error   : str | None        = declaration.error
         # Its declaration is not valid (error says why): it can not be started
@@ -56,7 +60,9 @@ class McpServer:
 
     @property
     def state(self) -> str:
-        """ How the server goes: running, failed, crashed or stopped """
+        """ How the server goes: running, failed, crashed, stopped or disabled """
+        if self.client is None and self.error is None and not self.declaration.enabled:
+            return DISABLED
         if self.error is not None or self.client is None:
             return FAILED
         if self.client.alive:
@@ -82,6 +88,7 @@ class McpServer:
             "source" : self.declaration.source,
             "command": shlex.join([self.command, *self.args]) if self.command else "",
             "state"  : self.state,
+            "hidden" : self.hidden,
             "error"  : self.error if self.error is not None else (self.client.why or None) if self.client else None,
             "tools"  : [{"name": tool.name, "remote": tool.remote, "description": tool.about, "risk": tool.level}
                         for tool in self.tools],
@@ -163,10 +170,22 @@ class McpServer:
                  f"({', '.join(tool.remote for tool in self.tools)})")
         return changed or "tools"
 
+    def __wanted(self, remote: str) -> bool:
+        """ Whether the declaration offers the tool to the model: in tools (all without it), not in exclude """
+        allowed: list[str] | None = self.declaration.tools
+        if allowed is not None and not any(fnmatch.fnmatchcase(remote, pattern) for pattern in allowed):
+            return False
+        return not any(fnmatch.fnmatchcase(remote, pattern) for pattern in self.declaration.exclude)
+
     def __offered(self, specs: list[dict]) -> list[McpTool]:
-        """ The tools of the server, from what tools/list gave: two that would have the same name, the first only """
+        """
+            The tools of the server the declaration offers, from what tools/list gave: two that would have the same
+            name, the first only. A model offers fewer tools, it chooses better among them
+        """
+        wanted: list[dict] = [spec for spec in specs if self.__wanted(spec["name"])]
+        self.hidden = len(specs) - len(wanted)
         tools: list[McpTool] = []
-        for spec in specs:
+        for spec in wanted:
             tool: McpTool = McpTool(self, spec)
             if any(known.name == tool.name for known in tools):
                 log.warning(f"[mcp] {self.name}: {spec['name']} left out, another of its tools is named {tool.name}")
@@ -198,7 +217,7 @@ class McpManager:
         """ Start the servers, side by side: one slow to start (npx downloads it the first time) delays none of the others """
         threads: list[threading.Thread] = [
             threading.Thread(target=server.start, name=f"mcp-start-{server.name}", daemon=True)
-            for server in self.__servers if server.error is None
+            for server in self.__servers if server.error is None and server.declaration.enabled
         ]
         for thread in threads:
             thread.start()
