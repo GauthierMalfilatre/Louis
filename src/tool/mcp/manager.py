@@ -10,7 +10,7 @@ from tool.mcp.client import McpClient, McpError
 from tool.mcp.config import Declaration, Trust, HTTP, declarations
 from tool.mcp.transport_http import HttpTransport
 from tool.mcp.transport_stdio import StdioTransport
-from tool.mcp.tool_mcp import McpTool
+from tool.mcp.tool_mcp import McpTool, prompt_name
 import atexit
 import fnmatch
 import shlex
@@ -51,6 +51,8 @@ class McpServer:
         self.tools   : list[McpTool]     = []
         # The tools of the server its declaration does not offer (tools, exclude)
         self.hidden  : int               = 0
+        # Its prompts, as prompts/list gives them: the user runs them as /<server>:<prompt>
+        self.prompts : list[dict]        = []
         # Why it did not start, None if it did
         self.error   : str | None        = declaration.error
         # Its declaration is not valid (error says why): it can not be started
@@ -101,6 +103,13 @@ class McpServer:
             "error"  : self.error if self.error is not None else (self.client.why or None) if self.client else None,
             "tools"  : [{"name": tool.name, "remote": tool.remote, "description": tool.about, "risk": tool.level}
                         for tool in self.tools],
+            "prompts": [{"name": prompt_name(self.name, prompt["name"]), "remote": prompt["name"],
+                         "description": (prompt.get("description") or prompt.get("title") or "").strip(),
+                         "arguments": [{"name": argument["name"], "description": argument.get("description") or "",
+                                        "required": bool(argument.get("required"))}
+                                       for argument in prompt.get("arguments") or []
+                                       if isinstance(argument, dict) and isinstance(argument.get("name"), str)]}
+                        for prompt in self.prompts],
         }
 
     def start(self) -> "McpServer":
@@ -111,7 +120,7 @@ class McpServer:
         if self.invalid or not self.trusted:
             return self
         deadline: float = time.monotonic() + self.__start_timeout
-        self.error, self.tools = None, []
+        self.error, self.tools, self.prompts = None, [], []
         self.client = McpClient(self.name, self.__transport())
         try:
             self.client.start(self.__start_timeout, self.log_level)
@@ -134,8 +143,18 @@ class McpServer:
             log.warning(f"[mcp] {self.name}: not started, {self.error}")
             return self
         self.tools = self.__offered(specs)
-        log.info(f"[mcp] {self.name}: {len(self.tools)} tools ({', '.join(tool.remote for tool in self.tools)})")
+        self.prompts = self.__prompts(max(1.0, deadline - time.monotonic()))
+        log.info(f"[mcp] {self.name}: {len(self.tools)} tools ({', '.join(tool.remote for tool in self.tools)})"
+                 f"{f', {len(self.prompts)} prompts' if self.prompts else ''}")
         return self
+
+    def __prompts(self, timeout: float) -> list[dict]:
+        """ The prompts of the server: a server that can not list them still offers its tools """
+        try:
+            return self.client.list_prompts(timeout)
+        except McpError as e:
+            log.warning(f"[mcp] {self.name}: its prompts can not be listed: {e}")
+            return []
 
     def __transport(self):
         """ How the server is reached: at its address, or a program launched """
@@ -169,21 +188,25 @@ class McpServer:
 
     def refresh(self) -> str | None:
         """
-            How the tools of the server changed since they were last offered: "restarted" (it started again by
-            itself), "tools" (it said they changed: they are listed again), None when they did not
+            How what the server offers changed since it was last offered: "restarted" (it started again by itself),
+            "tools" or "prompts" (it said they changed: they are listed again), None when nothing did
         """
         changed: str | None = "restarted" if self.__renewed else None
         self.__renewed = False
-        if self.client is None or not self.client.alive or "tools" not in self.client.changes():
-            return changed
-        try:
-            self.tools = self.__offered(self.client.list_tools(self.timeout))
-        except McpError as e:
-            log.warning(f"[mcp] {self.name}: its tools changed but can not be listed: {e}")
-            return changed
-        log.info(f"[mcp] {self.name}: its tools changed, {len(self.tools)} now "
-                 f"({', '.join(tool.remote for tool in self.tools)})")
-        return changed or "tools"
+        changes: set[str] = self.client.changes() if self.client is not None and self.client.alive else set()
+        if "tools" in changes:
+            try:
+                self.tools = self.__offered(self.client.list_tools(self.timeout))
+                log.info(f"[mcp] {self.name}: its tools changed, {len(self.tools)} now "
+                         f"({', '.join(tool.remote for tool in self.tools)})")
+                changed = changed or "tools"
+            except McpError as e:
+                log.warning(f"[mcp] {self.name}: its tools changed but can not be listed: {e}")
+        if "prompts" in changes:
+            self.prompts = self.__prompts(self.timeout)
+            log.info(f"[mcp] {self.name}: its prompts changed, {len(self.prompts)} now")
+            changed = changed or "prompts"
+        return changed
 
     def __wanted(self, remote: str) -> bool:
         """ Whether the declaration offers the tool to the model: in tools (all without it), not in exclude """

@@ -23,6 +23,10 @@ def tool_name(server: str, tool: str) -> str:
     """ The name the model calls a tool of a server by: <server>__<tool> """
     return f"{UNNAMED.sub('_', server)}__{UNNAMED.sub('_', tool)}"[:MAX_NAME]
 
+def prompt_name(server: str, prompt: str) -> str:
+    """ The command the user runs a prompt of a server with: /<server>:<prompt> """
+    return f"{UNNAMED.sub('_', server)}:{UNNAMED.sub('_', prompt)}"
+
 def text_of(result: dict) -> str:
     """
         What a tool of a server gave, as the model reads it: its texts, what it can not read (an image) named only.

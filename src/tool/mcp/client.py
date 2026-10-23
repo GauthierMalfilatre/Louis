@@ -18,7 +18,7 @@ import time
 # The version of the protocol Louis speaks: the server answers with the one it speaks, an older one if it must
 PROTOCOL_VERSION: str = "2025-06-18"
 
-# Pages of tools/list read at most: a server that always gives a next cursor never ends the listing
+# Pages of a listing (tools/list, prompts/list) read at most: a server that always gives a next cursor never ends it
 MAX_PAGES: int = 100
 
 # What a server tells changed, by its notification: Louis lists it again before the next message
@@ -131,17 +131,29 @@ class McpClient:
 
     def list_tools(self, timeout: float) -> list[dict]:
         """ The tools of the server, every page of them: none if it does not say it has some """
-        if "tools" not in self.capabilities:
+        return self.__listed("tools", timeout)
+
+    def list_prompts(self, timeout: float) -> list[dict]:
+        """ The prompts of the server (messages it writes for the user, with arguments), every page of them """
+        return self.__listed("prompts", timeout)
+
+    def get_prompt(self, name: str, arguments: dict[str, str], timeout: float) -> dict:
+        """ A prompt of the server, written with the arguments given: its messages """
+        return self.request("prompts/get", {"name": name, "arguments": arguments}, timeout)
+
+    def __listed(self, kind: str, timeout: float) -> list[dict]:
+        """ What the server lists of a kind (tools, prompts), every page of it: none if it does not say it has some """
+        if kind not in self.capabilities:
             return []
-        tools: list[dict] = []
+        found: list[dict] = []
         cursor: str | None = None
         for _ in range(MAX_PAGES):
-            result: dict = self.request("tools/list", {"cursor": cursor} if cursor else {}, timeout)
-            tools += [tool for tool in result.get("tools") or [] if isinstance(tool, dict) and tool.get("name")]
+            result: dict = self.request(f"{kind}/list", {"cursor": cursor} if cursor else {}, timeout)
+            found += [item for item in result.get(kind) or [] if isinstance(item, dict) and item.get("name")]
             cursor = result.get("nextCursor")
             if not cursor:
                 break
-        return tools
+        return found
 
     def changes(self) -> set[str]:
         """ What the server said changed since the last time it was asked: its tools, its prompts """

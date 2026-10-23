@@ -103,10 +103,13 @@ PLAN_SETTINGS = "plan.settings"   # data: enabled, level ("irreversible" or "rev
 # state: "running", "failed" (it never started: error says why), "crashed" (it stopped by itself), "stopped" (by
 # Louis); error: why it does not answer, None while it does. Each tool is offered to the model under its name
 # (<server>__<tool>), remote is its name on the server, risk its level ("safe" asks nothing before it acts)
-MCP_STARTED = "mcp.started"   # data: servers: [{name, command, state, error, tools: [{name, remote, description, risk}]}]
+MCP_STARTED = "mcp.started"   # data: servers: [{name, source, transport, command, state, hidden, error,
+                              #   tools: [{name, remote, description, risk}], prompts: [{name (the command), remote,
+                              #   description, arguments: [{name, description, required}]}]}]
 MCP_SERVERS = "mcp.servers"   # data: the same as MCP_STARTED
 # A server that changed once Louis started: change is "restarted" (by /mcp restart, or by itself after a crash),
-# "stopped" (by /mcp stop) or "tools" (it said its tools changed: they were listed again). Its tools are offered again;
+# "stopped" (by /mcp stop), "trusted" (by /mcp trust), "tools" or "prompts" (it said they changed: they were listed
+# again). Its tools are offered again, its prompts are commands again;
 # servers is every server as in MCP_STARTED, commands every command Louis knows now (as APP_STARTED gives them)
 MCP_CHANGED = "mcp.changed"   # data: server (its name), change, servers, commands
 # How far a long call of an MCP tool is, as its server tells it (between TOOL_CALL_STARTED and TOOL_CALL_ENDED): tool
