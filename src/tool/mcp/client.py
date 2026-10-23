@@ -18,6 +18,12 @@ PROTOCOL_VERSION: str = "2025-06-18"
 # Pages of tools/list read at most: a server that always gives a next cursor never ends the listing
 MAX_PAGES: int = 100
 
+# What a server tells changed, by its notification: Louis lists it again before the next message
+LIST_CHANGED: dict[str, str] = {
+    "notifications/tools/list_changed": "tools",
+    "notifications/prompts/list_changed": "prompts",
+}
+
 class McpError(Exception):
     """ The server answered with an error, or can not answer any more (it stopped, it crashed) """
 
@@ -42,6 +48,8 @@ class McpClient:
         self.__died     : str | None             = None
         # Stopped by close(): its end is no crash
         self.__closed   : bool                   = False
+        # What the server said changed since Louis last asked (its tools...): told by the thread that reads it
+        self.__changed  : set[str]               = set()
         self.server_info : dict = {}
         self.capabilities: dict = {}
 
@@ -113,6 +121,12 @@ class McpClient:
             if not cursor:
                 break
         return tools
+
+    def changes(self) -> set[str]:
+        """ What the server said changed since the last time it was asked: its tools, its prompts """
+        with self.__lock:
+            changed, self.__changed = self.__changed, set()
+        return changed
 
     def call_tool(self, name: str, arguments: dict, timeout: float) -> dict:
         """ Call a tool of the server: its result as it gives it, content and isError """
@@ -191,7 +205,10 @@ class McpClient:
             return
         method: str = message["method"]
         if "id" not in message:
-            # A notification: its logs, its list of tools changed... Louis lists the tools once, at the start
+            # A notification: its tools changed are only noted here, they are listed again by the thread of Louis
+            if method in LIST_CHANGED:
+                with self.__lock:
+                    self.__changed.add(LIST_CHANGED[method])
             log.debug(f"[mcp] {self.__name}: {method} {json.dumps(message.get('params'), ensure_ascii=False)[:300]}")
             return
         reply: dict = {"jsonrpc": "2.0", "id": message["id"]}

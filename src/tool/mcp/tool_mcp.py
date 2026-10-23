@@ -45,21 +45,24 @@ def text_of(result: dict) -> str:
 class McpTool(Tool):
     """
         A tool of an MCP server. Its risk is what the settings of its server say, else what the server says of it
-        (its annotations): one that only reads asks nothing, the others ask before they act, and join the plan
+        (its annotations): one that only reads asks nothing, the others ask before they act, and join the plan.
+        It calls the server as it is now: one started again since the tool was made is called all the same
     """
-    def __init__(self, server: str, client: McpClient, spec: dict, timeout: float, level: str | None = None):
-        """ Init the tool of the server from what tools/list gave of it, its calls waiting timeout seconds at most """
+    def __init__(self, server, spec: dict):
+        """
+            Init the tool of the server (an McpServer: its name, its risk, its timeout, connect()) from what
+            tools/list gave of it
+        """
         parameters: dict = {key: value for key, value in (spec.get("inputSchema") or {}).items() if key != "$schema"}
         parameters.setdefault("type", "object")
         if parameters["type"] == "object":
             parameters.setdefault("properties", {})
         self.__about: str = (spec.get("description") or spec.get("title") or "").strip()
-        super().__init__(tool_name(server, spec["name"]), f"[MCP {server}] {self.__about}".rstrip(), parameters)
-        self.__server     : str        = server
-        self.__client     : McpClient  = client
+        super().__init__(tool_name(server.name, spec["name"]), f"[MCP {server.name}] {self.__about}".rstrip(), parameters)
+        self.__server     : str        = server.name
+        self.__host                    = server
         self.__remote     : str        = spec["name"]
-        self.__timeout    : float      = timeout
-        self.__level      : str | None = level if level in LEVELS else None
+        self.__level      : str | None = server.level if server.level in LEVELS else None
         self.__annotations: dict       = spec.get("annotations") or {}
 
     @property
@@ -111,15 +114,23 @@ class McpTool(Tool):
         ):
             return (f"Refusé : l'utilisateur n'a pas autorisé l'appel de '{self.name}'. "
                     "Ne le retente pas : demande-lui ce qu'il veut à la place.")
-        if not self.__client.alive:
-            return (f"Erreur : le serveur MCP {self.__server} ne répond plus : {self.__client.why}. "
+        client: McpClient | None = self.__host.connect()
+        if client is None or not client.alive:
+            return (f"Erreur : le serveur MCP {self.__server} ne répond plus : {self.__host.why}. "
                     "Fais sans cet outil ; l'utilisateur voit son état avec /mcp.")
+        timeout: float = self.__host.timeout
         try:
-            result: dict = self.__client.call_tool(self.__remote, kwargs, self.__timeout)
+            result: dict = client.call_tool(self.__remote, kwargs, timeout)
         except McpTimeout:
             return (f"Erreur : le serveur MCP {self.__server} n'a pas répondu à {self.__remote} en "
-                    f"{self.__timeout:g} s. Fais autrement, ou réessaie plus tard.")
+                    f"{timeout:g} s. Fais autrement, ou réessaie plus tard.")
         except McpError as e:
+            if client.crashed:
+                # Never called again by itself: the call may have acted before the crash
+                after: str = "Il sera relancé au prochain appel" if self.__host.restarts > 0 else \
+                    "Fais sans cet outil ; l'utilisateur voit son état avec /mcp"
+                return (f"Erreur : le serveur MCP {self.__server} s'est arrêté pendant {self.__remote} ({e}) : "
+                        f"ce qu'il a fait avant n'est pas connu. {after}.")
             return f"Erreur : le serveur MCP {self.__server} n'a pas pu lancer {self.__remote} : {e}."
         text: str = text_of(result)
         if result.get("isError"):

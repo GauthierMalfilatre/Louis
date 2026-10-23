@@ -37,10 +37,11 @@ def fake(name: str = "fake", *options: str, **extra) -> dict:
 
 @pytest.fixture
 def mcp(folder):
-    """ Start the servers given, as Louis does: they are all stopped after the test """
+    """ Start the servers given, as Louis does: they are all stopped after the test. None restarts by itself """
     managers: list[McpManager] = []
-    def start(*servers: dict, timeout: float = 5.0, start_timeout: float = 5.0) -> McpManager:
-        manager = McpManager({"mcp.servers": list(servers), "mcp.timeout": timeout, "mcp.start_timeout": start_timeout})
+    def start(*servers: dict, timeout: float = 5.0, start_timeout: float = 5.0, restarts: int = 0) -> McpManager:
+        manager = McpManager({"mcp.servers": list(servers), "mcp.timeout": timeout, "mcp.start_timeout": start_timeout,
+                              "mcp.restarts": restarts})
         managers.append(manager.start())
         return manager
     yield start
@@ -95,7 +96,7 @@ def test_a_call_that_fails_on_the_server_is_an_error_for_the_model(mcp, app):
 
 def test_a_tool_the_server_does_not_have_is_an_error(mcp, app):
     manager = mcp(fake())
-    ghost = McpTool("fake", manager.servers[0].client, {"name": "ghost"}, 5.0)
+    ghost = McpTool(manager.servers[0], {"name": "ghost"})
     result = ghost.handle(app)
     assert failed(result) and "Unknown tool: ghost" in result
 
@@ -113,7 +114,7 @@ def test_a_server_that_crashes_is_an_error_then_said_crashed(mcp, app):
     manager = mcp(fake(), CALC)
     found = tools(manager)
     result = found["fake__crash"].handle(app)
-    assert failed(result) and "s'est arrêté" in result
+    assert failed(result) and "s'est arrêté pendant crash" in result and "Fais sans cet outil" in result
     assert states(manager) == {"fake": CRASHED, "calc": RUNNING}
     after = found["fake__echo"].handle(app, text="là ?")
     assert failed(after) and "ne répond plus" in after
