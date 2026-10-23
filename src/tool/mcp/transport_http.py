@@ -207,8 +207,9 @@ class HttpTransport:
             with response:
                 for message in events(response):
                     self.__deliver(message)
-        except (OSError, ValueError):
-            pass
+        except Exception as e:
+            # Closed by close() while it reads, from another thread: http.client may fail in many ways then
+            log.debug(f"[mcp] {self.__name}: its own stream stopped ({type(e).__name__})")
         if not self.__closing:
             log.debug(f"[mcp] {self.__name}: its own stream ended")
 
