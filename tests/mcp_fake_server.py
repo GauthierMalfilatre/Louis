@@ -3,7 +3,8 @@
 ## SENSAI
 ## File description:
 ## A fake MCP server for the tests: tools of every risk, and one for each way a server can go wrong (too slow, a
-## crash, an error), started as Louis starts any server. Its options make it fail at its start:
+## crash, an error), one that adds a tool (grow), started as Louis starts any server. Its options make it fail at its
+## start:
 ##   --fail-init  exits before it answers;  --mute  never answers;  --noise  writes a line that is not JSON first;
 ##   --pages      gives its tools over two pages of tools/list
 ##
@@ -34,6 +35,7 @@ TOOLS: list[dict] = [
     tool("env", {"readOnlyHint": True}, name="La variable d'environnement"),
     tool("roots", {"readOnlyHint": True}),
     tool("picture", {"readOnlyHint": True}),
+    tool("grow", {"readOnlyHint": True}),
 ]
 
 def write(message: dict) -> None:
@@ -71,6 +73,13 @@ def call(name: str, arguments: dict) -> dict:
             return text(json.dumps(ask_client("roots/list")))
         case "picture":
             return {"content": [{"type": "image", "data": "AAAA", "mimeType": "image/png"}], "isError": False}
+        case "grow":
+            # A new tool, and the client told its tools changed: before the answer, as a real server would
+            TOOLS.append(tool("grown", {"readOnlyHint": True}))
+            write({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+            return text("un outil de plus")
+        case "grown":
+            return text("nouveau")
     raise LookupError(f"Unknown tool: {name}")
 
 def main() -> int:

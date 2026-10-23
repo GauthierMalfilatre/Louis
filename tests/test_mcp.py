@@ -7,46 +7,17 @@
 ## the server of Louis, and a fake one (mcp_fake_server.py) that fails on demand
 ##
 import os
-import sys
 import time
 import pytest
 from pathlib import Path
-from app.app import App
-from config.prompt import SYSTEM_PROMPT
-from config.settings import settings, CALC_SERVER
-from events.event import Event
-from events.event_list import MCP_STARTED, MCP_SERVERS, PLAN_PROPOSED, PLAN_DECIDED
-from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
-from interface.interface import Interface
-from model.model import OllamaModel
+from conftest import CALC, Person, fake
+from events.event_list import MCP_STARTED, MCP_SERVERS
 from model.reply import Reply
-from monitor.recorder import Recorder
-from session.user import User as Account
 from tool.mcp.manager import McpManager, RUNNING, FAILED, CRASHED, STOPPED
 from tool.mcp.tool_mcp import McpTool, tool_name, text_of
 from tool.risk import SAFE, REVERSIBLE, IRREVERSIBLE
 from tool.tool import failed
 from tool.tool_call import ToolCall
-
-FAKE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_fake_server.py")
-CALC: dict = {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]}
-
-def fake(name: str = "fake", *options: str, **extra) -> dict:
-    """ The fake server, declared as in the settings """
-    return {"name": name, "command": sys.executable, "args": [FAKE, *options], **extra}
-
-@pytest.fixture
-def mcp(folder):
-    """ Start the servers given, as Louis does: they are all stopped after the test. None restarts by itself """
-    managers: list[McpManager] = []
-    def start(*servers: dict, timeout: float = 5.0, start_timeout: float = 5.0, restarts: int = 0) -> McpManager:
-        manager = McpManager({"mcp.servers": list(servers), "mcp.timeout": timeout, "mcp.start_timeout": start_timeout,
-                              "mcp.restarts": restarts})
-        managers.append(manager.start())
-        return manager
-    yield start
-    for manager in managers:
-        manager.close()
 
 def tools(manager: McpManager) -> dict[str, McpTool]:
     return {tool.name: tool for tool in manager.tools()}
@@ -202,59 +173,6 @@ def test_close_stops_every_server(mcp):
             os.kill(pid, 0)
 
 # In Louis
-
-class Person(Interface):
-    """ The user: the plans and the permissions it was asked, all approved """
-    describes = False
-
-    def __init__(self):
-        self.plans: list[dict] = []
-        self.asked: list[str] = []
-        self.events: list[Event] = []
-
-    def bind(self, bus):
-        self.bus = bus
-        bus.subscribe(self.events.append)
-        bus.subscribe(self.__on_plan, PLAN_PROPOSED)
-        bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
-        return self
-
-    def __on_plan(self, event: Event) -> None:
-        self.plans.append(event.data)
-        self.bus.dispatch(PLAN_DECIDED, id=event.data["id"], approved=True, feedback="")
-
-    def __on_permission(self, event: Event) -> None:
-        self.asked.append(event.data["tool"])
-        self.bus.dispatch(TOOL_GRANT_PERMISSION, id=event.data["id"], granted=True)
-
-    def getUserInput(self) -> str:
-        raise EOFError
-
-    def seen(self, name: str) -> list[dict]:
-        return [event.data for event in self.events if event.name == name]
-
-@pytest.fixture
-def louis(folder, monkeypatch, tmp_path):
-    """ An app with the MCP servers given, its model answering the replies given: the requests it got in app.sent """
-    monkeypatch.setattr(OllamaModel, "_OllamaModel__probe", staticmethod(lambda uri, model: {"tools"}))
-    apps: list[App] = []
-
-    def make(servers: list[dict], replies: list[Reply], user: Person) -> App:
-        conf = {**settings, "scribe.model": "", "rag.enabled": False, "sandbox.enabled": False, "guard.enabled": False,
-                "eval.enabled": False, "hitl.enabled": True, "mcp.servers": servers}
-        app = App(conf, SYSTEM_PROMPT, Account.anonymous(), user, Recorder(str(tmp_path / "traces.jsonl"), conf))
-        apps.append(app)
-        answers = iter(replies)
-        app.sent, app.offered = [], []
-        def chat(messages, tools, *args, **kwargs):
-            app.sent.append(messages)
-            app.offered.append([tool["function"]["name"] for tool in tools])
-            return next(answers)
-        app.model.chat = chat
-        return app
-    yield make
-    for app in apps:
-        app.close()
 
 def test_the_model_calls_an_mcp_tool_and_answers_with_its_result(louis):
     user = Person()
