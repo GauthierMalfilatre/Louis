@@ -7,6 +7,7 @@
 ## server. Its options make it fail at its start, or give it more:
 ##   --fail-init  exits before it answers;  --mute  never answers;  --noise  writes a line that is not JSON first;
 ##   --pages      gives its tools over two pages of tools/list;  --log  has logs (logging/setLevel, shout)
+##   --prompts    has prompts (greet, pair, empty, broken), and a tool that adds one (more_prompts)
 ##
 import json
 import os
@@ -39,7 +40,32 @@ TOOLS: list[dict] = [
     tool("progress", {"readOnlyHint": True}, steps="Étapes", delay="Secondes par étape", same="Le même message à chaque étape"),
     tool("level", {"readOnlyHint": True}),
     tool("shout", {"readOnlyHint": True}),
+    tool("more_prompts", {"readOnlyHint": True}),
 ]
+
+PROMPTS: list[dict] = [
+    {"name": "greet", "description": "Salue quelqu'un", "arguments": [{"name": "name", "required": True}]},
+    {"name": "pair", "description": "Deux messages", "arguments": [{"name": "first", "required": True},
+                                                                   {"name": "second"}]},
+    {"name": "empty", "description": "Aucun message"},
+    {"name": "broken", "description": "Une erreur"},
+]
+
+def prompt(name: str, arguments: dict) -> dict:
+    def said(role: str, text: str) -> dict:
+        return {"role": role, "content": {"type": "text", "text": text}}
+    match name:
+        case "greet":
+            return {"messages": [said("user", f"Dis bonjour à {arguments['name']}.")]}
+        case "pair":
+            return {"messages": [said("user", f"Premier : {arguments['first']}"),
+                                 said("assistant", "Compris."),
+                                 said("user", f"Second : {arguments.get('second', 'aucun')}")]}
+        case "empty":
+            return {"messages": []}
+        case "added":
+            return {"messages": [said("user", "Ajouté.")]}
+    raise LookupError(f"Unknown prompt: {name}")
 
 # The level of the logs the client asked for (logging/setLevel), None until it does
 LEVEL: list[str | None] = [None]
@@ -100,6 +126,10 @@ def call(name: str, arguments: dict, token=None) -> dict:
             return text("fini")
         case "level":
             return text(LEVEL[0] or "<aucun>")
+        case "more_prompts":
+            PROMPTS.append({"name": "added", "description": "Ajouté en cours de route"})
+            write({"jsonrpc": "2.0", "method": "notifications/prompts/list_changed"})
+            return text("un prompt de plus")
         case "shout":
             log("warning", "attention")
             log("error", {"code": 7})
@@ -120,7 +150,8 @@ def main() -> int:
         method, params = message.get("method"), message.get("params") or {}
         reply: dict = {"jsonrpc": "2.0", "id": message["id"]}
         if method == "initialize":
-            capabilities = {"tools": {}, **({"logging": {}} if "--log" in options else {})}
+            capabilities = {"tools": {}, **({"logging": {}} if "--log" in options else {}),
+                            **({"prompts": {"listChanged": True}} if "--prompts" in options else {})}
             reply["result"] = {"protocolVersion": params.get("protocolVersion"), "capabilities": capabilities,
                                "serverInfo": {"name": "fake", "version": "0"}}
         elif method == "logging/setLevel" and "--log" in options:
@@ -133,6 +164,13 @@ def main() -> int:
                 reply["result"] = {"tools": TOOLS[3:]}
             else:
                 reply["result"] = {"tools": TOOLS[:3], "nextCursor": "2"}
+        elif method == "prompts/list" and "--prompts" in options:
+            reply["result"] = {"prompts": PROMPTS}
+        elif method == "prompts/get" and "--prompts" in options:
+            try:
+                reply["result"] = prompt(params.get("name"), params.get("arguments") or {})
+            except LookupError as e:
+                reply["error"] = {"code": -32602, "message": str(e)}
         elif method == "tools/call":
             try:
                 reply["result"] = call(params.get("name"), params.get("arguments") or {},
