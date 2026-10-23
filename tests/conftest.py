@@ -14,6 +14,7 @@ from app.app import App
 from config.prompt import SYSTEM_PROMPT
 from config.settings import settings, CALC_SERVER
 from events.event import Event
+from events.event_bus import EventBus
 from events.event_list import PLAN_PROPOSED, PLAN_DECIDED, TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
 from interface.interface import Interface
 from model.model import OllamaModel
@@ -45,6 +46,7 @@ class FakeApp:
         self.permissions: Permissions = Permissions()
         self.seen_files: SeenFiles = SeenFiles()
         self.knowledge = None
+        self.events: EventBus = EventBus()
 
 def git(cwd, *args: str) -> str:
     """ Run git in cwd, as the user would: the state a test starts from, or what it checks after """

@@ -3,10 +3,10 @@
 ## SENSAI
 ## File description:
 ## A fake MCP server for the tests: tools of every risk, and one for each way a server can go wrong (too slow, a
-## crash, an error), one that adds a tool (grow), started as Louis starts any server. Its options make it fail at its
-## start:
+## crash, an error), one that adds a tool (grow), one that tells how far it is (progress), started as Louis starts any
+## server. Its options make it fail at its start, or give it more:
 ##   --fail-init  exits before it answers;  --mute  never answers;  --noise  writes a line that is not JSON first;
-##   --pages      gives its tools over two pages of tools/list
+##   --pages      gives its tools over two pages of tools/list;  --log  has logs (logging/setLevel, shout)
 ##
 import json
 import os
@@ -36,7 +36,13 @@ TOOLS: list[dict] = [
     tool("roots", {"readOnlyHint": True}),
     tool("picture", {"readOnlyHint": True}),
     tool("grow", {"readOnlyHint": True}),
+    tool("progress", {"readOnlyHint": True}, steps="Étapes", delay="Secondes par étape", same="Le même message à chaque étape"),
+    tool("level", {"readOnlyHint": True}),
+    tool("shout", {"readOnlyHint": True}),
 ]
+
+# The level of the logs the client asked for (logging/setLevel), None until it does
+LEVEL: list[str | None] = [None]
 
 def write(message: dict) -> None:
     sys.stdout.write(json.dumps(message) + "\n")
@@ -54,7 +60,10 @@ def ask_client(method: str) -> dict:
             return message
     return {}
 
-def call(name: str, arguments: dict) -> dict:
+def log(level: str, data) -> None:
+    write({"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": level, "logger": "fake", "data": data}})
+
+def call(name: str, arguments: dict, token=None) -> dict:
     match name:
         case "echo":
             return text(arguments.get("text", ""))
@@ -80,6 +89,21 @@ def call(name: str, arguments: dict) -> dict:
             return text("un outil de plus")
         case "grown":
             return text("nouveau")
+        case "progress":
+            steps = int(arguments.get("steps", "3"))
+            for step in range(1, steps + 1):
+                time.sleep(float(arguments.get("delay", "0.1")))
+                if token is not None:
+                    message = "travail" if arguments.get("same") else f"étape {step}"
+                    write({"jsonrpc": "2.0", "method": "notifications/progress",
+                           "params": {"progressToken": token, "progress": step, "total": steps, "message": message}})
+            return text("fini")
+        case "level":
+            return text(LEVEL[0] or "<aucun>")
+        case "shout":
+            log("warning", "attention")
+            log("error", {"code": 7})
+            return text("crié")
     raise LookupError(f"Unknown tool: {name}")
 
 def main() -> int:
@@ -96,8 +120,12 @@ def main() -> int:
         method, params = message.get("method"), message.get("params") or {}
         reply: dict = {"jsonrpc": "2.0", "id": message["id"]}
         if method == "initialize":
-            reply["result"] = {"protocolVersion": params.get("protocolVersion"), "capabilities": {"tools": {}},
+            capabilities = {"tools": {}, **({"logging": {}} if "--log" in options else {})}
+            reply["result"] = {"protocolVersion": params.get("protocolVersion"), "capabilities": capabilities,
                                "serverInfo": {"name": "fake", "version": "0"}}
+        elif method == "logging/setLevel" and "--log" in options:
+            LEVEL[0] = params.get("level")
+            reply["result"] = {}
         elif method == "tools/list":
             if "--pages" not in options:
                 reply["result"] = {"tools": TOOLS}
@@ -107,7 +135,8 @@ def main() -> int:
                 reply["result"] = {"tools": TOOLS[:3], "nextCursor": "2"}
         elif method == "tools/call":
             try:
-                reply["result"] = call(params.get("name"), params.get("arguments") or {})
+                reply["result"] = call(params.get("name"), params.get("arguments") or {},
+                                       (params.get("_meta") or {}).get("progressToken"))
             except LookupError as e:
                 reply["error"] = {"code": -32602, "message": str(e)}
         else:
