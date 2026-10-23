@@ -8,7 +8,7 @@ from interface.interface import Interface
 from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings
 from interface.cli import plan_title, plan_details
 from interface.cli import RISKS, MCP_STATES, NO_MCP, mcp_started, mcp_changed, mcp_progress, mcp_command
-from interface.cli import mcp_trouble, mcp_trust
+from interface.cli import mcp_trouble, mcp_trust, mcp_prompt_usage
 from interface.cli import preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
@@ -24,7 +24,7 @@ from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_DESCRIBE_PRO
 from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, PLAN_SETTINGS
 from events.event_list import PLAN_PROPOSED, PLAN_DECIDED
-from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED, MCP_PROGRESS
+from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED, MCP_PROGRESS, MCP_PROMPT
 from config.settings import settings
 from export.render_html import MARKDOWN, render
 from session.database import Database, now
@@ -350,6 +350,9 @@ class WebInterface(Interface):
         bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
         bus.subscribe(self.__on_mcp_changed, MCP_CHANGED)
         bus.subscribe(self.__on_mcp_progress, MCP_PROGRESS)
+        bus.subscribe(lambda event: self.__notice(
+            f"Prompt /{event.data['command']} du serveur MCP {event.data['server']} : {one_line(event.data['text'])}"
+        ), MCP_PROMPT)
         return self
 
     def getUserInput(self) -> str:
@@ -776,6 +779,9 @@ class WebInterface(Interface):
             rows += [{"text": f"  {tool['name']}",
                       "meta": " · ".join(part for part in (RISKS.get(tool["risk"], tool["risk"]), tool["description"]) if part)}
                      for tool in server["tools"]]
+            rows += [{"text": f"  {mcp_prompt_usage(prompt)}", "meta": prompt["description"],
+                      "fill": f"/{prompt['name']}{' ' if prompt['arguments'] else ''}"}
+                     for prompt in server.get("prompts", [])]
         self.__card(f"Serveurs MCP ({len(servers)})", rows)
 
     def __on_permission(self, event: Event) -> None:

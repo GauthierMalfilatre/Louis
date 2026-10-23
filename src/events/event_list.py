@@ -116,6 +116,9 @@ MCP_CHANGED = "mcp.changed"   # data: server (its name), change, servers, comman
 # (its name for the model), server; progress (a number that grows), total (None when the server does not know it),
 # message (None, or what it is doing)
 MCP_PROGRESS = "mcp.progress"   # data: tool, server, progress, total, message
+# A prompt of an MCP server run by its command (/<server>:<prompt>): text is what the server wrote, sent to the model
+# as the message of the user (a turn follows, as for any message)
+MCP_PROMPT = "mcp.prompt"   # data: server, prompt (its name on the server), command (without the /), text
 
 # What the commands tell the user. The data is raw and JSON-friendly (full texts, raw paths): each
 # interface lays it out its own way, the CLI as text, a web page as it likes

@@ -23,7 +23,7 @@ from tool.impl.git.tool_git import GitTool
 from tool.impl.git.tool_pr import PullRequestTool
 from tool.impl.exec.tool_run import RunTool, available as sandbox_available
 from tool.impl.rag.tool_knowledge import KnowledgeTool
-from tool.mcp.manager import McpManager
+from tool.mcp.manager import McpManager, RUNNING
 from tool.mcp.tool_mcp import McpTool
 from tool.permission import PermissionManager
 from tool.risk import Risk, NONE, LEVELS, SAFE, IRREVERSIBLE
@@ -64,6 +64,7 @@ from command.impl.command_eval import EvalCommand
 from eval.evaluator import Evaluator
 from command.impl.command_find import FindCommand
 from command.impl.command_mcp import McpCommand
+from command.impl.command_mcp_prompt import McpPromptCommand
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -390,8 +391,9 @@ class App:
 
     def offer_mcp(self) -> None:
         """
-            Offer the model the tools of the MCP servers that run, and withdraw those of the ones that do not any
-            more: again each time a server starts, stops or changes its tools. A tool of Louis is never replaced
+            Offer the model the tools of the MCP servers that run, and the user their prompts as commands; withdraw
+            those of the ones that do not run any more: again each time a server starts, stops or changes what it
+            offers. A tool of Louis is never replaced
         """
         offered: dict[str, McpTool] = {tool.name: tool for tool in self.__mcp.tools()}
         for tool in self.__toolManager.tools():
@@ -405,6 +407,18 @@ class App:
             self.__toolManager.register(tool)
         # The room the tools take in the context changes with them
         self.__window.set_tools(self.__toolManager.all())
+        for command in self.__commands.commands:
+            if isinstance(command, McpPromptCommand):
+                self.__commands.unregister(command.name)
+        for server in self.__mcp.servers:
+            if server.state != RUNNING:
+                continue
+            for spec in server.prompts:
+                command: McpPromptCommand = McpPromptCommand(server, spec)
+                try:
+                    self.__commands.register(command)
+                except ValueError:
+                    log.warning(f"[mcp] {server.name}: its prompt {spec['name']} left out, /{command.name} is taken")
 
     def mcp_changed(self, server: str, change: str) -> None:
         """ A server started again, stopped or changed its tools: what it offers now is offered, the user is told """

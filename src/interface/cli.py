@@ -18,7 +18,7 @@ from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT
 from events.event_list import PLAN_SETTINGS, PLAN_PROPOSED, PLAN_DECIDED
-from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED, MCP_PROGRESS
+from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED, MCP_PROGRESS, MCP_PROMPT
 import json
 import os
 import re
@@ -179,7 +179,16 @@ def mcp_changed(data: dict) -> tuple[str, bool]:
         return f"MCP : {name} relancé ({tools})", True
     if data["change"] == "trusted":
         return f"MCP : {name} approuvé et lancé ({tools})", True
+    if data["change"] == "prompts":
+        count = len(server.get("prompts", []))
+        return f"MCP : {name} a changé ses prompts ({count} prompt{'s' if count > 1 else ''})", True
     return f"MCP : {name} a changé ses outils ({tools})", True
+
+def mcp_prompt_usage(prompt: dict) -> str:
+    """ How a prompt of a server is run:  /calc:explain <expression> """
+    arguments: str = " ".join(f"<{argument['name']}>" if argument["required"] else f"[{argument['name']}]"
+                              for argument in prompt["arguments"])
+    return f"/{prompt['name']} {arguments}".rstrip()
 
 def mcp_progress(data: dict) -> str:
     """ How far a long call of an MCP tool is, as its server tells it:  3/10 — Téléchargement """
@@ -261,6 +270,8 @@ class CLI(Interface):
         bus.subscribe(self.__on_mcp_changed, MCP_CHANGED)
         bus.subscribe(lambda event: self.out(f"  … {event.data['tool']} : {mcp_progress(event.data)}", dim=True),
                       MCP_PROGRESS)
+        bus.subscribe(lambda event: self.out(f"↳ prompt de {event.data['server']} : {preview(event.data['text'])}", dim=True),
+                      MCP_PROMPT)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -483,6 +494,8 @@ class CLI(Interface):
             for tool in server["tools"]:
                 lines.append(f"    {tool['name']:32} {RISKS.get(tool['risk'], tool['risk']):12} "
                              f"{shorten(tool['description'], PREVIEW_LENGTH)}")
+            for prompt in server.get("prompts", []):
+                lines.append(f"    {mcp_prompt_usage(prompt):45} {shorten(prompt['description'], PREVIEW_LENGTH)}")
         self.out("\n".join(lines) + "\n")
 
     def __on_permission(self, event: Event) -> None:
