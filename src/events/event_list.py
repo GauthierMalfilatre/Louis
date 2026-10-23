@@ -99,6 +99,13 @@ PLAN_DECIDED  = "plan.decided"    # data: id, approved, feedback
 # What /plan set, or what it is when asked without arguments: whether the plans are shown, and from which risk on
 PLAN_SETTINGS = "plan.settings"   # data: enabled, level ("irreversible" or "reversible")
 
+# The MCP servers of the settings (mcp.servers): MCP_STARTED once Louis started them, MCP_SERVERS when /mcp asks.
+# state: "running", "failed" (it never started: error says why), "crashed" (it stopped by itself), "stopped" (by
+# Louis); error: why it does not answer, None while it does. Each tool is offered to the model under its name
+# (<server>__<tool>), remote is its name on the server, risk its level ("safe" asks nothing before it acts)
+MCP_STARTED = "mcp.started"   # data: servers: [{name, command, state, error, tools: [{name, remote, description, risk}]}]
+MCP_SERVERS = "mcp.servers"   # data: the same as MCP_STARTED
+
 # What the commands tell the user. The data is raw and JSON-friendly (full texts, raw paths): each
 # interface lays it out its own way, the CLI as text, a web page as it likes
 SESSION_CREATED = "session.created"   # data: user, persistent (saved from the first message of the user on), custom_prompt
