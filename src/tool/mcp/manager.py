@@ -27,10 +27,11 @@ class McpServer:
         stopped and started again; one that crashed is started again by itself, restarts times at most
     """
     def __init__(self, name: str, command: str, args: list[str], env: dict[str, str], level: str | None, *,
-                 timeout: float = 30.0, start_timeout: float = 30.0, restarts: int = 0, max_timeout: float = 600.0):
+                 timeout: float = 30.0, start_timeout: float = 30.0, restarts: int = 0, max_timeout: float = 600.0,
+                 log_level: str | None = "info"):
         """
             Init a server, not started yet: its calls wait timeout seconds at most (max_timeout while it tells it
-            works on them), its start start_timeout
+            works on them), its start start_timeout. Its logs of log_level and above go to the log of Louis
         """
         self.name    : str               = name
         self.command : str               = command
@@ -39,6 +40,7 @@ class McpServer:
         self.level   : str | None        = level
         self.timeout : float             = timeout
         self.max_timeout: float          = max(timeout, max_timeout)
+        self.log_level  : str | None     = log_level
         self.client  : McpClient | None  = None
         self.tools   : list[McpTool]     = []
         # Why it did not start, None if it did
@@ -94,7 +96,7 @@ class McpServer:
         self.error, self.tools = None, []
         self.client = McpClient(self.name, StdioTransport(self.name, self.command, self.args, self.env))
         try:
-            self.client.start(self.__start_timeout)
+            self.client.start(self.__start_timeout, self.log_level)
             specs: list[dict] = self.client.list_tools(max(1.0, deadline - time.monotonic()))
         except FileNotFoundError:
             self.error = f"la commande {self.command} est introuvable"
@@ -182,6 +184,7 @@ class McpManager:
         self.__start_timeout: float             = float(settings.get("mcp.start_timeout", 30.0))
         self.__restarts     : int               = int(settings.get("mcp.restarts", 1))
         self.__max_timeout  : float             = float(settings.get("mcp.max_timeout", 600.0))
+        self.__log_level    : str | None        = settings.get("mcp.log_level", "info")
         self.__servers      : list[McpServer]   = []
         for entry in settings.get("mcp.servers") or []:
             server: McpServer = self.__declared(entry)
@@ -219,7 +222,7 @@ class McpManager:
     def __server(self, name: str, command: str, args: list[str], env: dict[str, str], level: str | None) -> McpServer:
         """ A server with the timeouts and the restarts of the settings """
         return McpServer(name, command, args, env, level, timeout=self.__timeout, start_timeout=self.__start_timeout,
-                         restarts=self.__restarts, max_timeout=self.__max_timeout)
+                         restarts=self.__restarts, max_timeout=self.__max_timeout, log_level=self.__log_level)
 
     def start(self) -> "McpManager":
         """ Start the servers, side by side: one slow to start (npx downloads it the first time) delays none of the others """

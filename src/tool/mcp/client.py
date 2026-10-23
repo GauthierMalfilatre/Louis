@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 import itertools
 import json
+import logging
 import os
 import queue
 import threading
@@ -25,6 +26,15 @@ LIST_CHANGED: dict[str, str] = {
     "notifications/tools/list_changed": "tools",
     "notifications/prompts/list_changed": "prompts",
 }
+
+# The levels of the logs of a server (RFC 5424, as MCP names them), and where they go in the log of Louis
+LOG_LEVELS: dict[str, int] = {
+    "debug": logging.DEBUG, "info": logging.INFO, "notice": logging.INFO, "warning": logging.WARNING,
+    "error": logging.ERROR, "critical": logging.ERROR, "alert": logging.ERROR, "emergency": logging.ERROR,
+}
+
+# Characters of a log line of a server kept
+LOG_LENGTH: int = 500
 
 class McpError(Exception):
     """ The server answered with an error, or can not answer any more (it stopped, it crashed) """
@@ -95,10 +105,11 @@ class McpClient:
         """ Get the process of the server, None before it is launched or when Louis did not launch it """
         return self.__transport.pid
 
-    def start(self, timeout: float) -> "McpClient":
+    def start(self, timeout: float, log_level: str | None = None) -> "McpClient":
         """
             Open the transport (launch the server) and agree with it on the protocol (initialize), timeout seconds at
-            most. Raises OSError when the command can not be run, McpError when the server does not answer as it must
+            most. Raises OSError when the command can not be run, McpError when the server does not answer as it must.
+            A server that has logs sends those of log_level and above, to the log of Louis
         """
         self.__transport.open(self.__receive, self.__lost)
         result: dict = self.request("initialize", {
@@ -109,6 +120,11 @@ class McpClient:
         self.server_info = result.get("serverInfo") or {}
         self.capabilities = result.get("capabilities") or {}
         self.notify("notifications/initialized")
+        if log_level in LOG_LEVELS and "logging" in self.capabilities:
+            try:
+                self.request("logging/setLevel", {"level": log_level}, timeout)
+            except McpError as e:
+                log.debug(f"[mcp] {self.__name}: its logs stay at their level ({e})")
         log.info(f"[mcp] {self.__name}: started ({self.__transport.label}), {self.server_info.get('name', '?')} "
                  f"{self.server_info.get('version', '')}, protocol {result.get('protocolVersion')}")
         return self
@@ -214,6 +230,13 @@ class McpClient:
         except McpError:
             pass
 
+    def __log(self, entry: dict) -> None:
+        """ A log line of the server, in the log of Louis at its level """
+        data = entry.get("data")
+        text: str = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+        logger: str = f" ({entry['logger']})" if entry.get("logger") else ""
+        log.log(LOG_LEVELS.get(entry.get("level"), logging.INFO), f"[mcp] {self.__name}{logger}: {text[:LOG_LENGTH]}")
+
     def __lost(self, reason: str) -> None:
         """ The server can not answer any more: every request still waiting fails, with why """
         with self.__lock:
@@ -235,6 +258,9 @@ class McpClient:
             if method in LIST_CHANGED:
                 with self.__lock:
                     self.__changed.add(LIST_CHANGED[method])
+            elif method == "notifications/message":
+                self.__log(message.get("params") or {})
+                return
             elif method == "notifications/progress":
                 # A step of a request still waited for: told to it, in the thread of Louis
                 with self.__lock:
