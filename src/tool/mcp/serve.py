@@ -46,14 +46,24 @@ class LouisServer:
     """ The tools of Louis that only read, offered to a client: the knowledge base only while something is indexed """
     def __init__(self, settings: dict):
         """ Init the server: the knowledge base of the settings, read in the working directory """
-        knowledge: Knowledge | None = Knowledge.from_settings(settings, EventBus()) if settings.get("rag.enabled") else None
-        self.__host     : Host          = Host(settings, knowledge)
+        self.__settings : dict          = settings
+        self.__host     : Host          = Host(settings, None)
         self.__tools    : list[Tool]    = [TreeTool(), CatTool(), SearchTool()]
         self.__knowledge: KnowledgeTool = KnowledgeTool()
 
+    def __base(self) -> Knowledge | None:
+        """
+            The knowledge base, opened again while it is empty: the user may index a folder while a client keeps the
+            server running (louis --index)
+        """
+        knowledge: Knowledge | None = self.__host.knowledge
+        if self.__settings.get("rag.enabled") and (knowledge is None or knowledge.empty):
+            self.__host.knowledge = knowledge = Knowledge.from_settings(self.__settings, EventBus())
+        return knowledge
+
     def tools(self) -> list[Tool]:
         """ The tools offered now: search_knowledge with what the base holds, if it holds something """
-        knowledge: Knowledge | None = self.__host.knowledge
+        knowledge: Knowledge | None = self.__base()
         if knowledge is None or knowledge.empty:
             return list(self.__tools)
         self.__knowledge.refresh(knowledge.catalog())
