@@ -18,6 +18,7 @@ from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT
 from events.event_list import PLAN_SETTINGS, PLAN_PROPOSED, PLAN_DECIDED
+from events.event_list import MCP_STARTED, MCP_SERVERS
 import json
 import os
 import re
@@ -135,6 +136,25 @@ def plan_settings(data: dict) -> str:
                   if data["level"] == "irreversible" else "toute action qui change quelque chose")
     return f"Plan avant d'agir activé, pour {which} : Louis te montre ce qu'il va faire et attend ton accord. /plan off pour le couper."
 
+# How an MCP server goes, said to the user
+MCP_STATES: dict[str, str] = {"running": "actif", "failed": "n'a pas démarré", "crashed": "s'est arrêté", "stopped": "arrêté"}
+
+NO_MCP: str = "Aucun serveur MCP : déclare-les dans le réglage mcp.servers (voir le README)."
+
+def mcp_started(servers: list[dict]) -> str:
+    """ The MCP servers once Louis started them, on one line:  MCP : calc (1 outil) · time : n'a pas démarré (/mcp) """
+    parts: list[str] = [
+        f"{server['name']} ({len(server['tools'])} outil{'s' if len(server['tools']) > 1 else ''})"
+        if server["state"] == "running" else f"{server['name']} : {MCP_STATES.get(server['state'], server['state'])}"
+        for server in servers
+    ]
+    trouble: bool = any(server["state"] != "running" for server in servers)
+    return f"MCP : {' · '.join(parts)}{' (/mcp pour savoir pourquoi)' if trouble else ''}"
+
+def mcp_command(command: str, length: int = 60) -> str:
+    """ How a server is launched, cut from its start if it is too long: its end (the script) says the most """
+    return command if len(command) <= length else "…" + command[-(length - 1):]
+
 def short_path(path: str) -> str:
     """ A path, with ~ for the home folder """
     home: str = os.path.expanduser("~")
@@ -198,6 +218,8 @@ class CLI(Interface):
         bus.subscribe(self.__on_rag_sources, RAG_SOURCES)
         bus.subscribe(self.__on_rag_forgotten, RAG_FORGOTTEN)
         bus.subscribe(self.__on_eval_report, EVAL_REPORT)
+        bus.subscribe(self.__on_mcp_started, MCP_STARTED)
+        bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -390,6 +412,28 @@ class CLI(Interface):
     def __on_rag_forgotten(self, event: Event) -> None:
         """ The source removed """
         self.out(f"\nSource « {event.data['source']} » retirée ({event.data['chunks']} passages).\n")
+
+    def __on_mcp_started(self, event: Event) -> None:
+        """ The MCP servers on one line: dim while they all run, plain when one did not start """
+        servers: list[dict] = event.data["servers"]
+        self.out(mcp_started(servers), dim=all(server["state"] == "running" for server in servers))
+
+    def __on_mcp_servers(self, event: Event) -> None:
+        """ Each server with its state and how it is launched, why it does not answer, then its tools and their risk """
+        servers: list[dict] = event.data["servers"]
+        if not servers:
+            self.out(f"\n{NO_MCP}\n")
+            return
+        lines: list[str] = [f"\nServeurs MCP ({len(servers)}) :"]
+        for server in servers:
+            lines.append(f"  {server['name']:12} {MCP_STATES.get(server['state'], server['state']):16} "
+                         f"[{mcp_command(server['command'])}]")
+            if server["error"]:
+                lines.append(f"    {server['error']}")
+            for tool in server["tools"]:
+                lines.append(f"    {tool['name']:32} {RISKS.get(tool['risk'], tool['risk']):12} "
+                             f"{shorten(tool['description'], PREVIEW_LENGTH)}")
+        self.out("\n".join(lines) + "\n")
 
     def __on_permission(self, event: Event) -> None:
         """ Show what a tool wants to do and its diff, then grant it if the user agrees, or always agrees """
