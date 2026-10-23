@@ -7,6 +7,7 @@
 from interface.interface import Interface
 from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings
 from interface.cli import plan_title, plan_details
+from interface.cli import RISKS, MCP_STATES, NO_MCP, mcp_started, mcp_command
 from interface.cli import preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
@@ -22,6 +23,7 @@ from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_DESCRIBE_PRO
 from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, PLAN_SETTINGS
 from events.event_list import PLAN_PROPOSED, PLAN_DECIDED
+from events.event_list import MCP_STARTED, MCP_SERVERS
 from config.settings import settings
 from export.render_html import MARKDOWN, render
 from session.database import Database, now
@@ -338,6 +340,11 @@ class WebInterface(Interface):
         bus.subscribe(lambda event: self.__notice(
             f"Source « {event.data['source']} » retirée ({plural(event.data['chunks'], 'passage')})."
         ), RAG_FORGOTTEN)
+        bus.subscribe(lambda event: self.__notice(
+            mcp_started(event.data["servers"]),
+            "info" if all(server["state"] == "running" for server in event.data["servers"]) else "warn"
+        ), MCP_STARTED)
+        bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
         return self
 
     def getUserInput(self) -> str:
@@ -716,6 +723,21 @@ class WebInterface(Interface):
             return
         self.__running.remove(found)
         self.__patch(found[0], **tool_result(name, event.data["result"], event.data["ok"], event.data["duration"]))
+
+    def __on_mcp_servers(self, event: Event) -> None:
+        """ A row per server, its state, how it is launched and why it does not answer, then a row per tool """
+        servers: list[dict] = event.data["servers"]
+        if not servers:
+            self.__notice(NO_MCP)
+            return
+        rows: list[dict] = []
+        for server in servers:
+            rows.append({"text": f"{server['name']} — {MCP_STATES.get(server['state'], server['state'])}",
+                         "meta": " · ".join(part for part in (mcp_command(server["command"]), server["error"]) if part)})
+            rows += [{"text": f"  {tool['name']}",
+                      "meta": " · ".join(part for part in (RISKS.get(tool["risk"], tool["risk"]), tool["description"]) if part)}
+                     for tool in server["tools"]]
+        self.__card(f"Serveurs MCP ({len(servers)})", rows)
 
     def __on_permission(self, event: Event) -> None:
         """
