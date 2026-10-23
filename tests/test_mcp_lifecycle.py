@@ -124,3 +124,8 @@ def test_the_tools_are_offered_in_the_same_order_after_a_restart(louis):
     app._App__commands.fetch("/mcp restart calc", app)
     # The same request as before: Ollama reads none of it again
     assert [tool["function"]["name"] for tool in app._App__toolManager.all()] == before
+
+def test_a_server_that_says_its_tools_changed_but_lists_the_same_is_no_change(mcp, app):
+    manager = mcp(fake())
+    assert tools(manager)["fake__same"].handle(app) == "rien de neuf"
+    assert manager.refresh() == []

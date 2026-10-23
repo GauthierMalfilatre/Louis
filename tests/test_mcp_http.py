@@ -27,7 +27,8 @@ class FakeServer(ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Handler)
         self.token: str | None = None          # the Authorization it wants, None for any
-        self.stream: bool = False              # whether it has a stream of its own (GET), with its tools changed
+        self.stream: bool = False              # whether it has a stream of its own (GET), that adds a tool
+        self.tools: list[dict] = list(TOOLS)
         self.sessions: set[str] = set()
         self.initialized: int = 0
         self.received: list[dict] = []         # the messages POSTed, with their headers
@@ -84,7 +85,7 @@ class Handler(BaseHTTPRequestHandler):
             # A notification, or the answer of the client to a request of the server
             return self.send(202)
         if method == "tools/list":
-            return self.send(200, {"jsonrpc": "2.0", "id": number, "result": {"tools": TOOLS}})
+            return self.send(200, {"jsonrpc": "2.0", "id": number, "result": {"tools": self.server.tools}})
         name, arguments = message["params"]["name"], message["params"].get("arguments") or {}
         done: dict = {"jsonrpc": "2.0", "id": number}
         if name == "echo":
@@ -107,6 +108,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         self.wfile.write(b": the stream of the server\n\n")
+        self.server.tools.append({"name": "added", "inputSchema": {"type": "object"}})
         self.wfile.write(f"data: {json.dumps({'jsonrpc': '2.0', 'method': 'notifications/tools/list_changed'})}\n\n".encode())
         self.wfile.flush()
         time.sleep(0.5)
@@ -224,6 +226,7 @@ def test_the_stream_of_the_server_tells_its_tools_changed(server, mcp):
         changes = manager.refresh()
         time.sleep(0.05)
     assert [(changed.name, change) for changed, change in changes] == [("web", "tools")]
+    assert "web__added" in tools(manager)
 
 def test_closing_ends_the_session_on_the_server(server, mcp):
     manager = mcp(web(server.url))

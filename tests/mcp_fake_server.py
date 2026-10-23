@@ -41,6 +41,7 @@ TOOLS: list[dict] = [
     tool("level", {"readOnlyHint": True}),
     tool("shout", {"readOnlyHint": True}),
     tool("more_prompts", {"readOnlyHint": True}),
+    tool("same", {"readOnlyHint": True}),
 ]
 
 PROMPTS: list[dict] = [
@@ -126,6 +127,10 @@ def call(name: str, arguments: dict, token=None) -> dict:
             return text("fini")
         case "level":
             return text(LEVEL[0] or "<aucun>")
+        case "same":
+            # Its tools changed, it says: they did not
+            write({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+            return text("rien de neuf")
         case "more_prompts":
             PROMPTS.append({"name": "added", "description": "Ajouté en cours de route"})
             write({"jsonrpc": "2.0", "method": "notifications/prompts/list_changed"})

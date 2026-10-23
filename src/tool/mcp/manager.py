@@ -196,12 +196,16 @@ class McpServer:
         changes: set[str] = self.client.changes() if self.client is not None and self.client.alive else set()
         if "tools" in changes:
             try:
-                self.tools = self.__offered(self.client.list_tools(self.timeout))
-                log.info(f"[mcp] {self.name}: its tools changed, {len(self.tools)} now "
-                         f"({', '.join(tool.remote for tool in self.tools)})")
-                changed = changed or "tools"
+                tools: list[McpTool] = self.__offered(self.client.list_tools(self.timeout))
             except McpError as e:
                 log.warning(f"[mcp] {self.name}: its tools changed but can not be listed: {e}")
+            else:
+                # A server may say so when it registers its tools at its start: the same ones are no change
+                if [tool.schema for tool in tools] != [tool.schema for tool in self.tools]:
+                    log.info(f"[mcp] {self.name}: its tools changed, {len(tools)} now "
+                             f"({', '.join(tool.remote for tool in tools)})")
+                    changed = changed or "tools"
+                self.tools = tools
         if "prompts" in changes:
             self.prompts = self.__prompts(self.timeout)
             log.info(f"[mcp] {self.name}: its prompts changed, {len(self.prompts)} now")
