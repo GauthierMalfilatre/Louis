@@ -22,6 +22,7 @@ from monitor.report import report
 from model.model_exception import ModelException
 from structured.schema import load, SchemaError
 from rag.cli import index_folder
+from tool.mcp.serve import serve as serve_mcp
 import argparse
 import json
 
@@ -42,6 +43,7 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--index", type=str, default=None, metavar="FOLDER", help="index a folder of documentation or code in the knowledge base, and quit")
     parser.add_argument("--name", type=str, default=None, help="the name of the source --index makes (default: the name of the folder)")
     parser.add_argument("--exclude", action="append", default=None, metavar="PATTERN", help="with --index: leave out the files of this pattern ('config/*_grid.yml', 'tests'), kept for the next ones; --exclude '' leaves out nothing any more")
+    parser.add_argument("--mcp-server", action="store_true", help="be an MCP server on stdin and stdout: another client (Claude Code...) gets the tools of Louis that only read (the files of the project, the knowledge base), until it closes")
     parser.add_argument("--describe", action=argparse.BooleanOptionalAction, default=None, help="with --index: the chat model describes each passage of code, searched with it (slow the first time), kept for the next ones; --no-describe stops it")
 
     args: argparse.Namespace = parser.parse_args()
@@ -157,6 +159,8 @@ if __name__ == "__main__":
         sys.exit(report(traces_path(), open_browser=True))
 
     setup_logger()
+    if args.mcp_server:
+        sys.exit(serve_mcp(settings))
     if args.index:
         sys.exit(index_folder(args.index, args.name, args.exclude, args.describe))
 
