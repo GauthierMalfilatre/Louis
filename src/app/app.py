@@ -24,6 +24,7 @@ from tool.impl.git.tool_pr import PullRequestTool
 from tool.impl.exec.tool_run import RunTool, available as sandbox_available
 from tool.impl.rag.tool_knowledge import KnowledgeTool
 from tool.mcp.manager import McpManager
+from tool.mcp.tool_mcp import McpTool
 from tool.permission import PermissionManager
 from tool.risk import Risk, NONE, LEVELS, SAFE, IRREVERSIBLE
 from rag.knowledge import Knowledge
@@ -925,11 +926,13 @@ class App:
 
     def __screen_result(self, call: ToolCall, result: str) -> str:
         """
-            Put what a tool read outside the project (the knowledge base: documents nobody here wrote) through the
-            tool result rails before the model reads it: the passages that give it orders taken out, the sensitive data
-            masked. Whoever asked for the call. A guard that cannot check gives nothing: an unchecked result is never read
+            Put what a tool read outside the project (the knowledge base: documents nobody here wrote; what an MCP server
+            gave: a program nobody here wrote) through the tool result rails before the model reads it: the passages that
+            give it orders taken out, the sensitive data masked. Whoever asked for the call. A guard that cannot check
+            gives nothing: an unchecked result is never read
         """
-        if self.__guard is None or not self.__guard.screens_result(call.name):
+        untrusted: bool = isinstance(self.__toolManager.get(call.name), McpTool)
+        if self.__guard is None or not (untrusted or self.__guard.screens_result(call.name)):
             return result
         try:
             return self.__guard.check_tool_result(call.name, result).content
