@@ -193,12 +193,7 @@ class App:
         # The MCP servers of the settings, started side by side, their tools offered to the model with the others.
         # After the model and the guard, which may raise: a failed start leaves no server behind. close() stops them
         self.__mcp: McpManager = McpManager(settings).start()
-        for tool in self.__mcp.tools():
-            if self.__toolManager.has(tool.name):
-                log.warning(f"[mcp] {tool.name} left out: Louis already has a tool of that name")
-                continue
-            self.__toolManager.register(tool)
-        self.__window.set_tools(self.__toolManager.all())
+        self.offer_mcp()
         log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
 
         self.__bus.dispatch(
@@ -393,6 +388,24 @@ class App:
         """ Stop what Louis started beside it: its MCP servers """
         self.__mcp.close()
 
+    def offer_mcp(self) -> None:
+        """
+            Offer the model the tools of the MCP servers that run, and withdraw those of the ones that do not any
+            more: again each time a server starts, stops or changes its tools. A tool of Louis is never replaced
+        """
+        offered: dict[str, McpTool] = {tool.name: tool for tool in self.__mcp.tools()}
+        for tool in self.__toolManager.tools():
+            if isinstance(tool, McpTool) and tool.name not in offered:
+                self.__toolManager.unregister(tool.name)
+        for name, tool in offered.items():
+            known = self.__toolManager.get(name)
+            if known is not None and not isinstance(known, McpTool):
+                log.warning(f"[mcp] {name} left out: Louis already has a tool of that name")
+                continue
+            self.__toolManager.register(tool)
+        # The room the tools take in the context changes with them
+        self.__window.set_tools(self.__toolManager.all())
+
     def offer_knowledge(self) -> None:
         """
             Offer search_knowledge to the model while something is indexed, and withdraw it when nothing is any more.
@@ -428,10 +441,19 @@ class App:
             log.info(f"[user] {u.strip()}")
             try:
                 if not self.__commands.fetch(u, self):
-                    self.reason(u) if self.__react else self.__answer(u)
+                    self.answer(u)
             except KeyboardInterrupt:
                 # Ctrl+C in a command: back to the input, the answers handle it themselves
                 log.info("[app] command interrupted by the user")
+
+    def answer(self, text: str) -> None:
+        """
+            Answer a message of the user, by the reasoning loop with /react. The tools of the MCP servers that changed
+            since the last message (one started again, one that said its tools changed) are offered again first
+        """
+        if self.__mcp.refresh():
+            self.offer_mcp()
+        self.reason(text) if self.__react else self.__answer(text)
 
     def structured(self, text: str, name: str, schema: dict) -> tuple[bool, Any]:
         """
