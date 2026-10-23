@@ -97,6 +97,11 @@ settings: dict[str] = {
         {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]},
         {"name": "time", "command": "uvx", "args": ["mcp-server-time"]},
     ],
+    # Files that declare more servers, in the format of Claude Code, Cursor and Claude Desktop (a file of theirs can be
+    # copied as is): {"mcpServers": {"<name>": {"command": "npx", "args": [...], "env": {...}}}}. ${VAR} (or
+    # ${VAR:-default}) in command, args and env is the variable of the environment of Louis: how a token reaches a
+    # server without being written in the file. A server of a file replaces the one of the same name declared before it
+    "mcp.files"            : ["~/.config/louis/mcp.json"],
     # Seconds a call of a tool may take, and a server to start and list its tools (npx and uvx download it the first time)
     "mcp.timeout"          : 30.0,
     "mcp.start_timeout"    : 60.0,

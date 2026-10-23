@@ -2,11 +2,12 @@
 ## EPITECH PROJECT, 2026
 ## SENSAI
 ## File description:
-## MCP manager: the servers of the settings (mcp.servers), started with Louis, their tools, stopped when it exits
+## MCP manager: the servers declared (mcp.servers, the .mcp.json files), started with Louis, their tools, stopped when
+## it exits
 ##
 from logger.logger import log
-from tool.risk import LEVELS
 from tool.mcp.client import McpClient, McpError
+from tool.mcp.config import Declaration, declarations
 from tool.mcp.transport_stdio import StdioTransport
 from tool.mcp.tool_mcp import McpTool
 import atexit
@@ -23,30 +24,30 @@ STOPPED: str = "stopped"
 
 class McpServer:
     """
-        A server of the settings: how it is launched, how it goes, and its tools once it is started. It can be
-        stopped and started again; one that crashed is started again by itself, restarts times at most
+        A server declared: how it is launched, how it goes, and its tools once it is started. It can be stopped and
+        started again; one that crashed is started again by itself, restarts times at most
     """
-    def __init__(self, name: str, command: str, args: list[str], env: dict[str, str], level: str | None, *,
-                 timeout: float = 30.0, start_timeout: float = 30.0, restarts: int = 0, max_timeout: float = 600.0,
-                 log_level: str | None = "info"):
+    def __init__(self, declaration: Declaration, *, timeout: float = 30.0, start_timeout: float = 30.0,
+                 restarts: int = 0, max_timeout: float = 600.0, log_level: str | None = "info"):
         """
             Init a server, not started yet: its calls wait timeout seconds at most (max_timeout while it tells it
             works on them), its start start_timeout. Its logs of log_level and above go to the log of Louis
         """
-        self.name    : str               = name
-        self.command : str               = command
-        self.args    : list[str]         = args
-        self.env     : dict[str, str]    = env
-        self.level   : str | None        = level
+        self.declaration: Declaration    = declaration
+        self.name    : str               = declaration.name
+        self.command : str               = declaration.command
+        self.args    : list[str]         = declaration.args
+        self.env     : dict[str, str]    = declaration.env
+        self.level   : str | None        = declaration.level
         self.timeout : float             = timeout
         self.max_timeout: float          = max(timeout, max_timeout)
         self.log_level  : str | None     = log_level
         self.client  : McpClient | None  = None
         self.tools   : list[McpTool]     = []
         # Why it did not start, None if it did
-        self.error   : str | None        = None
+        self.error   : str | None        = declaration.error
         # Its declaration is not valid (error says why): it can not be started
-        self.invalid : bool              = False
+        self.invalid : bool              = declaration.error is not None
         self.__start_timeout: float      = start_timeout
         # The restarts it may still make by itself, after a crash
         self.__restarts     : int        = max(0, restarts)
@@ -78,6 +79,7 @@ class McpServer:
         """ What an interface needs to show the server, raw and JSON-friendly """
         return {
             "name"   : self.name,
+            "source" : self.declaration.source,
             "command": shlex.join([self.command, *self.args]) if self.command else "",
             "state"  : self.state,
             "error"  : self.error if self.error is not None else (self.client.why or None) if self.client else None,
@@ -179,50 +181,18 @@ class McpManager:
         exits: never a process left behind
     """
     def __init__(self, settings: dict):
-        """ Init the servers the settings declare: a declaration that is not valid is a server that failed """
-        self.__timeout      : float             = float(settings.get("mcp.timeout", 30.0))
-        self.__start_timeout: float             = float(settings.get("mcp.start_timeout", 30.0))
-        self.__restarts     : int               = int(settings.get("mcp.restarts", 1))
-        self.__max_timeout  : float             = float(settings.get("mcp.max_timeout", 600.0))
-        self.__log_level    : str | None        = settings.get("mcp.log_level", "info")
-        self.__servers      : list[McpServer]   = []
-        for entry in settings.get("mcp.servers") or []:
-            server: McpServer = self.__declared(entry)
+        """ Init the servers declared: a declaration that is not valid is a server that failed """
+        self.__servers: list[McpServer] = []
+        for declaration in declarations(settings):
+            server: McpServer = McpServer(
+                declaration, timeout=float(settings.get("mcp.timeout", 30.0)),
+                start_timeout=float(settings.get("mcp.start_timeout", 30.0)), restarts=int(settings.get("mcp.restarts", 1)),
+                max_timeout=float(settings.get("mcp.max_timeout", 600.0)), log_level=settings.get("mcp.log_level", "info")
+            )
             if server.error is not None:
                 log.warning(f"[mcp] {server.name or '?'}: not started, {server.error}")
             self.__servers.append(server)
         atexit.register(self.close)
-
-    def __declared(self, entry) -> McpServer:
-        """ A server as the settings declare it: its error says what is wrong with the declaration """
-        if not isinstance(entry, dict):
-            server: McpServer = self.__server("", "", [], {}, None)
-            server.error, server.invalid = "réglage invalide : chaque serveur est un dict {name, command, args, env}", True
-            return server
-        name, command = entry.get("name"), entry.get("command")
-        args, env, level = entry.get("args", []), entry.get("env", {}), entry.get("risk")
-        server = self.__server(name if isinstance(name, str) else "", command if isinstance(command, str) else "",
-                               args if isinstance(args, list) else [], env if isinstance(env, dict) else {},
-                               level if level in LEVELS else None)
-        if not server.name.strip():
-            server.error = "réglage invalide : il lui faut un nom (name)"
-        elif any(other.name == server.name for other in self.__servers):
-            server.error = f"réglage invalide : un autre serveur s'appelle déjà {server.name}"
-        elif not server.command.strip():
-            server.error = "réglage invalide : il lui faut une commande à lancer (command)"
-        elif not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-            server.error = "réglage invalide : args est une liste de textes"
-        elif not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
-            server.error = "réglage invalide : env est un dict de textes"
-        elif level is not None and level not in LEVELS:
-            server.error = f"réglage invalide : risk vaut {', '.join(LEVELS)}"
-        server.invalid = server.error is not None
-        return server
-
-    def __server(self, name: str, command: str, args: list[str], env: dict[str, str], level: str | None) -> McpServer:
-        """ A server with the timeouts and the restarts of the settings """
-        return McpServer(name, command, args, env, level, timeout=self.__timeout, start_timeout=self.__start_timeout,
-                         restarts=self.__restarts, max_timeout=self.__max_timeout, log_level=self.__log_level)
 
     def start(self) -> "McpManager":
         """ Start the servers, side by side: one slow to start (npx downloads it the first time) delays none of the others """

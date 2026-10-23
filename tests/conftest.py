@@ -88,8 +88,12 @@ class Person(Interface):
 
 @pytest.fixture(autouse=True)
 def no_mcp_servers(monkeypatch):
-    """ An app of a test starts no MCP server, unless the test declares its own: none of the settings, nor uvx """
+    """
+        An app of a test starts no MCP server, unless the test declares its own: none of the settings, nor uvx, nor
+        those of the files of whoever runs the tests
+    """
     monkeypatch.setitem(settings, "mcp.servers", [])
+    monkeypatch.setitem(settings, "mcp.files", [])
 
 @pytest.fixture
 def mcp(folder):

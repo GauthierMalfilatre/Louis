@@ -136,7 +136,7 @@ def ask(system_prompt: str, username: str, schema_name: str, question: str) -> i
         db, user = open_user(username)
         monitor: Recorder = Recorder(traces_path(), settings)
         # The reply is JSON only, without tools: no MCP server to start
-        app: App = App({**settings, "mcp.servers": []}, system_prompt, user, QuietInterface(), monitor)
+        app: App = App({**settings, "mcp.servers": [], "mcp.files": []}, system_prompt, user, QuietInterface(), monitor)
         valid, data = app.structured(question, name, schema)
     except ModelException as e:
         log.error(f"[app] the model failed: {e.message}")
