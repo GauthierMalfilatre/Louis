@@ -144,7 +144,7 @@ class McpTool(Tool):
                                             self.__host.max_timeout)
         except McpTimeout as e:
             return (f"Erreur : le serveur MCP {self.__server} n'a pas répondu à {self.__remote} en "
-                    f"{e.waited:.3g} s. Fais autrement, ou réessaie plus tard.")
+                    f"{round(e.waited, 1):g} s. Fais autrement, ou réessaie plus tard.")
         except McpError as e:
             if client.crashed:
                 # Never called again by itself: the call may have acted before the crash

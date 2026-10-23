@@ -186,7 +186,7 @@ class McpClient:
                 except queue.Empty:
                     self.__cancel(number, "timeout")
                     waited: float = time.monotonic() - sent
-                    raise McpTimeout(f"pas de réponse à {method} après {waited:.3g} s", waited) from None
+                    raise McpTimeout(f"pas de réponse à {method} après {round(waited, 1):g} s", waited) from None
                 except KeyboardInterrupt:
                     self.__cancel(number, "interrupted by the user")
                     raise
