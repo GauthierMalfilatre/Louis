@@ -18,7 +18,7 @@ from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT
 from events.event_list import PLAN_SETTINGS, PLAN_PROPOSED, PLAN_DECIDED
-from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED
+from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED, MCP_PROGRESS
 import json
 import os
 import re
@@ -166,6 +166,14 @@ def mcp_changed(data: dict) -> tuple[str, bool]:
         return f"MCP : {name} relancé ({tools})", True
     return f"MCP : {name} a changé ses outils ({tools})", True
 
+def mcp_progress(data: dict) -> str:
+    """ How far a long call of an MCP tool is, as its server tells it:  3/10 — Téléchargement """
+    progress, total = data.get("progress"), data.get("total")
+    number: bool = isinstance(progress, (int, float))
+    done: str = f"{progress:g}/{total:g}" if number and isinstance(total, (int, float)) and total else \
+        f"{progress:g}" if number else ""
+    return " — ".join(part for part in (done, data.get("message") or "") if part) or "en cours"
+
 def mcp_command(command: str, length: int = 60) -> str:
     """ How a server is launched, cut from its start if it is too long: its end (the script) says the most """
     return command if len(command) <= length else "…" + command[-(length - 1):]
@@ -236,6 +244,8 @@ class CLI(Interface):
         bus.subscribe(self.__on_mcp_started, MCP_STARTED)
         bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
         bus.subscribe(self.__on_mcp_changed, MCP_CHANGED)
+        bus.subscribe(lambda event: self.out(f"  … {event.data['tool']} : {mcp_progress(event.data)}", dim=True),
+                      MCP_PROGRESS)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
