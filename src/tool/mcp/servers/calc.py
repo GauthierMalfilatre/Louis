@@ -3,7 +3,8 @@
 ## SENSAI
 ## File description:
 ## calc: the MCP server of Louis, a calculator. A program of its own, launched by Louis as any other MCP server:
-## it reads JSON-RPC on its standard input, one message per line, and answers on its standard output
+## it reads JSON-RPC on its standard input, one message per line, and answers on its standard output. Its tool
+## calculates, its prompt (explain) asks the model to calculate step by step and explain
 ##
 import ast
 import json
@@ -47,6 +48,24 @@ TOOLS: list[dict] = [{
     },
     "annotations": {"readOnlyHint": True, "openWorldHint": False},
 }]
+
+PROMPTS: list[dict] = [{
+    "name": "explain",
+    "title": "Expliquer un calcul",
+    "description": "Calcule une expression avec la calculatrice, puis explique le résultat étape par étape",
+    "arguments": [{"name": "expression", "description": "L'expression, par exemple '(3 + 4) * sqrt(16)'", "required": True}],
+}]
+
+def prompt(name: str, arguments: dict) -> dict:
+    """ The messages of a prompt, written with its arguments """
+    if name != "explain":
+        raise LookupError(f"Unknown prompt: {name}")
+    expression = arguments.get("expression")
+    if not isinstance(expression, str) or not expression.strip():
+        raise LookupError("Missing argument: expression")
+    text: str = (f"Calcule {expression.strip()} avec l'outil calculate, sans le faire de tête. Puis explique le "
+                 "résultat étape par étape : l'ordre des opérations, et la valeur de chaque étape.")
+    return {"description": PROMPTS[0]["description"], "messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
 
 def evaluate(node: ast.AST):
     """ The value of an expression, its nodes checked one by one: what is not arithmetic is refused """
@@ -104,13 +123,20 @@ def answer(message: dict) -> dict | None:
     if method == "initialize":
         reply["result"] = {
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {"tools": {}},
+            "capabilities": {"tools": {}, "prompts": {}},
             "serverInfo": {"name": "calc", "title": "Calculatrice de Louis", "version": "1.0"},
         }
     elif method == "ping":
         reply["result"] = {}
     elif method == "tools/list":
         reply["result"] = {"tools": TOOLS}
+    elif method == "prompts/list":
+        reply["result"] = {"prompts": PROMPTS}
+    elif method == "prompts/get":
+        try:
+            reply["result"] = prompt(params.get("name"), params.get("arguments") or {})
+        except LookupError as e:
+            reply["error"] = {"code": -32602, "message": str(e)}
     elif method == "tools/call":
         try:
             reply["result"] = call(params.get("name"), params.get("arguments") or {})
