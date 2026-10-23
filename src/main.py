@@ -101,7 +101,11 @@ def run(system_prompt: str, username: str, plain: bool = False, web: tuple[str, 
         # Opened and closed around the whole run, even when it crashes
         with interface:
             app: App = App(settings, system_prompt, user, interface, monitor)
-            res = app.run()
+            try:
+                res = app.run()
+            finally:
+                # Its MCP servers stopped, even when it crashes
+                app.close()
     except Exception:
         log.exception("[app] crashed")
         raise
@@ -131,7 +135,8 @@ def ask(system_prompt: str, username: str, schema_name: str, question: str) -> i
     try:
         db, user = open_user(username)
         monitor: Recorder = Recorder(traces_path(), settings)
-        app: App = App(settings, system_prompt, user, QuietInterface(), monitor)
+        # The reply is JSON only, without tools: no MCP server to start
+        app: App = App({**settings, "mcp.servers": []}, system_prompt, user, QuietInterface(), monitor)
         valid, data = app.structured(question, name, schema)
     except ModelException as e:
         log.error(f"[app] the model failed: {e.message}")

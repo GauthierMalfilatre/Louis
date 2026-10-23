@@ -23,6 +23,7 @@ from tool.impl.git.tool_git import GitTool
 from tool.impl.git.tool_pr import PullRequestTool
 from tool.impl.exec.tool_run import RunTool, available as sandbox_available
 from tool.impl.rag.tool_knowledge import KnowledgeTool
+from tool.mcp.manager import McpManager
 from tool.permission import PermissionManager
 from tool.risk import Risk, NONE, LEVELS, SAFE, IRREVERSIBLE
 from rag.knowledge import Knowledge
@@ -131,8 +132,6 @@ class App:
         if settings.get("sandbox.enabled", True) and sandbox_available():
             self.__toolManager.register(RunTool())
 
-        log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
-
         # What the model sees of the session: cut down before it overflows the context, instead of Ollama cutting it
         # With chat.compact.summary, what it leaves out is summed up by the model, which reads the summary instead
         self.__window: ContextWindow = ContextWindow(
@@ -187,6 +186,18 @@ class App:
         # before the first session, which it welcomes; never for a script that asks one question and quits
         if settings.get("scribe.model") and stream.describes and (user.db is not None or stream.welcomes):
             Scribe(settings, self.__bus, user.db.path if user.db is not None else None, user.id, welcome=stream.welcomes)
+
+        # The MCP servers of the settings, started side by side, their tools offered to the model with the others.
+        # After the model and the guard, which may raise: a failed start leaves no server behind. close() stops them
+        self.__mcp: McpManager = McpManager(settings).start()
+        for tool in self.__mcp.tools():
+            if self.__toolManager.has(tool.name):
+                log.warning(f"[mcp] {tool.name} left out: Louis already has a tool of that name")
+                continue
+            self.__toolManager.register(tool)
+        self.__window.set_tools(self.__toolManager.all())
+        log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
+
         self.__bus.dispatch(
             APP_STARTED,
             model=self.__model.model,
@@ -194,6 +205,8 @@ class App:
             react=self.react,
             commands=[command.describe() for command in self.__commands.commands]
         )
+        if self.__mcp.servers:
+            self.__bus.dispatch(MCP_STARTED, servers=self.__mcp.describe())
 
         # Started once the model answers: a failed start leaves no empty session behind
         self.new_session()
@@ -367,6 +380,15 @@ class App:
     def knowledge(self) -> Knowledge | None:
         """ Get the knowledge base the user indexed, None if it is turned off (rag.enabled) """
         return self.__knowledge
+
+    @property
+    def mcp(self) -> McpManager:
+        """ Get the MCP servers of the settings, for /mcp to show them """
+        return self.__mcp
+
+    def close(self) -> None:
+        """ Stop what Louis started beside it: its MCP servers """
+        self.__mcp.close()
 
     def offer_knowledge(self) -> None:
         """

@@ -34,6 +34,12 @@ def git(cwd, *args: str) -> str:
     """ Run git in cwd, as the user would: the state a test starts from, or what it checks after """
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
+@pytest.fixture(autouse=True)
+def no_mcp_servers(monkeypatch):
+    """ An app of a test starts no MCP server, unless the test declares its own: none of the settings, nor uvx """
+    from config.settings import settings
+    monkeypatch.setitem(settings, "mcp.servers", [])
+
 @pytest.fixture
 def app() -> FakeApp:
     return FakeApp()
