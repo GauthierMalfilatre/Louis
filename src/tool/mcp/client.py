@@ -2,34 +2,21 @@
 ## EPITECH PROJECT, 2026
 ## SENSAI
 ## File description:
-## MCP client: talk to an MCP server over stdio, in JSON-RPC 2.0, one message per line
+## MCP client: talk to an MCP server in JSON-RPC 2.0, through its transport (stdio: a program Louis launches)
 ##
 from logger.logger import log
-from collections import deque
 from pathlib import Path
 import itertools
 import json
 import os
 import queue
-import signal
-import subprocess
 import threading
 
 # The version of the protocol Louis speaks: the server answers with the one it speaks, an older one if it must
 PROTOCOL_VERSION: str = "2025-06-18"
 
-# What a server gets of the environment of Louis, as the official SDK does: what a program needs to run (npx, uvx),
-# never the secrets Louis may hold (a token of GitHub...). The env of its settings is added to it
-INHERITED_ENV: tuple[str, ...] = ("HOME", "PATH", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "TZ", "TMPDIR")
-
-# Seconds a server has to exit once its input is closed, then once it is terminated, before it is killed
-STOP_GRACE: float = 2.0
-
 # Pages of tools/list read at most: a server that always gives a next cursor never ends the listing
 MAX_PAGES: int = 100
-
-# Lines of the error output of a server kept, to tell why it did not start (npx: the package does not exist...)
-STDERR_LINES: int = 5
 
 class McpError(Exception):
     """ The server answered with an error, or can not answer any more (it stopped, it crashed) """
@@ -39,27 +26,22 @@ class McpTimeout(McpError):
 
 class McpClient:
     """
-        One MCP server, launched by Louis and talked to on its standard input and output. A thread reads what it
-        writes: the answers go to the request that waits for them, its own requests (ping) are answered there.
+        One MCP server, talked to through its transport. What the server writes comes from another thread: the
+        answers go to the request that waits for them, its own requests (ping) are answered there.
         Synchronous for Louis: request() waits for its answer, timeout seconds at most
     """
-    def __init__(self, name: str, command: str, args: list[str] | None = None, env: dict[str, str] | None = None):
-        """ Init the client of a server, not started yet: start() launches it """
-        self.__name   : str                 = name
-        self.__command: list[str]           = [command, *(args or [])]
-        self.__env    : dict[str, str]      = {**{key: os.environ[key] for key in INHERITED_ENV if key in os.environ},
-                                               **(env or {})}
-        self.__process: subprocess.Popen | None = None
-        self.__ids    : itertools.count     = itertools.count(1)
+    def __init__(self, name: str, transport):
+        """ Init the client of a server, not started yet: start() opens its transport """
+        self.__name     : str                    = name
+        self.__transport                         = transport
+        self.__ids      : itertools.count        = itertools.count(1)
         # The requests waiting for their answer, by id: filled by the thread that reads the server
-        self.__pending: dict[int, queue.Queue] = {}
-        self.__lock   : threading.Lock      = threading.Lock()
-        self.__write  : threading.Lock      = threading.Lock()
+        self.__pending  : dict[int, queue.Queue] = {}
+        self.__lock     : threading.Lock         = threading.Lock()
         # Why the server can not answer any more, None while it can
-        self.__died   : str | None          = None
+        self.__died     : str | None             = None
         # Stopped by close(): its end is no crash
-        self.__closed : bool                = False
-        self.__stderr : deque[str]          = deque(maxlen=STDERR_LINES)
+        self.__closed   : bool                   = False
         self.server_info : dict = {}
         self.capabilities: dict = {}
 
@@ -69,14 +51,19 @@ class McpClient:
         return self.__name
 
     @property
+    def transport(self):
+        """ Get how the server is reached: the program launched, or its address """
+        return self.__transport
+
+    @property
     def alive(self) -> bool:
         """ Whether the server runs and can answer """
-        return self.__process is not None and self.__died is None and self.__process.poll() is None
+        return self.__transport.started and self.__died is None and self.__transport.running
 
     @property
     def crashed(self) -> bool:
         """ Whether the server stopped by itself once started: Louis did not close it """
-        return self.__process is not None and not self.__closed and not self.alive
+        return self.__transport.started and not self.__closed and not self.alive
 
     @property
     def why(self) -> str:
@@ -88,25 +75,19 @@ class McpClient:
     @property
     def stderr(self) -> str:
         """ The last lines the server wrote on its error output: why it failed, often """
-        return "\n".join(self.__stderr)
+        return self.__transport.stderr
 
     @property
     def pid(self) -> int | None:
-        """ Get the process of the server, None before it is launched """
-        return self.__process.pid if self.__process is not None else None
+        """ Get the process of the server, None before it is launched or when Louis did not launch it """
+        return self.__transport.pid
 
     def start(self, timeout: float) -> "McpClient":
         """
-            Launch the server and agree with it on the protocol (initialize), timeout seconds at most.
-            Raises OSError when the command can not be run, McpError when the server does not answer as it must.
-            In its own session: a Ctrl+C in the terminal cancels a turn of Louis, never its servers
+            Open the transport (launch the server) and agree with it on the protocol (initialize), timeout seconds at
+            most. Raises OSError when the command can not be run, McpError when the server does not answer as it must
         """
-        self.__process = subprocess.Popen(
-            self.__command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=os.getcwd(), env=self.__env, start_new_session=True
-        )
-        threading.Thread(target=self.__read, name=f"mcp-{self.__name}", daemon=True).start()
-        threading.Thread(target=self.__drain, name=f"mcp-{self.__name}-err", daemon=True).start()
+        self.__transport.open(self.__receive, self.__lost)
         result: dict = self.request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
@@ -115,7 +96,7 @@ class McpClient:
         self.server_info = result.get("serverInfo") or {}
         self.capabilities = result.get("capabilities") or {}
         self.notify("notifications/initialized")
-        log.info(f"[mcp] {self.__name}: started (pid {self.pid}), {self.server_info.get('name', '?')} "
+        log.info(f"[mcp] {self.__name}: started ({self.__transport.label}), {self.server_info.get('name', '?')} "
                  f"{self.server_info.get('version', '')}, protocol {result.get('protocolVersion')}")
         return self
 
@@ -173,51 +154,18 @@ class McpClient:
         self.__send({"jsonrpc": "2.0", "method": method, **({"params": params} if params is not None else {})})
 
     def close(self) -> None:
-        """
-            Stop the server as the protocol says: its input closed, it should exit; else it is terminated, then
-            killed, with every process it started (npx runs node). Nothing happens a second time
-        """
-        process: subprocess.Popen | None = self.__process
-        if process is None or self.__closed:
+        """ Stop the server (its transport closed): nothing happens a second time """
+        if not self.__transport.started or self.__closed:
             return
         self.__closed = True
-        try:
-            process.stdin.close()
-        except OSError:
-            pass
-        for stop in (None, signal.SIGTERM, signal.SIGKILL):
-            if stop is not None:
-                self.__signal(process, stop)
-            try:
-                process.wait(STOP_GRACE)
-                break
-            except subprocess.TimeoutExpired:
-                continue
-        # Its group too: what it started may outlive it
-        self.__signal(process, signal.SIGTERM)
-        log.info(f"[mcp] {self.__name}: stopped (code {process.returncode})")
-
-    @staticmethod
-    def __signal(process: subprocess.Popen, number: int) -> None:
-        """ Send a signal to the server and the processes it started, in the session it leads """
-        try:
-            os.killpg(process.pid, number)
-        except (ProcessLookupError, PermissionError):
-            pass
-        except AttributeError:
-            # No process groups (Windows): the server alone
-            if process.poll() is None:
-                process.send_signal(number)
+        self.__transport.close()
 
     def __send(self, message: dict) -> None:
-        """ Write a message to the server, on one line """
-        line: bytes = (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
-        with self.__write:
-            try:
-                self.__process.stdin.write(line)
-                self.__process.stdin.flush()
-            except (OSError, ValueError) as e:
-                raise McpError(self.__died or f"le serveur ne lit plus ses messages ({type(e).__name__})") from None
+        """ Write a message to the server """
+        try:
+            self.__transport.send(message)
+        except (OSError, ValueError) as e:
+            raise McpError(self.__died or f"le serveur ne lit plus ses messages ({type(e).__name__})") from None
 
     def __cancel(self, number: int, reason: str) -> None:
         """ Tell the server a request is not waited for any more: it may stop working on it """
@@ -226,30 +174,8 @@ class McpClient:
         except McpError:
             pass
 
-    def __read(self) -> None:
-        """ Read what the server writes, until it stops: every request still waiting then fails """
-        try:
-            for raw in self.__process.stdout:
-                line: str = raw.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                try:
-                    message = json.loads(line)
-                except json.JSONDecodeError:
-                    log.debug(f"[mcp] {self.__name}: not JSON on its output: {line[:200]}")
-                    continue
-                if isinstance(message, dict):
-                    self.__receive(message)
-        except (OSError, ValueError):
-            pass
-        try:
-            code: int | None = self.__process.wait(STOP_GRACE)
-        except subprocess.TimeoutExpired:
-            code = None
-        reason: str = "le serveur a été arrêté" if self.__closed else \
-            f"le serveur s'est arrêté{f' (code {code})' if code is not None else ''}"
-        if not self.__closed:
-            log.warning(f"[mcp] {self.__name}: {reason}{f': {self.stderr}' if self.stderr else ''}")
+    def __lost(self, reason: str) -> None:
+        """ The server can not answer any more: every request still waiting fails, with why """
         with self.__lock:
             self.__died = self.__died or reason
             for answer in self.__pending.values():
@@ -279,15 +205,4 @@ class McpClient:
         try:
             self.__send(reply)
         except McpError:
-            pass
-
-    def __drain(self) -> None:
-        """ Read what the server writes on its error output, to the log: never to the terminal, nor left to fill up """
-        try:
-            for raw in self.__process.stderr:
-                line: str = raw.decode("utf-8", errors="replace").rstrip()
-                if line:
-                    self.__stderr.append(line)
-                    log.debug(f"[mcp] {self.__name}: {line}")
-        except (OSError, ValueError):
             pass

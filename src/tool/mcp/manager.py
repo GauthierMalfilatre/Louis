@@ -7,6 +7,7 @@
 from logger.logger import log
 from tool.risk import LEVELS
 from tool.mcp.client import McpClient, McpError
+from tool.mcp.transport_stdio import StdioTransport
 from tool.mcp.tool_mcp import McpTool
 import atexit
 import shlex
@@ -115,7 +116,7 @@ class McpManager:
             error: the server is stopped and left out
         """
         deadline: float = time.monotonic() + self.__start_timeout
-        server.client = McpClient(server.name, server.command, server.args, server.env)
+        server.client = McpClient(server.name, StdioTransport(server.name, server.command, server.args, server.env))
         try:
             server.client.start(self.__start_timeout)
             specs: list[dict] = server.client.list_tools(max(1.0, deadline - time.monotonic()))
