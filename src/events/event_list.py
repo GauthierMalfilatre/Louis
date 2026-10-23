@@ -109,6 +109,10 @@ MCP_SERVERS = "mcp.servers"   # data: the same as MCP_STARTED
 # "stopped" (by /mcp stop) or "tools" (it said its tools changed: they were listed again). Its tools are offered again;
 # servers is every server as in MCP_STARTED, commands every command Louis knows now (as APP_STARTED gives them)
 MCP_CHANGED = "mcp.changed"   # data: server (its name), change, servers, commands
+# How far a long call of an MCP tool is, as its server tells it (between TOOL_CALL_STARTED and TOOL_CALL_ENDED): tool
+# (its name for the model), server; progress (a number that grows), total (None when the server does not know it),
+# message (None, or what it is doing)
+MCP_PROGRESS = "mcp.progress"   # data: tool, server, progress, total, message
 
 # What the commands tell the user. The data is raw and JSON-friendly (full texts, raw paths): each
 # interface lays it out its own way, the CLI as text, a web page as it likes

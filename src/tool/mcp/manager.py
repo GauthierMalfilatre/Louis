@@ -27,14 +27,18 @@ class McpServer:
         stopped and started again; one that crashed is started again by itself, restarts times at most
     """
     def __init__(self, name: str, command: str, args: list[str], env: dict[str, str], level: str | None, *,
-                 timeout: float = 30.0, start_timeout: float = 30.0, restarts: int = 0):
-        """ Init a server, not started yet: its calls wait timeout seconds at most, its start start_timeout """
+                 timeout: float = 30.0, start_timeout: float = 30.0, restarts: int = 0, max_timeout: float = 600.0):
+        """
+            Init a server, not started yet: its calls wait timeout seconds at most (max_timeout while it tells it
+            works on them), its start start_timeout
+        """
         self.name    : str               = name
         self.command : str               = command
         self.args    : list[str]         = args
         self.env     : dict[str, str]    = env
         self.level   : str | None        = level
         self.timeout : float             = timeout
+        self.max_timeout: float          = max(timeout, max_timeout)
         self.client  : McpClient | None  = None
         self.tools   : list[McpTool]     = []
         # Why it did not start, None if it did
@@ -177,6 +181,7 @@ class McpManager:
         self.__timeout      : float             = float(settings.get("mcp.timeout", 30.0))
         self.__start_timeout: float             = float(settings.get("mcp.start_timeout", 30.0))
         self.__restarts     : int               = int(settings.get("mcp.restarts", 1))
+        self.__max_timeout  : float             = float(settings.get("mcp.max_timeout", 600.0))
         self.__servers      : list[McpServer]   = []
         for entry in settings.get("mcp.servers") or []:
             server: McpServer = self.__declared(entry)
@@ -214,7 +219,7 @@ class McpManager:
     def __server(self, name: str, command: str, args: list[str], env: dict[str, str], level: str | None) -> McpServer:
         """ A server with the timeouts and the restarts of the settings """
         return McpServer(name, command, args, env, level, timeout=self.__timeout, start_timeout=self.__start_timeout,
-                         restarts=self.__restarts)
+                         restarts=self.__restarts, max_timeout=self.__max_timeout)
 
     def start(self) -> "McpManager":
         """ Start the servers, side by side: one slow to start (npx downloads it the first time) delays none of the others """

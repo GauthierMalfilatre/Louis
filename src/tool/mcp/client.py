@@ -6,11 +6,13 @@
 ##
 from logger.logger import log
 from pathlib import Path
+from typing import Callable
 import itertools
 import json
 import os
 import queue
 import threading
+import time
 
 # The version of the protocol Louis speaks: the server answers with the one it speaks, an older one if it must
 PROTOCOL_VERSION: str = "2025-06-18"
@@ -28,7 +30,10 @@ class McpError(Exception):
     """ The server answered with an error, or can not answer any more (it stopped, it crashed) """
 
 class McpTimeout(McpError):
-    """ The server did not answer in time """
+    """ The server did not answer in time: waited seconds """
+    def __init__(self, message: str, waited: float):
+        super().__init__(message)
+        self.waited: float = waited
 
 class McpClient:
     """
@@ -128,32 +133,53 @@ class McpClient:
             changed, self.__changed = self.__changed, set()
         return changed
 
-    def call_tool(self, name: str, arguments: dict, timeout: float) -> dict:
-        """ Call a tool of the server: its result as it gives it, content and isError """
-        return self.request("tools/call", {"name": name, "arguments": arguments}, timeout)
+    def call_tool(self, name: str, arguments: dict, timeout: float,
+                  on_progress: Callable[[dict], None] | None = None, most: float | None = None) -> dict:
+        """
+            Call a tool of the server: its result as it gives it, content and isError. With on_progress, the server
+            may tell how far it is: on_progress gets each step (progress, total, message), and each one gives it
+            timeout seconds more, most seconds in all
+        """
+        return self.request("tools/call", {"name": name, "arguments": arguments}, timeout, on_progress, most)
 
-    def request(self, method: str, params: dict | None = None, timeout: float = 30.0) -> dict:
+    def request(self, method: str, params: dict | None = None, timeout: float = 30.0,
+                on_progress: Callable[[dict], None] | None = None, most: float | None = None) -> dict:
         """
             Send a request and wait for its answer, timeout seconds at most: its result. Raises McpTimeout when it
             does not come, McpError when it is an error or the server can not answer. A request the user interrupts
-            (Ctrl+C) is cancelled on the server too
+            (Ctrl+C) is cancelled on the server too. With on_progress, the steps the server tells put the wait off
+            (see call_tool), most seconds at most: a server that works forever is not waited for forever
         """
         number: int = next(self.__ids)
-        answer: queue.Queue = queue.Queue(maxsize=1)
+        answer: queue.Queue = queue.Queue()
+        if on_progress is not None:
+            # The id of the request is its token: the steps are told to the request that waits for them
+            params = {**(params or {}), "_meta": {**(params or {}).get("_meta", {}), "progressToken": number}}
         with self.__lock:
             if self.__died is not None:
                 raise McpError(self.__died)
             self.__pending[number] = answer
+        sent: float = time.monotonic()
+        deadline: float = sent + timeout
+        limit: float = sent + max(timeout, most or timeout)
         try:
             self.__send({"jsonrpc": "2.0", "id": number, "method": method, **({"params": params} if params is not None else {})})
-            try:
-                message: dict = answer.get(timeout=timeout)
-            except queue.Empty:
-                self.__cancel(number, "timeout")
-                raise McpTimeout(f"pas de réponse à {method} après {timeout:g} s") from None
-            except KeyboardInterrupt:
-                self.__cancel(number, "interrupted by the user")
-                raise
+            while True:
+                try:
+                    message: dict = answer.get(timeout=max(0.0, min(deadline, limit) - time.monotonic()))
+                except queue.Empty:
+                    self.__cancel(number, "timeout")
+                    waited: float = time.monotonic() - sent
+                    raise McpTimeout(f"pas de réponse à {method} après {waited:.3g} s", waited) from None
+                except KeyboardInterrupt:
+                    self.__cancel(number, "interrupted by the user")
+                    raise
+                if message.get("method") != "notifications/progress":
+                    break
+                # The server works: it is waited for again, as long as at first
+                deadline = time.monotonic() + timeout
+                if on_progress is not None:
+                    on_progress(message.get("params") or {})
         finally:
             with self.__lock:
                 self.__pending.pop(number, None)
@@ -209,6 +235,13 @@ class McpClient:
             if method in LIST_CHANGED:
                 with self.__lock:
                     self.__changed.add(LIST_CHANGED[method])
+            elif method == "notifications/progress":
+                # A step of a request still waited for: told to it, in the thread of Louis
+                with self.__lock:
+                    waiting: queue.Queue | None = self.__pending.get((message.get("params") or {}).get("progressToken"))
+                if waiting is not None:
+                    waiting.put(message)
+                return
             log.debug(f"[mcp] {self.__name}: {method} {json.dumps(message.get('params'), ensure_ascii=False)[:300]}")
             return
         reply: dict = {"jsonrpc": "2.0", "id": message["id"]}

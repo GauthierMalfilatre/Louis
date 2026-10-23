@@ -7,12 +7,17 @@
 from tool.tool import Tool
 from tool.risk import Risk, NONE, LEVELS, SAFE, REVERSIBLE, IRREVERSIBLE
 from tool.mcp.client import McpClient, McpError, McpTimeout
+from events.event_list import MCP_PROGRESS
 import json
 import re
+import time
 
 # What the name of a tool may hold for the model (Ollama, as the API of OpenAI): the rest becomes _
 UNNAMED: re.Pattern = re.compile(r"[^A-Za-z0-9_-]")
 MAX_NAME: int = 64
+
+# Seconds between two steps of a long call told to the user, unless the server says something new
+PROGRESS_EVERY: float = 0.5
 
 def tool_name(server: str, tool: str) -> str:
     """ The name the model calls a tool of a server by: <server>__<tool> """
@@ -107,6 +112,22 @@ class McpTool(Tool):
         return Risk(IRREVERSIBLE, f"{self.__remote} du serveur MCP {self.__server} agira hors de Louis : ni ce qu'il "
                                   "change ni comment l'annuler ne sont connus", preview=preview)
 
+    def __progress(self, app):
+        """
+            What tells the user how far a long call is: a step every PROGRESS_EVERY seconds at most, or as soon as
+            the server says something new
+        """
+        last: dict = {"at": 0.0, "message": None}
+        def told(step: dict) -> None:
+            now: float = time.monotonic()
+            message = step.get("message")
+            if now - last["at"] < PROGRESS_EVERY and message == last["message"]:
+                return
+            last.update(at=now, message=message)
+            app.events.dispatch(MCP_PROGRESS, tool=self.name, server=self.__server, progress=step.get("progress"),
+                                total=step.get("total"), message=message)
+        return told
+
     def handle(self, app, **kwargs) -> str:
         """ Call the tool on its server, once allowed: whatever goes wrong there comes back as an error, never raised """
         if self.level != SAFE and not app.permissions.request(
@@ -118,12 +139,12 @@ class McpTool(Tool):
         if client is None or not client.alive:
             return (f"Erreur : le serveur MCP {self.__server} ne répond plus : {self.__host.why}. "
                     "Fais sans cet outil ; l'utilisateur voit son état avec /mcp.")
-        timeout: float = self.__host.timeout
         try:
-            result: dict = client.call_tool(self.__remote, kwargs, timeout)
-        except McpTimeout:
+            result: dict = client.call_tool(self.__remote, kwargs, self.__host.timeout, self.__progress(app),
+                                            self.__host.max_timeout)
+        except McpTimeout as e:
             return (f"Erreur : le serveur MCP {self.__server} n'a pas répondu à {self.__remote} en "
-                    f"{timeout:g} s. Fais autrement, ou réessaie plus tard.")
+                    f"{e.waited:.3g} s. Fais autrement, ou réessaie plus tard.")
         except McpError as e:
             if client.crashed:
                 # Never called again by itself: the call may have acted before the crash

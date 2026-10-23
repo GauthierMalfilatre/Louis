@@ -100,6 +100,8 @@ settings: dict[str] = {
     # Seconds a call of a tool may take, and a server to start and list its tools (npx and uvx download it the first time)
     "mcp.timeout"          : 30.0,
     "mcp.start_timeout"    : 60.0,
+    # A server that tells it works on a call (its progress) is waited for again at each step, this long in all at most
+    "mcp.max_timeout"      : 600.0,
     # Times a server that crashed is started again by itself, at the next call of one of its tools (the call that saw
     # it crash is never made again: it may have acted). /mcp restart <name> starts it again whenever the user wants
     "mcp.restarts"         : 1,
