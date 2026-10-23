@@ -395,14 +395,14 @@ class App:
             those of the ones that do not run any more: again each time a server starts, stops or changes what it
             offers. A tool of Louis is never replaced
         """
-        offered: dict[str, McpTool] = {tool.name: tool for tool in self.__mcp.tools()}
+        # Always in the same order, after the tools of Louis, server after server: the same tools are the same
+        # request, and Ollama goes on from what it already read of the conversation instead of reading it all again
         for tool in self.__toolManager.tools():
-            if isinstance(tool, McpTool) and tool.name not in offered:
+            if isinstance(tool, McpTool):
                 self.__toolManager.unregister(tool.name)
-        for name, tool in offered.items():
-            known = self.__toolManager.get(name)
-            if known is not None and not isinstance(known, McpTool):
-                log.warning(f"[mcp] {name} left out: Louis already has a tool of that name")
+        for tool in self.__mcp.tools():
+            if self.__toolManager.has(tool.name):
+                log.warning(f"[mcp] {tool.name} left out: Louis already has a tool of that name")
                 continue
             self.__toolManager.register(tool)
         # The room the tools take in the context changes with them

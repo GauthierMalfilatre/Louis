@@ -5,7 +5,7 @@
 ## Tests of the life of an MCP server once Louis started: started again by itself after a crash, restarted or stopped
 ## by /mcp, and its tools listed again when it says they changed, offered to the model at the next message
 ##
-from conftest import Person, fake
+from conftest import CALC, Person, fake
 from events.event_list import MCP_CHANGED, COMMAND_ERROR
 from interface.cli import mcp_changed
 from model.reply import Reply
@@ -116,3 +116,11 @@ def test_what_happened_to_a_server_is_one_line_for_the_user():
     assert mcp_changed({"server": "time", "change": "restarted", "servers": servers}) == \
         ("MCP : time n'a pas pu être relancé : la commande uvx est introuvable", False)
     assert mcp_changed({"server": "time", "change": "stopped", "servers": servers})[1]
+
+def test_the_tools_are_offered_in_the_same_order_after_a_restart(louis):
+    app = louis([CALC, fake()], [], Person())
+    before = [tool["function"]["name"] for tool in app._App__toolManager.all()]
+    app._App__commands.fetch("/mcp stop calc", app)
+    app._App__commands.fetch("/mcp restart calc", app)
+    # The same request as before: Ollama reads none of it again
+    assert [tool["function"]["name"] for tool in app._App__toolManager.all()] == before
