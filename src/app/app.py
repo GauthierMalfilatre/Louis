@@ -406,6 +406,12 @@ class App:
         # The room the tools take in the context changes with them
         self.__window.set_tools(self.__toolManager.all())
 
+    def mcp_changed(self, server: str, change: str) -> None:
+        """ A server started again, stopped or changed its tools: what it offers now is offered, the user is told """
+        self.offer_mcp()
+        self.__bus.dispatch(MCP_CHANGED, server=server, change=change, servers=self.__mcp.describe(),
+                            commands=[command.describe() for command in self.__commands.commands])
+
     def offer_knowledge(self) -> None:
         """
             Offer search_knowledge to the model while something is indexed, and withdraw it when nothing is any more.
@@ -451,8 +457,8 @@ class App:
             Answer a message of the user, by the reasoning loop with /react. The tools of the MCP servers that changed
             since the last message (one started again, one that said its tools changed) are offered again first
         """
-        if self.__mcp.refresh():
-            self.offer_mcp()
+        for server, change in self.__mcp.refresh():
+            self.mcp_changed(server.name, change)
         self.reason(text) if self.__react else self.__answer(text)
 
     def structured(self, text: str, name: str, schema: dict) -> tuple[bool, Any]:

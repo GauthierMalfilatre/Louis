@@ -39,6 +39,8 @@ class McpServer:
         self.tools   : list[McpTool]     = []
         # Why it did not start, None if it did
         self.error   : str | None        = None
+        # Its declaration is not valid (error says why): it can not be started
+        self.invalid : bool              = False
         self.__start_timeout: float      = start_timeout
         # The restarts it may still make by itself, after a crash
         self.__restarts     : int        = max(0, restarts)
@@ -82,6 +84,8 @@ class McpServer:
             Launch the server, then list its tools, start_timeout seconds at most for both. What goes wrong is its
             error: the server is stopped and left out
         """
+        if self.invalid:
+            return self
         deadline: float = time.monotonic() + self.__start_timeout
         self.error, self.tools = None, []
         self.client = McpClient(self.name, StdioTransport(self.name, self.command, self.args, self.env))
@@ -133,12 +137,13 @@ class McpServer:
             self.__renewed = True
         return self.client
 
-    def refresh(self) -> bool:
+    def refresh(self) -> str | None:
         """
-            Whether the tools of the server changed since they were last offered: it started again by itself, or it
-            said they changed (they are listed again then)
+            How the tools of the server changed since they were last offered: "restarted" (it started again by
+            itself), "tools" (it said they changed: they are listed again), None when they did not
         """
-        changed, self.__renewed = self.__renewed, False
+        changed: str | None = "restarted" if self.__renewed else None
+        self.__renewed = False
         if self.client is None or not self.client.alive or "tools" not in self.client.changes():
             return changed
         try:
@@ -148,7 +153,7 @@ class McpServer:
             return changed
         log.info(f"[mcp] {self.name}: its tools changed, {len(self.tools)} now "
                  f"({', '.join(tool.remote for tool in self.tools)})")
-        return True
+        return changed or "tools"
 
     def __offered(self, specs: list[dict]) -> list[McpTool]:
         """ The tools of the server, from what tools/list gave: two that would have the same name, the first only """
@@ -184,7 +189,7 @@ class McpManager:
         """ A server as the settings declare it: its error says what is wrong with the declaration """
         if not isinstance(entry, dict):
             server: McpServer = self.__server("", "", [], {}, None)
-            server.error = "réglage invalide : chaque serveur est un dict {name, command, args, env}"
+            server.error, server.invalid = "réglage invalide : chaque serveur est un dict {name, command, args, env}", True
             return server
         name, command = entry.get("name"), entry.get("command")
         args, env, level = entry.get("args", []), entry.get("env", {}), entry.get("risk")
@@ -203,6 +208,7 @@ class McpManager:
             server.error = "réglage invalide : env est un dict de textes"
         elif level is not None and level not in LEVELS:
             server.error = f"réglage invalide : risk vaut {', '.join(LEVELS)}"
+        server.invalid = server.error is not None
         return server
 
     def __server(self, name: str, command: str, args: list[str], env: dict[str, str], level: str | None) -> McpServer:
@@ -235,9 +241,10 @@ class McpManager:
         """ The tools of the servers that started """
         return [tool for server in self.__servers if server.state == RUNNING for tool in server.tools]
 
-    def refresh(self) -> list[McpServer]:
-        """ The servers whose tools changed since they were last offered: started again, or listed again """
-        return [server for server in self.__servers if server.refresh()]
+    def refresh(self) -> list[tuple[McpServer, str]]:
+        """ The servers whose tools changed since they were last offered, with how: started again, listed again """
+        changes = ((server, server.refresh()) for server in self.__servers)
+        return [(server, change) for server, change in changes if change is not None]
 
     def describe(self) -> list[dict]:
         """ Every server, with its state and its tools: what /mcp shows """

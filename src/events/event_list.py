@@ -105,6 +105,10 @@ PLAN_SETTINGS = "plan.settings"   # data: enabled, level ("irreversible" or "rev
 # (<server>__<tool>), remote is its name on the server, risk its level ("safe" asks nothing before it acts)
 MCP_STARTED = "mcp.started"   # data: servers: [{name, command, state, error, tools: [{name, remote, description, risk}]}]
 MCP_SERVERS = "mcp.servers"   # data: the same as MCP_STARTED
+# A server that changed once Louis started: change is "restarted" (by /mcp restart, or by itself after a crash),
+# "stopped" (by /mcp stop) or "tools" (it said its tools changed: they were listed again). Its tools are offered again;
+# servers is every server as in MCP_STARTED, commands every command Louis knows now (as APP_STARTED gives them)
+MCP_CHANGED = "mcp.changed"   # data: server (its name), change, servers, commands
 
 # What the commands tell the user. The data is raw and JSON-friendly (full texts, raw paths): each
 # interface lays it out its own way, the CLI as text, a web page as it likes
