@@ -190,55 +190,101 @@ Sont irréversibles : `git push`, la suppression d'une branche, ouvrir, commente
 
 ## Serveurs MCP
 
-Louis est un **client MCP** ([Model Context Protocol](https://modelcontextprotocol.io)) : il lance au démarrage les serveurs MCP déclarés dans ses réglages, leur demande leurs outils, et les donne au modèle avec les siens, sous le nom `<serveur>__<outil>` (`time__get_current_time`). Quand le modèle en appelle un, Louis transmet l'appel au serveur (`tools/call`) et rend le résultat au modèle, qui continue sa réponse avec.
+Louis est un **client MCP** ([Model Context Protocol](https://modelcontextprotocol.io)) : il lance au démarrage les serveurs MCP déclarés, leur demande leurs outils, et les donne au modèle avec les siens, sous le nom `<serveur>__<outil>` (`time__get_current_time`). Quand le modèle en appelle un, Louis transmet l'appel au serveur (`tools/call`) et rend le résultat au modèle, qui continue sa réponse avec. Les prompts d'un serveur deviennent des commandes, `/<serveur>:<prompt>`. Louis est aussi un **serveur MCP** : `louis --mcp-server` donne ses outils de lecture à un autre client (voir plus bas).
 
 Deux serveurs sont déclarés par défaut :
 
-- **`calc`**, le serveur de Louis (`src/tool/mcp/servers/calc.py`) : une calculatrice exacte, `calc__calculate`. Il marche partout, sans rien installer.
+- **`calc`**, le serveur de Louis (`src/tool/mcp/servers/calc.py`) : une calculatrice exacte, `calc__calculate`, et un prompt, `/calc:explain <expression>`. Il marche partout, sans rien installer.
 - **`time`**, un serveur existant ([mcp-server-time](https://pypi.org/project/mcp-server-time/)) : l'heure dans un fuseau, la conversion entre fuseaux. Il est lancé par `uvx`, qu'on installe avec `pip install uv` (ou `curl -LsSf https://astral.sh/uv/install.sh | sh`).
 
 ### Ajouter un serveur
 
-Ajoute une entrée à `mcp.servers` dans `src/config/settings.py` :
+Dans un fichier `.mcp.json`, au **format de Claude Code, Cursor et Claude Desktop** : un fichier de l'un d'eux se copie tel quel.
 
-```python
-"mcp.servers": [
-    {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]},
-    {"name": "time", "command": "uvx", "args": ["mcp-server-time", "--local-timezone=Europe/Paris"]},
-    # Les fichiers d'un dossier (il faut Node.js) : npx le télécharge au premier lancement
-    {"name": "fs", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/moi/notes"]},
-    # Un serveur à qui il faut une clé, et dont on sait qu'il ne fait que lire
-    {"name": "github", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
-     "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..."}, "risk": "safe"},
-],
+- `.mcp.json` à la racine du projet : les serveurs de ce projet ;
+- `~/.config/louis/mcp.json` : les tiens, pour tous les projets.
+
+```json
+{
+  "mcpServers": {
+    "fs": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/moi/notes"],
+      "exclude": ["write_*", "move_file"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"},
+      "tools": ["search_*", "get_*"]
+    },
+    "docs": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {"Authorization": "Bearer ${DOCS_TOKEN}"}
+    },
+    "lourd": {"command": "uvx", "args": ["un-serveur-lent"], "enabled": false}
+  }
+}
 ```
 
 | Clé       | Ce qu'elle dit |
 | --------- | -------------- |
-| `name`    | le nom du serveur : le préfixe de ses outils, et ce que montre `/mcp` (unique) |
-| `command` | le programme à lancer (`uvx`, `npx`, `python`, un chemin…), dans le dossier courant |
-| `args`    | ses arguments (optionnel) |
-| `env`     | ses variables d'environnement (optionnel). Il ne reçoit de celles de Louis que `PATH`, `HOME`, `LANG`… : jamais tes jetons ni tes clés, sauf ceux que tu lui donnes ici |
-| `risk`    | optionnel : `safe`, `reversible` ou `irreversible` pour tous ses outils. Sinon, ce que le serveur dit de chacun |
+| `command`, `args` | le programme à lancer (`uvx`, `npx`, `python`, un chemin…) et ses arguments, dans le dossier courant |
+| `env`     | ses variables d'environnement. Il ne reçoit de celles de Louis que `PATH`, `HOME`, `LANG`… : jamais tes jetons ni tes clés, sauf ceux que tu lui donnes ici |
+| `type`, `url`, `headers` | un serveur qui tourne ailleurs, en Streamable HTTP (`type` vaut `http` ; avec une `url` seule, c'est implicite) : son adresse, et les en-têtes de chaque message (un jeton…). L'ancien transport `sse` n'est pas pris en charge |
+| `risk`    | `safe`, `reversible` ou `irreversible` pour tous ses outils. Sinon, ce que le serveur dit de chacun |
+| `tools`, `exclude` | les outils proposés au modèle (tous sans `tools`), et ceux qu'on retire, par leur nom sur le serveur, avec `*` (`"write_*"`). Un petit modèle choisit mieux parmi moins d'outils |
+| `enabled` | `false` : déclaré, mais pas lancé avec Louis (`/mcp restart <nom>` le lance) |
 
-Relance Louis : la première ligne dit quels serveurs ont démarré. `/mcp` liste les serveurs, leur état (`actif`, `n'a pas démarré`, `s'est arrêté`) avec la raison, et leurs outils avec leur risque.
+`${VAR}`, ou `${VAR:-défaut}`, dans `command`, `args`, `env`, `url` et `headers`, est la variable d'environnement de Louis : un jeton se nomme dans le fichier, il n'y est jamais écrit. Une variable absente, sans défaut, laisse ce serveur de côté (`/mcp` dit laquelle). Un serveur d'un fichier remplace celui du même nom déclaré avant lui : les réglages (`mcp.servers`), puis `~/.config/louis/mcp.json`, puis le `.mcp.json` du projet.
+
+Les réglages gardent leur liste, `mcp.servers` dans `src/config/settings.py`, avec les mêmes clés plus `name` : c'est là que sont `calc` et `time`.
+
+**Un serveur du projet attend ton accord.** Un `.mcp.json` vient avec le projet : quiconque y a écrit peut y avoir déclaré une commande. Ses serveurs ne sont lancés qu'une fois approuvés par `/mcp trust <nom>`, après avoir lu leur commande dans `/mcp`. L'accord est gardé hors de tout projet (`~/.config/louis/mcp-trusted.json`), pour ce dossier et cette déclaration : une commande changée demande un nouvel accord.
+
+### `/mcp`
 
 ```
 > /mcp
-Serveurs MCP (2) :
+Serveurs MCP (3) :
   calc         actif            […/src/tool/mcp/servers/calc.py]
     calc__calculate                  sans risque  Calcule exactement une expression mathématique et renvoie son résulta…
+    /calc:explain <expression>                    Calcule une expression avec la calculatrice, puis explique le résulta…
   time         n'a pas démarré  [uvx mcp-server-time]
     la commande uvx est introuvable
+  everything   attend ton accord [npx -y @modelcontextprotocol/server-everything]
+    déclaré par .mcp.json, un fichier du projet : /mcp trust everything pour l'approuver et le lancer
 ```
+
+| Commande | Ce qu'elle fait |
+| -------- | --------------- |
+| `/mcp` | les serveurs, leur état (`actif`, `n'a pas démarré`, `s'est arrêté`, `arrêté`, `désactivé`, `attend ton accord`) avec la raison, leurs outils avec leur risque, leurs prompts |
+| `/mcp restart <nom>` | relance un serveur (planté, arrêté, désactivé, qui n'avait pas démarré) : ses outils sont de nouveau proposés |
+| `/mcp stop <nom>` | l'arrête : ses outils ne sont plus proposés au modèle |
+| `/mcp trust <nom>` | approuve un serveur du projet, et le lance |
+| `/<serveur>:<prompt> …` | un prompt du serveur, écrit par lui avec tes arguments, puis envoyé au modèle comme ton message. Un seul argument : tout le texte. Plusieurs : dans l'ordre, ou `nom=valeur` (entre guillemets pour les espaces) |
 
 ### Ce que Louis garantit
 
-- **Un serveur qui ne démarre pas** (commande introuvable, erreur au lancement, pas de réponse en `mcp.start_timeout` secondes) est noté dans `louis.log` et laissé de côté : Louis démarre sans lui.
+- **Un serveur qui ne démarre pas** (commande introuvable, adresse qui ne répond pas, erreur au lancement, pas de réponse en `mcp.start_timeout` secondes) est noté dans `louis.log` et laissé de côté : Louis démarre sans lui.
 - **Une erreur du serveur, un appel trop long** (`mcp.timeout` secondes) **ou un serveur qui plante** donnent au modèle un résultat `Erreur : …`, jamais un plantage de Louis.
+- **Un serveur qui a planté est relancé** au prochain appel d'un de ses outils, `mcp.restarts` fois (1 par défaut). L'appel qui l'a vu planter n'est jamais refait : il a peut-être agi. Une session HTTP que le serveur a oubliée est rouverte de la même façon.
+- **Un appel long** dont le serveur dit où il en est (`notifications/progress`) s'affiche (`… 2/5 — Téléchargement`), et attend `mcp.timeout` secondes de plus à chaque étape, `mcp.max_timeout` (600) en tout.
+- **Les outils et les prompts qui changent** (`list_changed`) sont relus avant ton message suivant : le modèle a les nouveaux, sans relancer Louis.
+- **Les journaux d'un serveur** (`notifications/message`, à partir de `mcp.log_level`) vont dans `louis.log`, jamais à l'écran.
 - **Les permissions et le plan** : un outil qui dit ne faire que lire (`readOnlyHint`) ne demande rien. Les autres demandent ton accord avant d'agir. Un outil qui ne dit pas qu'il ne détruit rien est traité comme **irréversible** et passe par le plan (`/plan`).
-- **Les serveurs sont arrêtés** quand Louis se ferme, même s'il plante : aucun processus ne reste derrière.
-- Avec le garde-fou, ce qu'un serveur renvoie passe par les rails des résultats d'outils, comme la base de connaissances.
+- **Les serveurs sont arrêtés** quand Louis se ferme, même s'il plante : aucun processus ne reste derrière, une session HTTP est fermée.
+- Avec le garde-fou, ce qu'un serveur renvoie passe par les rails des résultats d'outils, et un prompt par ceux des messages, comme ce que tu écris.
+
+### Louis comme serveur MCP
+
+`louis --mcp-server` (ou `python src/main.py --mcp-server`) fait de Louis un serveur MCP sur son entrée et sa sortie standard. Un autre client (Claude Code, Claude Desktop, MCP Inspector, un autre Louis…) le lance dans un projet et reçoit ses outils **qui ne font que lire** : `tree`, `cat_file` et `search`, gardés dans le dossier du projet, et `search_knowledge` dès que quelque chose est indexé (`louis --index`). Rien qui écrive, ni qui sorte de la machine.
+
+```bash
+claude mcp add louis -- /chemin/vers/sensai/venv/bin/python /chemin/vers/sensai/src/main.py --mcp-server
+npx @modelcontextprotocol/inspector --cli venv/bin/python src/main.py --mcp-server --method tools/list
+```
 
 Le fonctionnement en détail (le protocole, les fichiers, les choix) est dans [docs/MCP.md](docs/MCP.md).
 
