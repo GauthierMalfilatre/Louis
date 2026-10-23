@@ -20,6 +20,11 @@ VARIABLE: re.Pattern = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}
 
 SETTINGS: str = "settings"
 
+# How a server is reached: a program Louis launches, or an address (Streamable HTTP), by the type a file gives it
+STDIO: str = "stdio"
+HTTP : str = "http"
+TRANSPORTS: dict[str, str] = {"stdio": STDIO, "http": HTTP, "streamable-http": HTTP, "streamableHttp": HTTP}
+
 @dataclass
 class Declaration:
     """ A server as it is declared: what is wrong with the declaration is its error """
@@ -39,6 +44,10 @@ class Declaration:
     # declared it, it is only started once the user trusts it, as it is written (raw)
     project: bool                   = False
     raw    : dict                   = field(default_factory=dict)
+    # Reached at an address (http), its headers sent with every message: else a program Louis launches (stdio)
+    transport: str                  = STDIO
+    url    : str                    = ""
+    headers: dict[str, str]         = field(default_factory=dict)
 
 def expand(value: str) -> str:
     """ The text with the variables it names replaced by their value. Raises KeyError for one that has none """
@@ -55,6 +64,10 @@ def texts(value) -> bool:
     """ Whether the value is a list of texts """
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
+def strings(value) -> bool:
+    """ Whether the value is a dict of texts """
+    return isinstance(value, dict) and all(isinstance(key, str) and isinstance(item, str) for key, item in value.items())
+
 def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaration:
     """ A server as an entry declares it: its error says what is wrong with it """
     if not isinstance(entry, dict):
@@ -63,15 +76,28 @@ def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaratio
     name, command = entry.get("name"), entry.get("command")
     args, env, level = entry.get("args", []), entry.get("env", {}), entry.get("risk")
     enabled, tools, exclude = entry.get("enabled", True), entry.get("tools"), entry.get("exclude", [])
+    url, headers = entry.get("url"), entry.get("headers", {})
+    # A file of Claude Code says its type; Cursor gives an url alone
+    kind = entry.get("type") or (HTTP if url is not None and command is None else STDIO)
     declaration: Declaration = Declaration(
         name if isinstance(name, str) else "", source, command if isinstance(command, str) else "",
         args if isinstance(args, list) else [], env if isinstance(env, dict) else {}, level if level in LEVELS else None,
         enabled is not False, tools if texts(tools) else None, exclude if texts(exclude) else [],
-        project=project, raw=entry
+        project=project, raw=entry, transport=TRANSPORTS.get(kind, STDIO), url=url if isinstance(url, str) else "",
+        headers=headers if strings(headers) else {}
     )
     if not declaration.name.strip():
         declaration.error = "réglage invalide : il lui faut un nom (name)"
-    elif not declaration.command.strip():
+    elif kind == "sse":
+        declaration.error = ("le transport sse (l'ancien HTTP de MCP) n'est pas pris en charge : donne l'adresse du "
+                             "serveur en Streamable HTTP, avec type http")
+    elif kind not in TRANSPORTS:
+        declaration.error = "réglage invalide : type vaut stdio ou http"
+    elif declaration.transport == HTTP and not declaration.url.startswith(("http://", "https://")):
+        declaration.error = "réglage invalide : il lui faut une adresse en http:// ou https:// (url)"
+    elif declaration.transport == HTTP and not strings(headers):
+        declaration.error = "réglage invalide : headers est un dict de textes"
+    elif declaration.transport == STDIO and not declaration.command.strip():
         declaration.error = "réglage invalide : il lui faut une commande à lancer (command)"
     elif not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
         declaration.error = "réglage invalide : args est une liste de textes"
@@ -90,6 +116,8 @@ def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaratio
         declaration.command = expand(declaration.command)
         declaration.args = [expand(arg) for arg in declaration.args]
         declaration.env = {key: expand(value) for key, value in declaration.env.items()}
+        declaration.url = expand(declaration.url)
+        declaration.headers = {key: expand(value) for key, value in declaration.headers.items()}
     except KeyError as e:
         declaration.error = f"la variable {e.args[0]} n'est pas définie (ni de valeur par défaut : ${{{e.args[0]}:-…}})"
     return declaration

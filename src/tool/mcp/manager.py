@@ -7,7 +7,8 @@
 ##
 from logger.logger import log
 from tool.mcp.client import McpClient, McpError
-from tool.mcp.config import Declaration, Trust, declarations
+from tool.mcp.config import Declaration, Trust, HTTP, declarations
+from tool.mcp.transport_http import HttpTransport
 from tool.mcp.transport_stdio import StdioTransport
 from tool.mcp.tool_mcp import McpTool
 import atexit
@@ -92,7 +93,9 @@ class McpServer:
         return {
             "name"   : self.name,
             "source" : self.declaration.source,
-            "command": shlex.join([self.command, *self.args]) if self.command else "",
+            "transport": self.declaration.transport,
+            "command": self.declaration.url if self.declaration.transport == HTTP else
+                       shlex.join([self.command, *self.args]) if self.command else "",
             "state"  : self.state,
             "hidden" : self.hidden,
             "error"  : self.error if self.error is not None else (self.client.why or None) if self.client else None,
@@ -109,7 +112,7 @@ class McpServer:
             return self
         deadline: float = time.monotonic() + self.__start_timeout
         self.error, self.tools = None, []
-        self.client = McpClient(self.name, StdioTransport(self.name, self.command, self.args, self.env))
+        self.client = McpClient(self.name, self.__transport())
         try:
             self.client.start(self.__start_timeout, self.log_level)
             specs: list[dict] = self.client.list_tools(max(1.0, deadline - time.monotonic()))
@@ -133,6 +136,12 @@ class McpServer:
         self.tools = self.__offered(specs)
         log.info(f"[mcp] {self.name}: {len(self.tools)} tools ({', '.join(tool.remote for tool in self.tools)})")
         return self
+
+    def __transport(self):
+        """ How the server is reached: at its address, or a program launched """
+        if self.declaration.transport == HTTP:
+            return HttpTransport(self.name, self.declaration.url, self.declaration.headers, self.max_timeout)
+        return StdioTransport(self.name, self.command, self.args, self.env)
 
     def stop(self) -> "McpServer":
         """ Stop the server, if it was started: its tools are offered no more """
