@@ -87,13 +87,14 @@ class Person(Interface):
         return [event.data for event in self.events if event.name == name]
 
 @pytest.fixture(autouse=True)
-def no_mcp_servers(monkeypatch):
+def no_mcp_servers(monkeypatch, tmp_path):
     """
         An app of a test starts no MCP server, unless the test declares its own: none of the settings, nor uvx, nor
         those of the files of whoever runs the tests
     """
     monkeypatch.setitem(settings, "mcp.servers", [])
     monkeypatch.setitem(settings, "mcp.files", [])
+    monkeypatch.setitem(settings, "mcp.trust_file", str(tmp_path / "mcp-trusted.json"))
 
 @pytest.fixture
 def mcp(folder):

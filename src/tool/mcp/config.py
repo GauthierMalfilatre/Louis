@@ -3,14 +3,17 @@
 ## SENSAI
 ## File description:
 ## MCP configuration: the servers the settings declare (mcp.servers) and those of the .mcp.json files (mcp.files), in
-## the format of Claude Code, Cursor and Claude Desktop: {"mcpServers": {"<name>": {"command": ..., "args": [...]}}}
+## the format of Claude Code, Cursor and Claude Desktop: {"mcpServers": {"<name>": {"command": ..., "args": [...]}}}.
+## The servers of a file of the project are only started once the user trusts them
 ##
 from logger.logger import log
 from tool.risk import LEVELS
 from dataclasses import dataclass, field
+import hashlib
 import json
 import os
 import re
+import tempfile
 
 # A variable of the environment of Louis in a declaration: ${GITHUB_TOKEN}, or ${PORT:-8080} with a default
 VARIABLE: re.Pattern = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -32,6 +35,10 @@ class Declaration:
     tools  : list[str] | None       = None
     exclude: list[str]              = field(default_factory=list)
     error  : str | None             = None
+    # Declared by a file of the project (a relative path of mcp.files): anyone who wrote in the project may have
+    # declared it, it is only started once the user trusts it, as it is written (raw)
+    project: bool                   = False
+    raw    : dict                   = field(default_factory=dict)
 
 def expand(value: str) -> str:
     """ The text with the variables it names replaced by their value. Raises KeyError for one that has none """
@@ -48,17 +55,19 @@ def texts(value) -> bool:
     """ Whether the value is a list of texts """
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
-def declared(entry, source: str = SETTINGS) -> Declaration:
+def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaration:
     """ A server as an entry declares it: its error says what is wrong with it """
     if not isinstance(entry, dict):
-        return Declaration("", source, error="réglage invalide : chaque serveur est un dict {name, command, args, env}")
+        return Declaration("", source, error="réglage invalide : chaque serveur est un dict {name, command, args, env}",
+                           project=project)
     name, command = entry.get("name"), entry.get("command")
     args, env, level = entry.get("args", []), entry.get("env", {}), entry.get("risk")
     enabled, tools, exclude = entry.get("enabled", True), entry.get("tools"), entry.get("exclude", [])
     declaration: Declaration = Declaration(
         name if isinstance(name, str) else "", source, command if isinstance(command, str) else "",
         args if isinstance(args, list) else [], env if isinstance(env, dict) else {}, level if level in LEVELS else None,
-        enabled is not False, tools if texts(tools) else None, exclude if texts(exclude) else []
+        enabled is not False, tools if texts(tools) else None, exclude if texts(exclude) else [],
+        project=project, raw=entry
     )
     if not declaration.name.strip():
         declaration.error = "réglage invalide : il lui faut un nom (name)"
@@ -93,6 +102,7 @@ def read(path: str) -> list[Declaration]:
     full: str = os.path.expanduser(path)
     if not os.path.isfile(full):
         return []
+    project: bool = not os.path.isabs(full)
     try:
         with open(full, encoding="utf-8") as file:
             content = json.load(file)
@@ -103,7 +113,70 @@ def read(path: str) -> list[Declaration]:
     servers = content.get("mcpServers") if isinstance(content, dict) else None
     if not isinstance(servers, dict):
         return [Declaration(path, path, error='réglage invalide : le fichier a la forme {"mcpServers": {"<nom>": {...}}}')]
-    return [declared({**entry, "name": name} if isinstance(entry, dict) else entry, path) for name, entry in servers.items()]
+    return [declared({**entry, "name": name} if isinstance(entry, dict) else entry, path, project)
+            for name, entry in servers.items()]
+
+class Trust:
+    """
+        The servers of the projects the user trusts, in a file outside of any project (a project can not trust
+        its own servers): by folder, the fingerprint of each declaration. A server whose declaration changed since
+        is not trusted any more
+    """
+    def __init__(self, path: str | None):
+        """ Init the trust kept in the file path; without one, no server of a project is trusted """
+        self.__path: str | None = os.path.expanduser(path) if path else None
+
+    @property
+    def path(self) -> str | None:
+        """ Get the file the trust is kept in """
+        return self.__path
+
+    @staticmethod
+    def fingerprint(declaration: Declaration) -> str:
+        """ What the declaration says, as it is written: a command or an argument changed is another server """
+        return hashlib.sha256(json.dumps(declaration.raw, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+    @staticmethod
+    def folder() -> str:
+        """ The project: the folder Louis works in """
+        return os.path.realpath(os.getcwd())
+
+    def trusts(self, declaration: Declaration) -> bool:
+        """ Whether the server may start: one the project did not declare always may """
+        if not declaration.project:
+            return True
+        return self.__read().get(self.folder(), {}).get(declaration.name) == self.fingerprint(declaration)
+
+    def trust(self, declaration: Declaration) -> None:
+        """ Trust the server in this project, as it is declared now. Raises OSError when the file can not be written """
+        if self.__path is None:
+            raise OSError("no file to keep it in: the setting mcp.trust_file")
+        trusted: dict = self.__read()
+        trusted.setdefault(self.folder(), {})[declaration.name] = self.fingerprint(declaration)
+        folder: str = os.path.dirname(self.__path) or "."
+        os.makedirs(folder, exist_ok=True)
+        # Written whole, then put in place: a Louis that stops while writing leaves the file as it was
+        handle, temporary = tempfile.mkstemp(dir=folder, prefix=".mcp-trusted-")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as file:
+                json.dump(trusted, file, indent=2, ensure_ascii=False)
+            os.replace(temporary, self.__path)
+        except OSError:
+            os.unlink(temporary)
+            raise
+        log.info(f"[mcp] {declaration.name}: trusted in {self.folder()}")
+
+    def __read(self) -> dict:
+        """ What the file holds: nothing when it does not exist or can not be read """
+        if self.__path is None or not os.path.isfile(self.__path):
+            return {}
+        try:
+            with open(self.__path, encoding="utf-8") as file:
+                trusted = json.load(file)
+        except (OSError, ValueError) as e:
+            log.warning(f"[mcp] the trusted servers can not be read in {self.__path}: {e}")
+            return {}
+        return trusted if isinstance(trusted, dict) else {}
 
 def declarations(settings: dict) -> list[Declaration]:
     """

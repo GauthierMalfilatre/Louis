@@ -7,7 +7,7 @@
 ##
 from logger.logger import log
 from tool.mcp.client import McpClient, McpError
-from tool.mcp.config import Declaration, declarations
+from tool.mcp.config import Declaration, Trust, declarations
 from tool.mcp.transport_stdio import StdioTransport
 from tool.mcp.tool_mcp import McpTool
 import atexit
@@ -17,12 +17,14 @@ import threading
 import time
 
 # The states of a server: it answers; it never did (no such command, an error at its start...); it stopped by
-# itself once started; Louis stopped it; its declaration says not to start it with Louis
+# itself once started; Louis stopped it; its declaration says not to start it with Louis; it was declared by the
+# project, and waits for the user to trust it
 RUNNING : str = "running"
 FAILED  : str = "failed"
 CRASHED : str = "crashed"
 STOPPED : str = "stopped"
 DISABLED: str = "disabled"
+PENDING : str = "pending"
 
 class McpServer:
     """
@@ -52,6 +54,8 @@ class McpServer:
         self.error   : str | None        = declaration.error
         # Its declaration is not valid (error says why): it can not be started
         self.invalid : bool              = declaration.error is not None
+        # It may be started: declared by the project, only once the user trusts it
+        self.trusted : bool              = not declaration.project
         self.__start_timeout: float      = start_timeout
         # The restarts it may still make by itself, after a crash
         self.__restarts     : int        = max(0, restarts)
@@ -60,7 +64,9 @@ class McpServer:
 
     @property
     def state(self) -> str:
-        """ How the server goes: running, failed, crashed, stopped or disabled """
+        """ How the server goes: running, failed, crashed, stopped, disabled or pending """
+        if self.client is None and self.error is None and not self.trusted:
+            return PENDING
         if self.client is None and self.error is None and not self.declaration.enabled:
             return DISABLED
         if self.error is not None or self.client is None:
@@ -99,7 +105,7 @@ class McpServer:
             Launch the server, then list its tools, start_timeout seconds at most for both. What goes wrong is its
             error: the server is stopped and left out
         """
-        if self.invalid:
+        if self.invalid or not self.trusted:
             return self
         deadline: float = time.monotonic() + self.__start_timeout
         self.error, self.tools = None, []
@@ -202,14 +208,19 @@ class McpManager:
     def __init__(self, settings: dict):
         """ Init the servers declared: a declaration that is not valid is a server that failed """
         self.__servers: list[McpServer] = []
+        self.__trust  : Trust           = Trust(settings.get("mcp.trust_file"))
         for declaration in declarations(settings):
             server: McpServer = McpServer(
                 declaration, timeout=float(settings.get("mcp.timeout", 30.0)),
                 start_timeout=float(settings.get("mcp.start_timeout", 30.0)), restarts=int(settings.get("mcp.restarts", 1)),
                 max_timeout=float(settings.get("mcp.max_timeout", 600.0)), log_level=settings.get("mcp.log_level", "info")
             )
+            server.trusted = self.__trust.trusts(declaration)
             if server.error is not None:
                 log.warning(f"[mcp] {server.name or '?'}: not started, {server.error}")
+            elif not server.trusted:
+                log.warning(f"[mcp] {server.name}: declared by {declaration.source} in the project, waits for the "
+                            "user to trust it (/mcp trust)")
             self.__servers.append(server)
         atexit.register(self.close)
 
@@ -217,7 +228,7 @@ class McpManager:
         """ Start the servers, side by side: one slow to start (npx downloads it the first time) delays none of the others """
         threads: list[threading.Thread] = [
             threading.Thread(target=server.start, name=f"mcp-start-{server.name}", daemon=True)
-            for server in self.__servers if server.error is None and server.declaration.enabled
+            for server in self.__servers if server.error is None and server.trusted and server.declaration.enabled
         ]
         for thread in threads:
             thread.start()
@@ -233,6 +244,16 @@ class McpManager:
     def server(self, name: str) -> McpServer | None:
         """ Get the server of that name, None if the settings declare none """
         return next((server for server in self.__servers if server.name == name), None)
+
+    def trust(self, server: McpServer) -> None:
+        """ Trust a server of the project, as it is declared now: it may start. Raises OSError when it can not be kept """
+        self.__trust.trust(server.declaration)
+        server.trusted = True
+
+    @property
+    def trust_file(self) -> str | None:
+        """ Get the file the servers the user trusts are kept in """
+        return self.__trust.path
 
     def tools(self) -> list[McpTool]:
         """ The tools of the servers that started """

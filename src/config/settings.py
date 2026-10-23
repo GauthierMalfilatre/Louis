@@ -100,8 +100,12 @@ settings: dict[str] = {
     # Files that declare more servers, in the format of Claude Code, Cursor and Claude Desktop (a file of theirs can be
     # copied as is): {"mcpServers": {"<name>": {"command": "npx", "args": [...], "env": {...}}}}. ${VAR} (or
     # ${VAR:-default}) in command, args and env is the variable of the environment of Louis: how a token reaches a
-    # server without being written in the file. A server of a file replaces the one of the same name declared before it
-    "mcp.files"            : ["~/.config/louis/mcp.json"],
+    # server without being written in the file. A server of a file replaces the one of the same name declared before it.
+    # A relative path is a file of the project (.mcp.json, beside the code): anyone who wrote in the project may have
+    # declared its servers, they wait for the user to trust them (/mcp trust <name>) before they start, again when
+    # their declaration changes. Its trust is kept in mcp.trust_file, out of every project
+    "mcp.files"            : ["~/.config/louis/mcp.json", ".mcp.json"],
+    "mcp.trust_file"       : "~/.config/louis/mcp-trusted.json",
     # Seconds a call of a tool may take, and a server to start and list its tools (npx and uvx download it the first time)
     "mcp.timeout"          : 30.0,
     "mcp.start_timeout"    : 60.0,

@@ -8,6 +8,7 @@ from interface.interface import Interface
 from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings
 from interface.cli import plan_title, plan_details
 from interface.cli import RISKS, MCP_STATES, NO_MCP, mcp_started, mcp_changed, mcp_progress, mcp_command
+from interface.cli import mcp_trouble, mcp_trust
 from interface.cli import preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
@@ -344,7 +345,7 @@ class WebInterface(Interface):
         ), RAG_FORGOTTEN)
         bus.subscribe(lambda event: self.__notice(
             mcp_started(event.data["servers"]),
-            "info" if all(server["state"] == "running" for server in event.data["servers"]) else "warn"
+            "warn" if mcp_trouble(event.data["servers"]) else "info"
         ), MCP_STARTED)
         bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
         bus.subscribe(self.__on_mcp_changed, MCP_CHANGED)
@@ -768,6 +769,8 @@ class WebInterface(Interface):
             rows.append({"text": f"{server['name']} — {MCP_STATES.get(server['state'], server['state'])}",
                          "meta": " · ".join(part for part in (
                              mcp_command(server["command"]), server["error"],
+                             f"déclaré par {server['source']} : {mcp_trust(server['name'])}"
+                             if server["state"] == "pending" else "",
                              f"{plural(server['hidden'], 'outil')} masqués par son réglage" if server.get("hidden") else ""
                          ) if part)})
             rows += [{"text": f"  {tool['name']}",
