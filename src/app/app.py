@@ -63,6 +63,7 @@ from command.impl.command_index import IndexCommand, UnindexCommand
 from command.impl.command_eval import EvalCommand
 from eval.evaluator import Evaluator
 from command.impl.command_find import FindCommand
+from command.impl.command_mcp import McpCommand
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -166,6 +167,7 @@ class App:
             .register(UnindexCommand())\
             .register(EvalCommand())\
             .register(FindCommand())\
+            .register(McpCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
