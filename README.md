@@ -188,6 +188,60 @@ Sont irréversibles : `git push`, la suppression d'une branche, ouvrir, commente
 
 `/plan` dit ce qui est réglé, `/plan off` et `/plan on` coupent et remettent les plans, `/plan reversible` les montre pour toute modification, `/plan irreversible` (par défaut) seulement pour ce qui ne s'annule pas. Les réglages sont `hitl.enabled` et `hitl.level`. Un plan auquel personne ne répond (un script, `louis --ask`) est refusé : rien d'irréversible ne se fait sans quelqu'un pour l'approuver. Le tableau de bord montre la part des plans approuvés, refusés ou laissés sans réponse, et le temps pris pour décider.
 
+## Serveurs MCP
+
+Louis est un **client MCP** ([Model Context Protocol](https://modelcontextprotocol.io)) : il lance au démarrage les serveurs MCP déclarés dans ses réglages, leur demande leurs outils, et les donne au modèle avec les siens, sous le nom `<serveur>__<outil>` (`time__get_current_time`). Quand le modèle en appelle un, Louis transmet l'appel au serveur (`tools/call`) et rend le résultat au modèle, qui continue sa réponse avec.
+
+Deux serveurs sont déclarés par défaut :
+
+- **`calc`**, le serveur de Louis (`src/tool/mcp/servers/calc.py`) : une calculatrice exacte, `calc__calculate`. Il marche partout, sans rien installer.
+- **`time`**, un serveur existant ([mcp-server-time](https://pypi.org/project/mcp-server-time/)) : l'heure dans un fuseau, la conversion entre fuseaux. Il est lancé par `uvx`, qu'on installe avec `pip install uv` (ou `curl -LsSf https://astral.sh/uv/install.sh | sh`).
+
+### Ajouter un serveur
+
+Ajoute une entrée à `mcp.servers` dans `src/config/settings.py` :
+
+```python
+"mcp.servers": [
+    {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]},
+    {"name": "time", "command": "uvx", "args": ["mcp-server-time", "--local-timezone=Europe/Paris"]},
+    # Les fichiers d'un dossier (il faut Node.js) : npx le télécharge au premier lancement
+    {"name": "fs", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/moi/notes"]},
+    # Un serveur à qui il faut une clé, et dont on sait qu'il ne fait que lire
+    {"name": "github", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+     "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..."}, "risk": "safe"},
+],
+```
+
+| Clé       | Ce qu'elle dit |
+| --------- | -------------- |
+| `name`    | le nom du serveur : le préfixe de ses outils, et ce que montre `/mcp` (unique) |
+| `command` | le programme à lancer (`uvx`, `npx`, `python`, un chemin…), dans le dossier courant |
+| `args`    | ses arguments (optionnel) |
+| `env`     | ses variables d'environnement (optionnel). Il ne reçoit de celles de Louis que `PATH`, `HOME`, `LANG`… : jamais tes jetons ni tes clés, sauf ceux que tu lui donnes ici |
+| `risk`    | optionnel : `safe`, `reversible` ou `irreversible` pour tous ses outils. Sinon, ce que le serveur dit de chacun |
+
+Relance Louis : la première ligne dit quels serveurs ont démarré. `/mcp` liste les serveurs, leur état (`actif`, `n'a pas démarré`, `s'est arrêté`) avec la raison, et leurs outils avec leur risque.
+
+```
+> /mcp
+Serveurs MCP (2) :
+  calc         actif            […/src/tool/mcp/servers/calc.py]
+    calc__calculate                  sans risque  Calcule exactement une expression mathématique et renvoie son résulta…
+  time         n'a pas démarré  [uvx mcp-server-time]
+    la commande uvx est introuvable
+```
+
+### Ce que Louis garantit
+
+- **Un serveur qui ne démarre pas** (commande introuvable, erreur au lancement, pas de réponse en `mcp.start_timeout` secondes) est noté dans `louis.log` et laissé de côté : Louis démarre sans lui.
+- **Une erreur du serveur, un appel trop long** (`mcp.timeout` secondes) **ou un serveur qui plante** donnent au modèle un résultat `Erreur : …`, jamais un plantage de Louis.
+- **Les permissions et le plan** : un outil qui dit ne faire que lire (`readOnlyHint`) ne demande rien. Les autres demandent ton accord avant d'agir. Un outil qui ne dit pas qu'il ne détruit rien est traité comme **irréversible** et passe par le plan (`/plan`).
+- **Les serveurs sont arrêtés** quand Louis se ferme, même s'il plante : aucun processus ne reste derrière.
+- Avec le garde-fou, ce qu'un serveur renvoie passe par les rails des résultats d'outils, comme la base de connaissances.
+
+Le fonctionnement en détail (le protocole, les fichiers, les choix) est dans [docs/MCP.md](docs/MCP.md).
+
 ## Notes
 
 - Le script d'installation vérifie automatiquement la version de Python (au moins Python 3.12).
