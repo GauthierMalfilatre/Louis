@@ -7,7 +7,7 @@
 from interface.interface import Interface
 from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings
 from interface.cli import plan_title, plan_details
-from interface.cli import RISKS, MCP_STATES, NO_MCP, mcp_started, mcp_command
+from interface.cli import RISKS, MCP_STATES, NO_MCP, mcp_started, mcp_changed, mcp_command
 from interface.cli import preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
@@ -23,7 +23,7 @@ from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_DESCRIBE_PRO
 from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, PLAN_SETTINGS
 from events.event_list import PLAN_PROPOSED, PLAN_DECIDED
-from events.event_list import MCP_STARTED, MCP_SERVERS
+from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED
 from config.settings import settings
 from export.render_html import MARKDOWN, render
 from session.database import Database, now
@@ -345,6 +345,7 @@ class WebInterface(Interface):
             "info" if all(server["state"] == "running" for server in event.data["servers"]) else "warn"
         ), MCP_STARTED)
         bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
+        bus.subscribe(self.__on_mcp_changed, MCP_CHANGED)
         return self
 
     def getUserInput(self) -> str:
@@ -723,6 +724,12 @@ class WebInterface(Interface):
             return
         self.__running.remove(found)
         self.__patch(found[0], **tool_result(name, event.data["result"], event.data["ok"], event.data["duration"]))
+
+    def __on_mcp_changed(self, event: Event) -> None:
+        """ A server started again, stopped, or with other tools: a notice, and the commands there are now """
+        text, fine = mcp_changed(event.data)
+        self.__notice(text, "info" if fine else "warn")
+        self.__set(commands=event.data["commands"])
 
     def __on_mcp_servers(self, event: Event) -> None:
         """ A row per server, its state, how it is launched and why it does not answer, then a row per tool """

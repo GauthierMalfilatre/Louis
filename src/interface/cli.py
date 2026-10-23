@@ -18,7 +18,7 @@ from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT
 from events.event_list import PLAN_SETTINGS, PLAN_PROPOSED, PLAN_DECIDED
-from events.event_list import MCP_STARTED, MCP_SERVERS
+from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED
 import json
 import os
 import re
@@ -151,6 +151,21 @@ def mcp_started(servers: list[dict]) -> str:
     trouble: bool = any(server["state"] != "running" for server in servers)
     return f"MCP : {' · '.join(parts)}{' (/mcp pour savoir pourquoi)' if trouble else ''}"
 
+def mcp_changed(data: dict) -> tuple[str, bool]:
+    """ What happened to a server once Louis started, on one line, and whether it went well:  MCP : calc relancé (1 outil) """
+    name: str = data["server"]
+    server: dict = next((server for server in data["servers"] if server["name"] == name), {})
+    count: int = len(server.get("tools", []))
+    tools: str = f"{count} outil{'s' if count > 1 else ''}"
+    if data["change"] == "stopped":
+        return f"MCP : {name} arrêté, ses outils ne sont plus proposés au modèle", True
+    if server.get("state") != "running":
+        why: str = server.get("error") or MCP_STATES.get(server.get("state", ""), "")
+        return f"MCP : {name} n'a pas pu être relancé : {why}", False
+    if data["change"] == "restarted":
+        return f"MCP : {name} relancé ({tools})", True
+    return f"MCP : {name} a changé ses outils ({tools})", True
+
 def mcp_command(command: str, length: int = 60) -> str:
     """ How a server is launched, cut from its start if it is too long: its end (the script) says the most """
     return command if len(command) <= length else "…" + command[-(length - 1):]
@@ -220,6 +235,7 @@ class CLI(Interface):
         bus.subscribe(self.__on_eval_report, EVAL_REPORT)
         bus.subscribe(self.__on_mcp_started, MCP_STARTED)
         bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
+        bus.subscribe(self.__on_mcp_changed, MCP_CHANGED)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -417,6 +433,11 @@ class CLI(Interface):
         """ The MCP servers on one line: dim while they all run, plain when one did not start """
         servers: list[dict] = event.data["servers"]
         self.out(mcp_started(servers), dim=all(server["state"] == "running" for server in servers))
+
+    def __on_mcp_changed(self, event: Event) -> None:
+        """ A server started again, stopped, or with other tools: one line, dim when it went well """
+        text, fine = mcp_changed(event.data)
+        self.out(text, dim=fine)
 
     def __on_mcp_servers(self, event: Event) -> None:
         """ Each server with its state and how it is launched, why it does not answer, then its tools and their risk """
