@@ -95,7 +95,8 @@ Chaque appel au modèle et aux outils est enregistré, une ligne JSON par évén
 | `rag`    | une recherche dans la base de connaissances : la requête, le mode (`hybrid` ou `keyword`), les passages trouvés, la durée |
 | `step`   | une étape du raisonnement pas à pas (`/react`) : ce que le modèle pensait, les outils qu'il a appelés |
 | `check`  | la vérification d'un brouillon du raisonnement pas à pas : s'il est passé, ses problèmes, s'il a été réécrit |
-| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours ; en pas à pas, les étapes, les vérifications, les brouillons réécrits |
+| `plan`   | un plan montré avant une action risquée (`/plan`) : ses actions et leur risque, s'il a été approuvé, ce que tu as répondu, le temps que tu as pris pour décider (`waited`) |
+| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours ; en pas à pas, les étapes, les vérifications, les brouillons réécrits ; les plans montrés, et ceux refusés |
 
 Les lignes d'un même tour partagent son `turn`. Le temps que tu mets à répondre à une demande de permission est retiré des latences du tableau de bord. Les textes longs sont coupés, et masqués comme dans `louis.log` quand le garde-fou est actif.
 
@@ -164,6 +165,28 @@ Louis peut répondre **pas à pas**, en rendant son raisonnement visible et vér
 ```
 
 `/react` l'active et le coupe (le bouton « Pas à pas » de l'interface web), `louis --react` démarre avec, comme le réglage `reason.enabled`. `reason.verify` coupe la vérification. C'est **plus lent** : chaque vérification est une requête de plus au modèle, d'une à plusieurs minutes sur un processeur sans carte graphique. Il est indépendant de `/think`, qui fait réfléchir le modèle avant chaque réponse dans les deux modes. Le tableau de bord montre la part des réponses justes du premier coup, réécrites, ou données avec des problèmes, et le temps d'une vérification.
+
+## Plan avant d'agir (human in the loop)
+
+Avant une action **qu'on ne peut pas défaire**, Louis s'arrête, te montre son plan, et n'agit qu'après ton accord. Une réponse du modèle qui contient une telle action est suspendue **avant son premier appel** : tu vois ce que Louis veut faire, puis chacune de ses actions dans l'ordre, avec son risque, ce qu'elle fera, comment l'annuler, et ce qu'elle changera (le diff, les commits poussés…).
+
+```
+Mon plan : je commite le README, puis je pousse la branche.
+  1. Git action=commit message=docs: describe the project · réversible
+     un commit sur docs/readme · annulable : git reset --soft HEAD~1 (les changements restent)
+  2. Git action=push · IRRÉVERSIBLE
+     les commits de docs/readme seront sur origin, visibles par toute l'équipe
+a1b2c3d docs: describe the project
+Approuver ce plan ? [y] oui  [n] non  [r] répondre
+```
+
+- **Oui** : toutes les actions du plan se font, sans autre question.
+- **Non** : aucune ne se fait.
+- **Répondre** : aucune ne se fait, et ce que tu écris (« fais d'abord une branche ») est donné au modèle, qui propose autre chose.
+
+Sont irréversibles : `git push`, la suppression d'une branche, ouvrir, commenter ou fusionner une pull request, et remplacer ou modifier un fichier dont git n'a pas le contenu actuel (jamais commité, ou changé depuis). Un fichier commité tel quel se restaure avec `git restore` : c'est réversible, comme un commit, une branche ou un nouveau fichier. Une réponse sans action irréversible ne montre pas de plan : chaque outil demande ton accord comme avant. Et un « toujours » donné à un outil ne laisse jamais passer une de ses actions irréversibles : elle est redemandée chaque fois.
+
+`/plan` dit ce qui est réglé, `/plan off` et `/plan on` coupent et remettent les plans, `/plan reversible` les montre pour toute modification, `/plan irreversible` (par défaut) seulement pour ce qui ne s'annule pas. Les réglages sont `hitl.enabled` et `hitl.level`. Un plan auquel personne ne répond (un script, `louis --ask`) est refusé : rien d'irréversible ne se fait sans quelqu'un pour l'approuver. Le tableau de bord montre la part des plans approuvés, refusés ou laissés sans réponse, et le temps pris pour décider.
 
 ## Notes
 

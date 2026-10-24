@@ -220,6 +220,12 @@ class CursesCLI(CLI):
             super()._on_reasoning_step(event)
             self.__follow()
 
+    def _on_plan(self, event: Event) -> None:
+        """ The plan, once the thinking of the model (/think) is folded: the question waits for the keys outside the lock """
+        with self.__lock:
+            self.__end_thinking()
+        super()._on_plan(event)
+
     def _on_reasoning_check(self, event: Event) -> None:
         """ The check of the draft, under it """
         with self.__lock:
@@ -394,7 +400,7 @@ class CursesCLI(CLI):
 
     def _choose(self, question: str, choices: str) -> str:
         """ A single key among choices (o for y, Enter for n), and v to unfold the diff above """
-        labels: dict[str, str] = {"y": "oui", "n": "non", "a": "toujours"}
+        labels: dict[str, str] = {"y": "oui", "n": "non", "a": "toujours", "r": "répondre"}
         self.__asking = True
         try:
             while True:

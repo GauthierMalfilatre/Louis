@@ -5,7 +5,9 @@
 ## Web interface: Louis in a browser (louis --web), and the pages of the public links of /share
 ##
 from interface.interface import Interface
-from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, preview as one_line
+from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings
+from interface.cli import plan_title, plan_details
+from interface.cli import preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import APP_STARTED, APP_STOPPED, THINKING_ENABLED, THINKING_DISABLED
@@ -18,7 +20,8 @@ from events.event_list import EXPORT_DONE, SHARE_CREATED, SHARE_LIST, SHARE_REVO
 from events.event_list import COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_DESCRIBE_PROGRESS, RAG_INDEXED, RAG_SOURCES
 from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
-from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK
+from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, PLAN_SETTINGS
+from events.event_list import PLAN_PROPOSED, PLAN_DECIDED
 from config.settings import settings
 from export.render_html import MARKDOWN, render
 from session.database import Database, now
@@ -59,6 +62,8 @@ RESULT_SHOWN: int  = 20000         # Characters of the result of a tool a page c
 TOKEN: re.Pattern = re.compile(r"[A-Za-z0-9_-]{16,64}")
 # The answers to a permission: yes, no, always for this tool in this session
 CHOICES: frozenset[str] = frozenset({"y", "n", "a"})
+# What the user may answer instead of a plan: a few sentences
+MAX_FEEDBACK: int = 2000
 # An address that listens on every interface: the links name the computer as localhost
 WILDCARDS: frozenset[str] = frozenset({"", "0.0.0.0", "::"})
 # The names a page of this computer reaches Louis by, when it only listens there
@@ -216,6 +221,7 @@ class WebInterface(Interface):
         # The messages of the pages, and their answer to the permission being asked (its id, None when none is)
         self.__inputs : queue.Queue = queue.Queue()
         self.__answers: queue.Queue = queue.Queue()
+        self.__feedback: str = ""
         self.__asking : int | None  = None
 
         # Only touched by the main thread, the one of the app
@@ -311,11 +317,13 @@ class WebInterface(Interface):
         bus.subscribe(self.__on_tool_started, TOOL_CALL_STARTED)
         bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
+        bus.subscribe(self.__on_plan, PLAN_PROPOSED)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_thinking_switched, THINKING_ENABLED, THINKING_DISABLED)
         bus.subscribe(self.__on_reasoning_switched, REASONING_ENABLED, REASONING_DISABLED)
         bus.subscribe(self.__on_reasoning_step, REASONING_STEP)
         bus.subscribe(self.__on_reasoning_check, REASONING_CHECK)
+        bus.subscribe(lambda event: self.__notice(plan_settings(event.data)), PLAN_SETTINGS)
         bus.subscribe(self.__on_export_done, EXPORT_DONE)
         bus.subscribe(self.__on_share_created, SHARE_CREATED)
         bus.subscribe(self.__on_share_list, SHARE_LIST)
@@ -382,12 +390,16 @@ class WebInterface(Interface):
             self.__inputs.put((text, shown))
         return None
 
-    def answer(self, request: int, choice: str) -> bool:
-        """ The answer of a page to the permission asked (y, n or a), False if it is not the one being asked """
+    def answer(self, request: int, choice: str, feedback: str = "") -> bool:
+        """
+            The answer of a page to the permission or the plan asked (y, n or a), with what the user said instead of a
+            plan (feedback). False if it is not the one being asked
+        """
         with self.__lock:
             if request != self.__asking:
                 return False
             self.__asking = None
+            self.__feedback = feedback
             self.__answers.put(choice)
         return True
 
@@ -742,6 +754,36 @@ class WebInterface(Interface):
             self.__patch(identifier, status=status)
         self.__bus.dispatch(TOOL_GRANT_PERMISSION, id=data["id"], granted=status in ("granted", "always"))
 
+    def __on_plan(self, event: Event) -> None:
+        """
+            The plan of a reply that would do something risky, in the reply: ask the pages, and wait for one of them
+            to answer, as for a permission. Approved, refused, or refused with what the user would rather have.
+            Stop or Ctrl+C meanwhile cancels the turn, none of its calls runs
+        """
+        data: dict = event.data
+        actions: list[dict] = [{"title": plan_title(action), "risk": action["risk"], "details": plan_details(action),
+                                "preview": action["preview"]} for action in data["actions"]]
+        self.__close_thinking()
+        identifier: int = self.__add(kind="plan", intent="\n".join(thought_lines(data["intent"])), actions=actions,
+                                     request=data["id"], status="pending", feedback="")
+        with self.__lock:
+            while not self.__answers.empty():
+                self.__answers.get_nowait()
+            self.__feedback = ""
+            self.__asking = data["id"]
+            self.__emit({"type": "state", "state": {"asking": True}})
+        status, feedback = "cancelled", ""
+        try:
+            choice: str = self.__answers.get()
+            feedback = self.__feedback.strip()
+            status = "approved" if choice == "y" else "refused"
+        finally:
+            with self.__lock:
+                self.__asking = None
+            self.__set(asking=False)
+            self.__patch(identifier, status=status, feedback=feedback)
+        self.__bus.dispatch(PLAN_DECIDED, id=data["id"], approved=status == "approved", feedback=feedback)
+
     def __on_guard(self, event: Event) -> None:
         """ What the guard changed, before the reply or the refusal """
         data: dict = event.data
@@ -1004,10 +1046,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.__json(409 if refused else 202, {"error": refused} if refused else {})
 
     def __permission(self, body: dict) -> None:
-        request, choice = body.get("id"), body.get("choice")
-        if not isinstance(request, int) or isinstance(request, bool) or choice not in CHOICES:
+        request, choice, feedback = body.get("id"), body.get("choice"), body.get("feedback", "")
+        if not isinstance(request, int) or isinstance(request, bool) or choice not in CHOICES \
+                or not isinstance(feedback, str) or len(feedback) > MAX_FEEDBACK:
             self.__json(400, {"error": "Réponse invalide."})
-        elif self.__web.answer(request, choice):
+        elif self.__web.answer(request, choice, feedback):
             self.__json(202, {})
         else:
             self.__json(409, {"error": "Cette demande n'attend plus de réponse."})

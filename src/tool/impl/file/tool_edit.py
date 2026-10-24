@@ -1,4 +1,5 @@
 from tool.tool import Tool
+from tool.risk import Risk, NONE, change_risk
 import ast
 import difflib
 import os
@@ -186,6 +187,16 @@ class EditTool(Tool):
                 "required": ["path", "old_str", "new_str"]
             }
         )
+
+    def risk(self, manager, **kwargs) -> Risk:
+        """ The file changed: reversible while git has it as it is now. Its preview is the change asked """
+        path = kwargs.get("path")
+        full = resolve_path(manager, path) if isinstance(path, str) and path else None
+        if full is None or not os.path.isfile(full):
+            return NONE
+        old_str, new_str = kwargs.get("old_str"), kwargs.get("new_str")
+        changed: str = diff_preview(old_str, new_str) if isinstance(old_str, str) and isinstance(new_str, str) else ""
+        return change_risk(full, changed)
 
     def handle(self, manager, **kwargs) -> str:
         """Replace an exact string in a file."""
