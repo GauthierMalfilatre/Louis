@@ -10,6 +10,9 @@ import pytest
 import utils.path
 from config.settings import settings
 from tool.seen_files import SeenFiles
+from events.event import Event
+from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
+from interface.interface import Interface
 
 COAUTHOR = "Louis <louis@example.com>"
 
@@ -78,3 +81,61 @@ def repo(project):
     git(project, "push", "-q", "-u", "origin", "main")
     git(project, "push", "-q", "origin", "main:dev")
     return project
+
+class Listener(Interface):
+    """ The user of a scripted app: every event it saw, the permissions answered with grant, its messages typed """
+    describes = False
+
+    def __init__(self, typed: list[str] | None = None, grant: bool = True):
+        self.typed: list[str] = list(typed or [])
+        self.grant: bool = grant
+        self.events: list[Event] = []
+
+    def bind(self, bus):
+        self.bus = bus
+        bus.subscribe(self.events.append)
+        bus.subscribe(lambda event: bus.dispatch(TOOL_GRANT_PERMISSION, id=event.data["id"], granted=self.grant),
+                      TOOL_BEGFOR_PERMISSION)
+        return self
+
+    def getUserInput(self) -> str:
+        if not self.typed:
+            raise EOFError
+        return self.typed.pop(0)
+
+    def seen(self, name: str) -> list[dict]:
+        """ The data of the events of that name, in their order """
+        return [event.data for event in self.events if event.name == name]
+
+@pytest.fixture
+def chat(folder, monkeypatch, tmp_path):
+    """
+        An app whose model answers the replies given, in order (no Ollama): what it was sent is kept in app.sent, its
+        calls recorded in app.traces, its interface is app.listener
+    """
+    from app.app import App
+    from config.prompt import SYSTEM_PROMPT
+    from model.model import OllamaModel
+    from monitor.recorder import Recorder
+    from session.user import User
+    monkeypatch.setattr(OllamaModel, "_OllamaModel__probe", staticmethod(lambda uri, model: {"tools"}))
+
+    def make(replies: list, *, user=None, listener: Listener | None = None, **options):
+        conf = {**settings, "scribe.model": "", "rag.enabled": False, "sandbox.enabled": False, "guard.enabled": False,
+                "eval.enabled": False, "hitl.enabled": False, **options}
+        traces = tmp_path / f"traces-{len(list(tmp_path.glob('traces-*')))}.jsonl"
+        listener = listener or Listener()
+        app = App(conf, SYSTEM_PROMPT, user or User.anonymous(), listener, Recorder(str(traces), conf))
+        app.traces, app.listener, app.sent = traces, listener, []
+        answers = iter(replies)
+
+        def answer(messages, tools=[], images=[], *, on_text=None, schema=None, **kwargs):
+            app.sent.append({"messages": [dict(message) for message in messages], "schema": schema,
+                             "tools": [tool["function"]["name"] for tool in tools]})
+            reply = next(answers)
+            if on_text is not None and reply.content and not reply.tool_calls:
+                on_text(reply.content)
+            return reply
+        app.model.chat = answer
+        return app
+    return make

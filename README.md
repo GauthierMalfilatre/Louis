@@ -51,147 +51,42 @@ python src/main.py
 - Créer un lanceur (`louis`) dans `$HOME/.local/bin`.
 - Configurer le PATH pour que `louis` soit accessible depuis n'importe quel répertoire.
 
-## Interface web
+## Fonctionnalités
 
-```bash
-louis --web                  # http://127.0.0.1:8080
-louis --web --port 9000 --user ada
-```
+Chaque fonctionnalité a sa fiche dans [docs/feature/](docs/feature/) : ce qu'elle fait et comment s'en servir.
 
-Louis s'ouvre dans le navigateur au lieu du terminal. Il t'accueille selon l'heure, te propose de reprendre ta dernière session et des idées tirées de ton projet (tes changements en cours dans git). La réponse s'écrit en direct, chaque appel d'outil s'affiche pendant qu'il tourne, puis Louis le résume en une phrase (« J'ai lu calc.py. ») qui se déplie d'un clic, et les permissions se donnent depuis la page, avec le diff de ce que l'outil veut changer (`O` autoriser, `N` refuser, `T` toujours pour cet outil dans la session). Le bouton ■ arrête ce que Louis fait, comme Ctrl+C dans le terminal. Sous chaque réponse : ce qu'elle a coûté (tokens écrits, vitesse, premier token, et le chargement du modèle quand il a été long), et sous chaque recherche dans la base de connaissances, les passages trouvés. Quand l'onglet est caché, son titre et son icône te disent que Louis attend ta réponse ou qu'il a fini ; la cloche y ajoute une notification du bureau. La barre de gauche liste tes sessions (avec `--user`) : un clic en reprend une, « Nouvelle session » fait un `/clear`. Les commandes (`/`) marchent comme dans le terminal, avec leur menu. Ctrl+C dans le terminal arrête Louis.
+**Base**
+- [B1 · Chatbot en ligne de commande](docs/feature/base/B1-cli-chatbot.md)
 
-Le serveur écoute sur `127.0.0.1` : ce poste seulement. `--host 0.0.0.0` l'ouvre au réseau, **sans mot de passe** : qui l'atteint peut faire agir Louis sur tes fichiers.
+**Mémoire et contexte**
+- [M1 · Sessions persistantes et profils](docs/feature/memory/M1-sessions-profils.md)
 
-Il sert aussi les liens publics de `/share` (`/s/<jeton>`) : les liens pointent vers lui tant que `share.base_url` (dans `src/config/settings.py`) est vide, ou vers l'adresse donnée par ce réglage ou par `LOUIS_SHARE_URL` (un proxy, un nom de domaine...).
+**Outils**
+- [T1 · Appel d'outils (MCP)](docs/feature/tools/T1-appel-outils.md)
+- [T2 · Exécution de code isolée (sandbox)](docs/feature/tools/T2-sandbox.md)
+- [T3 · Recherche web](docs/feature/tools/T3-recherche-web.md)
+- [T4 · Accès aux fichiers avec permissions](docs/feature/tools/T4-acces-fichiers.md)
+- [T5 · Réponses structurées (JSON)](docs/feature/tools/T5-sortie-structuree.md)
 
-## Le scribe : titres, résumés, accueil
+**RAG**
+- [R1 · RAG de base](docs/feature/rag/R1-rag-basique.md)
+- [R2 · RAG avancé](docs/feature/rag/R2-rag-avance.md)
 
-À côté de la conversation, un petit modèle (`scribe.model`, qwen3:4b-instruct par défaut, le même que `rag.describe.model`) écrit le titre et le résumé de chaque session une fois la réponse finie, et la phrase qui t'accueille sur la page web, d'après ta dernière session et tes changements en cours. Il tourne sur le processeur, dans son propre fil : il ne prend jamais la carte graphique au modèle de la conversation, et Louis ne l'attend jamais. Les sessions d'avant sont décrites quand il n'a rien d'autre à faire.
+**Orchestration et raisonnement**
+- [A1 · Raisonnement pas à pas (ReAct)](docs/feature/orchestration/A1-react.md)
+- [A3 · Plan avant d'agir (human in the loop)](docs/feature/orchestration/A3-human-in-the-loop.md)
+- [A6 · Cache sémantique](docs/feature/orchestration/A6-cache-semantique.md)
 
-- **Retrouver une session** : `/find <texte>`, ou la recherche de la barre latérale de `louis --web`, par le sens du titre et du résumé (avec `nomic-embed-text`, le modèle d'embedding du RAG), ou par les mots sans lui.
-- **Résumer au lieu de couper** : quand le contexte est plein, les plus vieux échanges qui en sortent sont résumés par le modèle de la conversation (les demandes, ce qu'il a appris des fichiers lus, les réponses déjà données), et il relit ce résumé à leur place. `chat.compact.summary: False` revient à les couper seulement.
+**Évaluation**
+- [EV1 · Évaluation automatique et détection d'hallucinations](docs/feature/evaluation/EV1-eval-hallucinations.md)
+- [EV2 · Garde-fous de contenu et de vie privée](docs/feature/evaluation/EV2-garde-fous.md)
+- [EV3 · Logs et tableau de bord](docs/feature/evaluation/EV3-monitoring.md)
 
-`ollama pull qwen3:4b-instruct` s'il n'est pas déjà là ; `scribe.model: ""` coupe le scribe.
+**Interface et cycle de vie**
+- [X1 · Interface web](docs/feature/ux/X1-web-ui.md)
+- [X3 · Export et publication](docs/feature/ux/X3-export-publication.md)
 
-## Base de connaissances (RAG)
-
-Louis cherche dans la documentation et les exemples de code que tu lui indexes (`/index <dossier>`, ou `louis --index <dossier>`) avec l'outil `search_knowledge`, par mots-clés et par le sens (`ollama pull nomic-embed-text`). Le fonctionnement, le garde-fou qui filtre ce que la base rend, et **où trouver de gros jeux de données de code** sont dans [docs/RAG.md](docs/RAG.md).
-
-## Cache sémantique
-
-Une question déjà posée, même dite autrement et par un autre utilisateur, reçoit tout de suite la réponse d'alors, sans le modèle. Le sens de la question est lu par `nomic-embed-text`, et le reranker du RAG vérifie que les deux questions sont vraiment les mêmes : « lire un fichier JSON » n'a jamais la réponse de « écrire un fichier JSON ». N'importe quelle question de la session est cherchée si elle se comprend seule (« et pour la deuxième ? » ne l'est pas), et seules les réponses sûres sont gardées : qui ne dépendent ni du moment ni du projet, dans une session où le modèle n'a encore rien lu du projet. Dès la première question d'une installation neuve, le cache répond aussi aux questions sur Louis, avec des réponses écrites par l'équipe (`src/cache/seed/`). `/cache` montre ce qu'il garde, `/cache forget` oublie la dernière réponse qu'il a donnée, `/cache clear` les oublie toutes, `/cache off` le coupe. Le fonctionnement et les mesures sont dans [docs/CACHE.md](docs/CACHE.md).
-
-## Exécution de code (sandbox)
-
-Louis peut tester du code (`python`, `sh`, `c`, `cpp`, `go` ou `rust`, bibliothèque standard seulement) avec l'outil `run_code`, après que tu as lu le code et l'as autorisé. Il tourne dans un conteneur Docker sans réseau, sans accès au projet, avec un disque en lecture seule (sauf un petit `/tmp`), limité en temps (10 s, 30 s pour c et c++, une minute pour go et rust, compilation comprise), en mémoire et en processus. Sans Docker, l'outil n'est pas proposé. Les images ne sont jamais téléchargées par Louis : `docker pull python:3.13-alpine alpine:latest golang:alpine rust:alpine gcc:latest` (2 Go pour gcc : `sandbox.languages` permet d'en indiquer une plus légère). Les réglages sont les `sandbox.*` de `src/config/settings.py`.
-
-## Monitoring
-
-Chaque appel au modèle et aux outils est enregistré, une ligne JSON par événement, dans `louis.traces.jsonl` (à côté de `louis.db` : dans le dossier courant, ou dans `~/.local/share/louis/` avec le lanceur de `install.sh` ; `LOUIS_TRACES` change le chemin).
-
-| Type     | Ce qu'il contient |
-| -------- | ----------------- |
-| `run`    | un lancement de Louis : le modèle, les réglages qui jouent sur la vitesse |
-| `prompt` | un prompt système, en entier, la première fois qu'il est vu : les autres lignes le nomment par sa version (début de son hash) |
-| `llm`    | une requête au modèle : à quoi elle sert (`purpose` : `reply`, `structured`, `check`, `summary`), ce qu'on lui donne, sa réponse, les outils demandés, la latence, le temps jusqu'au premier token, les tokens (prompt / réponse), le temps de chargement, le statut (`ok`, `error`, `cancelled`) |
-| `tool`   | un appel d'outil : arguments, succès, durée, début du résultat, et le temps passé à attendre ta permission (`waited`) |
-| `guard`  | un rail du garde-fou a modifié un message |
-| `rag`    | une recherche dans la base de connaissances : la requête, le mode (`hybrid` ou `keyword`), les passages trouvés, la durée |
-| `step`   | une étape du raisonnement pas à pas (`/react`) : ce que le modèle pensait, les outils qu'il a appelés |
-| `check`  | la vérification d'un brouillon du raisonnement pas à pas : s'il est passé, ses problèmes, s'il a été réécrit |
-| `cache`  | une question cherchée dans le cache sémantique : trouvée ou non, le score le plus proche, la durée, ou pourquoi elle n'a pas été cherchée |
-| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours ; en pas à pas, les étapes, les vérifications, les brouillons réécrits ; `cached` si le cache sémantique y a répondu |
-| `plan`   | un plan montré avant une action risquée (`/plan`) : ses actions et leur risque, s'il a été approuvé, ce que tu as répondu, le temps que tu as pris pour décider (`waited`) |
-
-Les lignes d'un même tour partagent son `turn`. Le temps que tu mets à répondre à une demande de permission est retiré des latences du tableau de bord. Les textes longs sont coupés, et masqués comme dans `louis.log` quand le garde-fou est actif.
-
-Pour voir les métriques (volume d'appels, latence, taux d'erreur, tokens, dérive dans le temps) :
-
-```bash
-louis --dashboard                  # ou : python src/main.py --dashboard
-cd src && python -m monitor ../louis.traces.jsonl -o /tmp/dashboard.html --open
-```
-
-Le résumé s'affiche dans le terminal, et `louis.dashboard.html` (une page autonome, sans serveur) s'ouvre dans le navigateur. En haut, les **dérives** : chaque nouveau prompt ou modèle est comparé à celui qu'il remplace, et les dernières 24 h à la semaine d'avant. Une alerte apparaît au-delà de ±30 % de latence médiane, ±30 % de tokens par appel ou ±5 points de taux d'erreur, avec au moins 5 appels de chaque côté. Un prompt modifié hier qui double la latence apparaît donc en tête, avec la hausse des tokens qui l'explique.
-
-## Évaluation des réponses (LLM juge)
-
-Un modèle relit chaque réponse de Louis, en arrière-plan une fois le tour fini, et la note : **fidélité aux sources** (la réponse découpée en affirmations, chacune vérifiée contre ce que les outils ont lu), **pertinence** et **cohérence** (de 1 à 5). Les affirmations contredites ou invérifiables sont signalées. `/eval` montre les notes de la dernière réponse, `louis --dashboard` les moyennes par prompt et par modèle, et `python -m eval.bench` compare deux versions de Louis sur un jeu de questions fixe avant de livrer. Le détail, les choix et les réglages (`eval.*`) sont dans [docs/EVAL.md](docs/EVAL.md).
-
-## Réponses structurées (JSON)
-
-Louis peut répondre en JSON qui respecte un **schéma JSON** (un formulaire : les champs, leurs types, ceux qui sont obligatoires), au lieu de texte. Ollama empêche le modèle d'écrire autre chose, puis Louis vérifie la réponse et la redemande avec l'erreur si elle ne correspond pas (`structured.attempts` fois au plus). Une réponse qui ne correspond toujours pas n'est jamais renvoyée : c'est une erreur. Dans ce mode, le modèle n'a pas d'outils : ce qu'il doit lire est dans la question.
-
-Les schémas sont cherchés par leur nom dans `schemas/` du dossier courant, puis dans ceux de Louis (`src/structured/schemas/` : `todo`, `resume`, `contact`). On peut aussi donner le chemin d'un fichier.
-
-Dans la conversation :
-
-```
-> /schemas
-> /json contact Gauthier Malfilatre, développeur chez Sensai, gauthier.m@sensai.dev
-{
-  "nom": "Gauthier Malfilatre",
-  "entreprise": "Sensai",
-  "poste": "développeur",
-  "email": "gauthier.m@sensai.dev",
-  "telephone": null
-}
-```
-
-Depuis un script : la sortie est **seulement** le JSON, le texte envoyé par un pipe est ajouté à la question, les erreurs vont sur stderr.
-
-```bash
-cat compte-rendu.txt | louis --schema todo --ask "Extrais les tâches" > taches.json
-louis --schema ./mon_schema.json --ask "..." | jq '.champ'
-```
-
-Code de retour : `0` réponse valide, `1` réponse invalide ou modèle injoignable, `2` schéma introuvable ou invalide. Le tableau de bord (`louis --dashboard`) montre la part des réponses valides, et celles valides du premier coup.
-
-## Raisonnement pas à pas (ReAct)
-
-Louis peut répondre **pas à pas**, en rendant son raisonnement visible et vérifiable : utile quand la façon d'arriver à la réponse compte autant que la réponse.
-
-- **Chaque étape est dite** : avant chaque action, le modèle écrit ce qu'il sait, ce qui lui manque et ce qu'il va faire, puis lit le résultat de ses outils avant l'étape suivante.
-- **La réponse est vérifiée avant d'être donnée** : un fichier qu'elle cite sans qu'aucun outil l'ait lu la fait refuser tout de suite ; sinon le modèle reprend chacune de ses affirmations avec sa source (le résultat d'un outil, un calcul refait) et conclut. Une réponse refusée est réécrite avec ses problèmes (`reason.attempts` fois au plus) ; la dernière est donnée quoi qu'il arrive, avec ce qui reste à redire.
-- **Tu ne vois que la réponse vérifiée.** Les brouillons refusés restent dans la session, comme trace, mais pas dans `/export`, `/share` ni `/resume`.
-
-```
-> /react
-> Quels champs a la classe Reply, et lequel dit si la réponse a été coupée ?
-  ⟳ Étape 1 : Je dois trouver où est définie la classe Reply.
-  ● Recherche « class Reply »
-    ⎿ 1 résultat
-  ⟳ Étape 2 : Elle est dans model/reply.py : je le lis pour voir ses champs.
-  ● Lecture model/reply.py
-    ⎿ 33 lignes lues
-  ⟳ Étape 3 : réponse écrite
-  ✔ Réponse vérifiée
-…
-```
-
-`/react` l'active et le coupe (le bouton « Pas à pas » de l'interface web), `louis --react` démarre avec, comme le réglage `reason.enabled`. `reason.verify` coupe la vérification. C'est **plus lent** : chaque vérification est une requête de plus au modèle, d'une à plusieurs minutes sur un processeur sans carte graphique. Il est indépendant de `/think`, qui fait réfléchir le modèle avant chaque réponse dans les deux modes. Le tableau de bord montre la part des réponses justes du premier coup, réécrites, ou données avec des problèmes, et le temps d'une vérification.
-
-## Plan avant d'agir (human in the loop)
-
-Avant une action **qu'on ne peut pas défaire**, Louis s'arrête, te montre son plan, et n'agit qu'après ton accord. Une réponse du modèle qui contient une telle action est suspendue **avant son premier appel** : tu vois ce que Louis veut faire, puis chacune de ses actions dans l'ordre, avec son risque, ce qu'elle fera, comment l'annuler, et ce qu'elle changera (le diff, les commits poussés…).
-
-```
-Mon plan : je commite le README, puis je pousse la branche.
-  1. Git action=commit message=docs: describe the project · réversible
-     un commit sur docs/readme · annulable : git reset --soft HEAD~1 (les changements restent)
-  2. Git action=push · IRRÉVERSIBLE
-     les commits de docs/readme seront sur origin, visibles par toute l'équipe
-a1b2c3d docs: describe the project
-Approuver ce plan ? [y] oui  [n] non  [r] répondre
-```
-
-- **Oui** : toutes les actions du plan se font, sans autre question.
-- **Non** : aucune ne se fait.
-- **Répondre** : aucune ne se fait, et ce que tu écris (« fais d'abord une branche ») est donné au modèle, qui propose autre chose.
-
-Sont irréversibles : `git push`, la suppression d'une branche, ouvrir, commenter ou fusionner une pull request, et remplacer ou modifier un fichier dont git n'a pas le contenu actuel (jamais commité, ou changé depuis). Un fichier commité tel quel se restaure avec `git restore` : c'est réversible, comme un commit, une branche ou un nouveau fichier. Une réponse sans action irréversible ne montre pas de plan : chaque outil demande ton accord comme avant. Et un « toujours » donné à un outil ne laisse jamais passer une de ses actions irréversibles : elle est redemandée chaque fois.
-
-`/plan` dit ce qui est réglé, `/plan off` et `/plan on` coupent et remettent les plans, `/plan reversible` les montre pour toute modification, `/plan irreversible` (par défaut) seulement pour ce qui ne s'annule pas. Les réglages sont `hitl.enabled` et `hitl.level`. Un plan auquel personne ne répond (un script, `louis --ask`) est refusé : rien d'irréversible ne se fait sans quelqu'un pour l'approuver. Le tableau de bord montre la part des plans approuvés, refusés ou laissés sans réponse, et le temps pris pour décider.
+Pour aller plus loin : [docs/RAG.md](docs/RAG.md), [docs/CACHE.md](docs/CACHE.md), [docs/EVAL.md](docs/EVAL.md).
 
 ## Notes
 
