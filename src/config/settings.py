@@ -140,15 +140,23 @@ settings: dict[str] = {
     # global one). /cache to see it. Without the embedding model or the reranker, it does nothing: the model answers
     "cache.enabled"        : True,
     "cache.file"           : "louis.cache.db",
-    # A question is looked up in two steps, as the knowledge base is. threshold: how close in meaning (cosine, 0 to 1) a
-    # question stored must be to be read again by the reranker (rag.rerank.model, the same model loaded once), which gives
-    # its answer only if it finds they ask the same (rerank.min_score). The meaning alone can not tell apart questions
-    # that differ by one word: "lire un fichier JSON" and "écrire un fichier JSON" are 0.975 close, more than most
-    # questions asked in other words (0.80 to 0.88). Measured with: cd src && python -m cache.evaluate (docs/CACHE.md).
-    # Without the reranker (fastembed missing), nothing is given. rerank.enabled False: the meaning is enough (unsafe)
-    "cache.threshold"      : 0.80,
+    # A question is looked up in three steps. threshold: how close in meaning (cosine, 0 to 1) a question stored must be
+    # to be read again by the reranker (rag.rerank.model, the same model loaded once), which gives its answer if it
+    # finds they ask the same (rerank.min_score), else by the small model (match.model). The meaning alone can not tell
+    # apart questions that differ by one word: "lire un fichier JSON" and "écrire un fichier JSON" are 0.975 close, more
+    # than most questions asked in other words (0.80 to 0.88). Measured with: cd src && python -m cache.evaluate
+    # (docs/CACHE.md): 0.78 finds "Que fait yield ?" (0.795) for no more questions asked to the small model; lower finds
+    # no more, and asks it more of the misses (~2.7 s each). rerank.enabled False: the meaning is enough (unsafe)
+    "cache.threshold"      : 0.78,
     "cache.rerank.enabled" : True,
     "cache.rerank.min_score": 0.35,
+    # The reranker never confirmed a wrong question, but misses most of those asked otherwise (4 out of 27, "tu peux me
+    # redire comment fonctionne X" against "comment marche X": 0.010). The closest ones it did not confirm are asked to
+    # a small model, "same question?" (cache/matcher.py): 20 out of 27, and none of the 26 that ask something else.
+    # ~2.4 s on the CPU, paid by the misses that have a close question too (2 at most). The model of the scribe: one model
+    # loaded for both. It must answer without thinking first: an "instruct" model. "": the reranker alone
+    "cache.match.model"    : "qwen3:4b-instruct",
+    "cache.match.gpu"      : False,
     # Seconds an answer may be given again (7 days), and the answers kept at most, the ones served least lately dropped first
     "cache.ttl"            : 7 * 24 * 3600,
     "cache.max_entries"    : 1000,

@@ -57,7 +57,8 @@ BACKWARD: re.Pattern = re.compile(
     rf"|(?:le|la|les|l') ?{ORDINAL}(?=\s*(?:[?.!,;:]|$))|(?:le|la|les|l') ?{ORDINAL}s? {PART}"
     r"|ci-dessus|au-dessus|plus haut|precedemment|tout a l'heure|encore|pareil"
     r"|ta (?:reponse|solution|version|methode)|ton (?:code|exemple|script|programme)|tes (?:exemples|reponses)"
-    r"|(?:dis|explique|montre|corrige|refais|ameliore|detaille|reformule|traduis|continue)-(?:le|la|les|moi|nous)"
+    # "explique-le", "corrige-la": what? "Explique-moi les décorateurs" says it
+    r"|(?:dis|explique|montre|corrige|refais|ameliore|detaille|reformule|traduis|continue)-(?:le|la|les)(?:-moi)?"
     r"|that one|this one|those|these|the (?:same|first|second|third|last|previous|next|above)|above|again"
     r"|your (?:answer|code|solution|example)|it|them)\b",
     re.IGNORECASE

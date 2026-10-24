@@ -728,7 +728,7 @@ class App:
             self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
         self.session.add("assistant", hit.answer)
         self.__bus.dispatch(CACHE_HIT, id=hit.id, score=hit.score, verified=hit.verified, question=hit.question,
-                            age=round(hit.age, 1), hits=hit.hits, seed=hit.seed)
+                            age=round(hit.age, 1), hits=hit.hits, seed=hit.seed, by=hit.by)
         self.__bus.dispatch(CHAT_TEXT, text=hit.answer)
         self.__bus.dispatch(CHAT_REPLY, content=hit.answer, tools=[])
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="done", message=None)

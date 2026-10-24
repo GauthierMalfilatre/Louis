@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from app.app import App
 from cache.rules import same_specifics, timely, situated, why_not, standalone, clean, personal
+from cache.matcher import Matcher, MatchError
 from cache.seeding import load as load_seed, SEED_DIR
 from cache.semantic_cache import SemanticCache
 from cache.store import Store
@@ -80,6 +81,21 @@ class FakeReranker:
             raise RerankError("le reranking a besoin de fastembed")
         self.read.extend(texts)
         return [0.05 if (query, text) in self.rejected else 0.9 for text in texts]
+
+class FakeMatcher:
+    """ The small model without Ollama: the pairs in same are the same questions, down raises as Ollama stopped would """
+    model: str = "fake-match"
+
+    def __init__(self, same: set[tuple[str, str]] = frozenset(), down: bool = False):
+        self.pairs = same
+        self.down: bool = down
+        self.asked: list[tuple[str, str]] = []
+
+    def same(self, first: str, second: str) -> bool:
+        if self.down:
+            raise MatchError("Ollama ne répond pas")
+        self.asked.append((first, second))
+        return (first, second) in self.pairs
 
 class Clock:
     """ The time, moved by the tests """
@@ -159,13 +175,15 @@ def test_what_depends_on_the_project_is_found(question, expected):
 @pytest.mark.parametrize("question", [
     QUESTION, "Comment annuler le dernier commit git ?", "Comment trouver le premier élément d'une liste ?",
     "Qu'est-ce qu'une closure ?", "How do I read a JSON file in Python?", "C'est quoi yield ?",
+    "Explique-moi les décorateurs Python", "Tu peux me redire comment fonctionne le système de fuel ?",
 ])
 def test_a_question_that_means_something_alone_stands_alone(question):
     assert standalone(question) and why_not(question) is None
 
 @pytest.mark.parametrize("question", [
     "Et pour la deuxième ?", "Et en JavaScript ?", "Pourquoi ?", "Explique plus", "Montre-moi le deuxième exemple",
-    "Peux-tu corriger ça ?", "Corrige-le s'il te plaît", "Ta réponse est fausse, refais", "Ça ne marche pas chez moi",
+    "Peux-tu corriger ça ?", "Corrige-le s'il te plaît", "Explique-le-moi plus simplement", "Ta réponse est fausse, refais",
+    "Ça ne marche pas chez moi",
     "What about the second one?", "Can you explain it again?", "Mais comment le tester proprement ?",
 ])
 def test_a_question_that_leans_on_what_came_before_is_a_follow_up(question):
@@ -334,6 +352,52 @@ def test_an_answer_of_the_model_is_checked_by_its_question(cache):
     ask(found, PARAPHRASE)
     assert reranker.read == [QUESTION]
 
+def test_the_small_model_has_the_last_word_on_what_the_reranker_did_not_confirm(cache):
+    matcher = FakeMatcher({(QUESTION, PARAPHRASE)})
+    found = cache(reranker=FakeReranker({(PARAPHRASE, QUESTION)}), matcher=matcher)
+    ask(found, QUESTION)
+    hit = ask(found, PARAPHRASE)
+    assert hit is not None and hit.by == "matcher" and matcher.asked == [(QUESTION, PARAPHRASE)]
+    assert told(found, CACHE_LOOKUP)[-1]["matched"] == 1
+
+def test_the_small_model_is_not_asked_what_the_reranker_confirmed(cache):
+    matcher = FakeMatcher()
+    found = cache(matcher=matcher)
+    ask(found, QUESTION)
+    assert ask(found, PARAPHRASE).by == "reranker" and matcher.asked == []
+
+def test_a_question_the_small_model_finds_different_is_answered_by_the_model(cache):
+    found = cache(reranker=FakeReranker({(PARAPHRASE, QUESTION)}), matcher=FakeMatcher())
+    ask(found, QUESTION)
+    assert ask(found, PARAPHRASE) is None
+
+def test_the_small_model_is_asked_about_the_closest_two_at_most(cache, monkeypatch):
+    others = [f"Comment lire un fichier JSON en Python {suffix} ?" for suffix in ("vite", "bien", "proprement")]
+    for i, other in enumerate(others):
+        monkeypatch.setitem(VECTORS, other, BASE + 0.01 * (i + 1) * noise(other))
+    found = cache(reranker=FakeReranker(down=True), matcher=(matcher := FakeMatcher()))
+    for other in others:
+        ask(found, other)
+    ask(found, QUESTION)
+    assert len(matcher.asked) == 2 + 2 + 1
+
+def test_a_small_model_that_fails_never_fails_the_lookup(cache):
+    found = cache(reranker=FakeReranker({(PARAPHRASE, QUESTION)}), matcher=FakeMatcher(down=True))
+    ask(found, QUESTION)
+    assert ask(found, PARAPHRASE) is None
+
+def test_without_the_reranker_the_small_model_still_confirms(cache):
+    found = cache(reranker=FakeReranker(down=True), matcher=FakeMatcher({(QUESTION, PARAPHRASE)}))
+    ask(found, QUESTION)
+    assert ask(found, PARAPHRASE).by == "matcher"
+
+def test_the_warm_up_loads_the_small_model(cache):
+    matcher = FakeMatcher()
+    found = cache(matcher=matcher)
+    found.warm()
+    ask(found, QUESTION)
+    assert ("Louis", "Louis") in matcher.asked
+
 def test_without_verify_the_meaning_is_enough(cache):
     found = cache(reranker=None, verify=False)
     ask(found, QUESTION)
@@ -501,8 +565,9 @@ def louis(folder, monkeypatch, tmp_path):
     """ An app with the cache on, whose model answers the replies given, and whose embedding model is FakeEmbedder """
     monkeypatch.setattr(OllamaModel, "_OllamaModel__probe", staticmethod(lambda uri, model: {"tools"}))
     monkeypatch.setattr(Embedder, "query", lambda self, text: meaning(text))
-    # Never fastembed: the tests run where it is not installed
+    # Never fastembed: the tests run where it is not installed. Nor the small model of Ollama
     monkeypatch.setattr(Reranker, "score", lambda self, query, texts: [0.9] * len(texts))
+    monkeypatch.setattr(Matcher, "same", lambda self, first, second: False)
     monkeypatch.setenv("LOUIS_CACHE", str(tmp_path / "cache.db"))
     traces = tmp_path / "traces.jsonl"
 

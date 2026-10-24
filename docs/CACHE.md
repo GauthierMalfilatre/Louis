@@ -35,23 +35,26 @@ louis
 
 La question passe par le cache **avant le garde-fou** et avant le modèle. Le garde-fou ne relit que les questions auxquelles le cache n'a pas de réponse (voir [Garde-fou](#garde-fou)) :
 
-1. **Le sens.** La question est lue par le modèle d'embedding (sur le processeur, ~30 ms) et comparée aux questions gardées. Celles qui en sont assez proches (cosinus ≥ `cache.threshold`, 0.80) sont candidates.
+1. **Le sens.** La question est lue par le modèle d'embedding (sur le processeur, ~30 ms) et comparée aux questions gardées. Celles qui en sont assez proches (cosinus ≥ `cache.threshold`, 0.78) sont candidates.
 2. **Les détails.** Un embedding lit la phrase, pas ses détails : « 17 × 23 » et « 17 × 24 » sont à 0.967. Une candidate doit parler des **mêmes nombres, fichiers et noms du code** (`snake_case`, `camelCase`, `NomDeClasse`, `fonction()`, ce qui est entre accents graves) que la question (`cache/rules.py`).
-3. **La vérification.** Une candidate écrite comme la question (à la casse, aux accents et à la ponctuation près) est rendue telle quelle. Les autres sont relues par le cross-encoder du reranker (`rag.rerank.model`, le même modèle que le RAG, chargé une seule fois) :
+3. **Le reranker (~20 ms).** Une candidate écrite comme la question (à la casse, aux accents et à la ponctuation près) est rendue telle quelle. Les autres sont relues par le cross-encoder du reranker (`rag.rerank.model`, le même modèle que le RAG, chargé une seule fois) :
    - une réponse du modèle : sa **question** est relue avec la nouvelle, et rendue si le reranker les trouve identiques (≥ `cache.rerank.min_score`, 0.35) ;
    - une réponse de l'aide de Louis : sa **réponse** est relue avec la nouvelle question (≥ `cache.seed.min_score`, 0.75).
 
-   Pourquoi deux façons : le reranker a appris à dire si un passage répond à une question, pas si deux questions sont les mêmes. Relue avec une réponse du modèle sur la lecture d'un JSON, « comment écrire un fichier JSON ? » obtient 0.977 (la réponse parle bien de fichiers JSON) : seules les questions se comparent sans risque. Les réponses de l'aide de Louis, elles, disent tout ce que Louis fait sur un sujet : les relire avec la question en trouve bien plus.
+   Pourquoi deux façons : le reranker a appris à dire si un passage répond à une question, pas si deux questions sont les mêmes. Relue avec une réponse du modèle sur la lecture d'un JSON, « comment écrire un fichier JSON ? » obtient 0.977 (la réponse parle bien de fichiers JSON) : seules les questions se comparent sans risque. Les réponses de l'aide de Louis, elles, disent tout ce que Louis fait sur un sujet.
+4. **Le petit modèle (~2,7 s).** Le reranker n'a jamais confirmé une mauvaise question, mais il en rate la plupart des bonnes : « Tu peux me redire comment fonctionne le système de fuel ? » obtient 0.010 contre « Comment marche le système de fuel ? ». Les deux candidates les plus proches qu'il n'a pas confirmées sont donc posées à un petit modèle (`cache.match.model`, `qwen3:4b-instruct`, celui du scribe, sur le processeur) : « une seule et même réponse répond-elle aux deux ? ». Il a le dernier mot (`cache/matcher.py`).
 
-Sans le reranker, les embeddings confondent des questions qui ne diffèrent que d'un mot (voir [Mesurer](#mesurer)). `cache.rerank.enabled: False` se contente du sens, ce qui n'est pas sûr.
+   Il ne coûte rien quand aucune question gardée n'est assez proche, ~2,7 s par candidate sinon (deux au plus) : une réponse du cache arrive alors en ~3 s au lieu de plusieurs dizaines, et une question qui n'en a pas (« écrire » après « lire ») attend ces secondes en plus avant le modèle. `cache.match.model: ""` s'en passe : le reranker seul.
 
-**Préchauffage.** Au lancement, pendant que l'utilisateur tape sa première question, deux fils chargent le modèle d'embedding (en lisant les questions de l'aide de Louis si elles ont changé) et le reranker. La première question les attend s'ils n'ont pas fini. Sur une installation neuve, c'était ~12 s de plus sur la première question (6,8 s pour l'aide, 5,8 s pour le reranker, d'après un log) ; préchauffé, la réponse de l'aide arrive en ~0,15 s. Ensuite, une recherche prend ~30 ms pour la question et ~20 ms par candidate relue.
+Sans reranker ni petit modèle, les embeddings confondent des questions qui ne diffèrent que d'un mot (voir [Mesurer](#mesurer)) : le cache ne rend alors que les questions écrites à l'identique. `cache.rerank.enabled: False` se contente du sens, ce qui n'est pas sûr.
+
+**Préchauffage.** Au lancement, pendant que l'utilisateur tape sa première question, trois fils chargent le modèle d'embedding (en lisant les questions de l'aide de Louis si elles ont changé), le reranker et le petit modèle. La première question les attend s'ils n'ont pas fini. Sur une installation neuve, c'était ~12 s de plus sur la première question (6,8 s pour l'aide, 5,8 s pour le reranker, d'après un log) ; préchauffé, la réponse de l'aide arrive en ~0,15 s quand le reranker la confirme.
 
 ## Garde-fou
 
 Avec le garde-fou actif (`guard.enabled`), chaque message est relu par le modèle contre ses règles avant d'arriver au modèle : plusieurs secondes, et plus d'une minute sur le premier message d'un lancement (79 s dans un log). Le cache passe **avant** lui :
 
-- **Une question à laquelle le cache répond n'est pas relue par le garde-fou.** L'utilisateur ne reçoit qu'une réponse que les rails de sortie ont vérifiée quand elle a été gardée (ou écrite par l'équipe), donnée à une question que les rails d'entrée avaient laissée passer, et que le reranker trouve identique. Au pire, la réponse ne convient pas ; jamais une réponse que le garde-fou aurait refusée. Le message est quand même masqué avant d'être gardé dans la session, par les motifs du garde-fou (adresses, clés, cartes... sans modèle, instantané).
+- **Une question à laquelle le cache répond n'est pas relue par le garde-fou.** L'utilisateur ne reçoit qu'une réponse que les rails de sortie ont vérifiée quand elle a été gardée (ou écrite par l'équipe), donnée à une question que les rails d'entrée avaient laissée passer, et que le reranker ou le petit modèle trouve identique. Au pire, la réponse ne convient pas ; jamais une réponse que le garde-fou aurait refusée. Le message est quand même masqué avant d'être gardé dans la session, par les motifs du garde-fou (adresses, clés, cartes... sans modèle, instantané).
 - **Une question à laquelle il ne répond pas passe par le garde-fou comme avant**, puis par le modèle. Si les rails d'entrée l'ont masquée (elle contenait une adresse, une clé...), sa réponse n'est jamais gardée : le cache l'avait cherchée telle qu'elle était tapée, et la partagerait avec les autres utilisateurs.
 - Une réponse gardée sans garde-fou n'est jamais rendue quand il est actif.
 
@@ -88,7 +91,7 @@ Une installation neuve n'a encore rien gardé. Pour que le cache serve dès la p
 
 - Elles sont rangées dans le même `louis.cache.db` (pas de base à part), à la première question, puis de nouveau chaque fois que les fichiers changent (leur version est le hash de leur contenu). La première fois prend une ou deux secondes : chaque question est lue par le modèle d'embedding.
 - Elles valent pour tous les modèles, tous les prompts et tous les utilisateurs, n'expirent jamais, ne comptent pas dans `cache.max_entries`, et `/cache clear` les laisse. `/cache forget` en oublie une jusqu'au prochain changement des fichiers. `cache.seed: False` les retire.
-- **Pour qu'elle réponde à plus de questions, il faut y écrire plus de façons de les poser.** Une question écrite dans le fichier est toujours rendue ; une autre ne l'est que si le reranker est sûr de lui (≥ 0.75, voir [Mesurer](#mesurer)).
+- Une question écrite dans le fichier est toujours rendue ; une autre l'est si le reranker la confirme sur la réponse (≥ 0.75) ou si le petit modèle la trouve identique à l'une des façons écrites : 7 des 10 questions sur Louis du jeu de test (voir [Mesurer](#mesurer)).
 - Aucune n'est vérifiée par un modèle : elles doivent être justes, et vraies quelle que soit la session (pas de « ce fichier », pas de date). Après un changement de Louis (une commande renommée...), il faut les mettre à jour.
 
 ## Quand une réponse est oubliée
@@ -107,26 +110,29 @@ cd src && python -m cache.evaluate [--json scores.json]
 
 Le script lit des paires de questions comme le cache les lit, et donne pour chaque seuil la part de chaque sorte à laquelle il répondrait :
 
-- 12 paraphrases (la même question dite autrement : le cache devrait répondre) et 12 presque-pareilles (des mots proches, une autre question : il ne doit jamais répondre) ;
+- 16 paraphrases (la même question dite autrement : le cache devrait répondre) et 16 presque-pareilles (des mots proches, une autre question : il ne doit jamais répondre), dont « comment marche le système de fuel » contre « tu peux me redire comment fonctionne… » ou « comment modifier… » ;
 - pour l'aide de Louis, 10 questions sur Louis dites autrement que dans le fichier, et 10 questions de code qui lui ressemblent (« indexer une liste en Python », « installer numpy »...).
 
-Mesuré avec `nomic-embed-text` et `mmarco-mMiniLMv2-L12-H384-v1` :
+Pour chaque seuil, il donne ce que le cache sert avec le reranker seul et avec le petit modèle, et combien de presque-pareilles sont posées au petit modèle (le coût des questions sans réponse). Mesuré avec `nomic-embed-text`, `mmarco-mMiniLMv2-L12-H384-v1` et `qwen3:4b-instruct` :
 
-| Réponses du modèle | Paraphrases servies | Presque-pareilles servies (erreurs) |
+| Réponses du modèle (seuil 0.78) | Paraphrases servies | Presque-pareilles servies (erreurs) |
 | --- | --- | --- |
-| Sens seul, cosinus ≥ 0.92 | 50 % | **3 / 12** |
-| Sens seul, cosinus ≥ 0.98 | 0 % | 1 / 12 |
-| Sens ≥ 0.80 + détails + reranker sur la question ≥ 0.35 (**défaut**) | 42 % | **0 / 12** |
+| Sens seul (et détails), cosinus ≥ 0.92 | 6 / 16 | **5 / 16** |
+| + détails + reranker ≥ 0.35 | 4 / 16 | **0 / 16** |
+| + petit modèle (**défaut**) | **15 / 16** | **0 / 16** |
 
-| Aide de Louis | Questions sur Louis servies | Questions de code servies (erreurs) |
+| Aide de Louis (seuil 0.78) | Questions sur Louis servies | Questions de code servies (erreurs) |
 | --- | --- | --- |
-| Reranker sur la réponse ≥ 0.60 | 50 % | **1 / 10** |
-| Reranker sur la réponse ≥ 0.75 (**défaut**) | 20 % | **0 / 10** |
+| Reranker sur la réponse ≥ 0.60 | 5 / 10 | **1 / 10** |
+| Reranker sur la réponse ≥ 0.75 | 2 / 10 | **0 / 10** |
+| + petit modèle (**défaut**) | **7 / 10** | **0 / 10** |
 
-Le sens seul ne suffit à aucun seuil : « convertir une chaîne en entier » et « convertir un entier en chaîne » sont à **0.993**, « lire un fichier JSON » et « écrire un fichier JSON » à 0.975, plus que la plupart des vraies paraphrases (0.80 à 0.88). Le reranker les sépare (0.10 et 0.26 contre 0.36 à 0.81 pour les paraphrases qu'il accepte). Pour l'aide de Louis, « valider un JSON avec un schéma en Python » obtient 0.74 avec la réponse sur `/json` : d'où 0.75.
+Le sens seul ne suffit à aucun seuil : « convertir une chaîne en entier » et « convertir un entier en chaîne » sont à **0.993**, « lire un fichier JSON » et « écrire un fichier JSON » à 0.975, plus que la plupart des vraies paraphrases (0.80 à 0.88). Le reranker ne se trompe pas mais confirme peu ; le petit modèle reconnaît « Tu sais faire quoi ? », « venv » pour « environnement virtuel » ou « Tu peux me redire comment fonctionne le système de fuel ? », et refuse toujours « écrire » pour « lire », « modifier le système de fuel », « Qu'est-ce que tu ne sais pas faire ? ».
 
-Le prix est le rappel : le cache refuse aussi des paraphrases qui changent beaucoup de mots (« venv » pour « environnement virtuel »). Il rate donc des réponses qu'il aurait pu rendre, mais n'en rend pas de fausses sur ces jeux. Ils sont petits : avant de changer un seuil, ajouter des questions réelles à `SAME`, `OTHER`, `SEED_SAME` et `SEED_OTHER` dans `src/cache/evaluate.py`.
+Le seuil de 0.78 vient de la même mesure : il trouve « Que fait yield ? » (0.795) sans poser plus de questions au petit modèle qu'à 0.80 ; plus bas, rien de plus n'est trouvé, et de plus en plus de questions sans réponse lui sont posées (jusqu'à 9 sur 10 pour l'aide de Louis à 0.66, ~2,7 s chacune).
+
+Il reste des ratés : « 17 fois 23, **ça** fait combien ? » est pris pour une suite (« ça » renvoie d'habitude à ce qui précède), et le petit modèle refuse encore quelques vraies paraphrases (« couper » pour « désactiver le cache »). Les jeux de test sont petits : avant de changer un seuil, ajouter des questions réelles à `SAME`, `OTHER`, `SEED_SAME` et `SEED_OTHER` dans `src/cache/evaluate.py`.
 
 ## Suivi
 
-Chaque question cherchée laisse une ligne `cache` dans `louis.traces.jsonl` (trouvée ou non, le score le plus proche, la durée, ou pourquoi elle n'a pas été cherchée), et le tour répondu par le cache est marqué `cached`. `louis --dashboard` donne le taux de réponses du cache et sa latence à côté de celle du modèle, sans que ses réponses en millisecondes ne cachent un modèle plus lent. Le juge (`eval.*`) ne relit pas les réponses du cache : il les a jugées quand le modèle les a données.
+Chaque question cherchée laisse une ligne `cache` dans `louis.traces.jsonl` (trouvée ou non, le score le plus proche, la durée, combien de questions ont été posées au petit modèle, ou pourquoi elle n'a pas été cherchée), et le tour répondu par le cache est marqué `cached`. `louis --dashboard` donne le taux de réponses du cache et sa latence à côté de celle du modèle, sans que ses réponses en millisecondes ne cachent un modèle plus lent. Le juge (`eval.*`) ne relit pas les réponses du cache : il les a jugées quand le modèle les a données.

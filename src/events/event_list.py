@@ -77,8 +77,8 @@ RAG_RETRIEVED      = "rag.retrieved"        # data: query, source (None: all), p
 # CACHE_LOOKUP: each message the cache was asked about. reason tells why it was not looked up ("followup": it leans on
 # what was said before, "timely": it depends on the time, "project": on the project as it is now, "embed": the embedding
 # model does not answer), None if it was
-CACHE_LOOKUP   = "cache.lookup"     # data: hit, score (the closest entry, None without one), duration (seconds), reason
-CACHE_HIT      = "cache.hit"        # data: id, score (closeness in meaning, 0 to 1), verified (the reranker: they ask the same, 0 to 1, None if not checked), question (the one answered before), age (seconds), hits (served, this one included), seed (written by the team)
+CACHE_LOOKUP   = "cache.lookup"     # data: hit, score (the closest entry, None without one), duration (seconds), reason, matched (questions asked to the small model, ~2.4 s each)
+CACHE_HIT      = "cache.hit"        # data: id, score (closeness in meaning, 0 to 1), verified (the reranker: they ask the same, 0 to 1, None if not checked), question (the one answered before), age (seconds), hits (served, this one included), seed (written by the team), by (what found them the same: "text", "reranker", "matcher", "meaning")
 CACHE_STORED   = "cache.stored"     # data: id, tools (the ones the answer used)
 CACHE_ENABLED  = "cache.enabled"    # data: none
 CACHE_DISABLED = "cache.disabled"   # data: none

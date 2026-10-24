@@ -51,7 +51,7 @@ RUN_SETTINGS: tuple[str, ...] = (
     "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth", "guard.enabled",
     "rag.enabled", "rag.rerank.enabled", "rag.rerank.model", "rag.rerank.pool", "rag.rerank.min_score",
     "rag.rerank.max_chars", "rag.embed.gpu", "eval.enabled", "eval.model", "cache.enabled", "cache.threshold",
-    "cache.rerank.enabled", "cache.rerank.min_score", "cache.seed.min_score"
+    "cache.rerank.enabled", "cache.rerank.min_score", "cache.seed.min_score", "cache.match.model"
 )
 
 # Characters kept of each text: enough to know what it was about
@@ -380,7 +380,8 @@ class Recorder:
             hit=data["hit"],
             score=data["score"],
             duration=data["duration"],
-            reason=data["reason"]
+            reason=data["reason"],
+            matched=data.get("matched", 0)
         )
 
     def __on_cache_hit(self, event: Event) -> None:

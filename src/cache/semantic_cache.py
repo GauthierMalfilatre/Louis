@@ -12,17 +12,17 @@
 ## the seed (cache/seed/, cache/seeding.py), answers written by the team, makes it useful from the first question on a
 ## new install: stored on the first lookup, and again each time its files change
 ##
-## A lookup goes in two steps, as a search of the knowledge base does. The embeddings find the questions close in
-## meaning (cache.threshold), then the cross-encoder of the reranker reads each one with the new question, and only gives
-## its answer when it finds they ask the same (cache.rerank.min_score). The embeddings alone can not tell apart the
-## questions that only differ by a word: "lire un fichier JSON" and "écrire un fichier JSON" are 0.975 apart with
-## nomic-embed-text, more than most questions asked in other words (python -m cache.evaluate, docs/CACHE.md). Without
-## the reranker (fastembed missing), nothing is given but the same question written the same way: the answers are still
-## stored, for when it is there.
-## The reranker was trained to tell whether a passage answers a question, not whether two questions are the same: it
-## reads an answer of the model against the question it was given for (an answer about reading JSON also "answers"
-## a question about writing it: 0.977), but an answer of the seed against the new question (cache.seed.min_score): those
-## answers tell all of what Louis does about something, and the questions of code that look like them do not get them
+## A lookup goes in three steps. The embeddings find the questions close in meaning (cache.threshold). The embeddings
+## alone can not tell apart the questions that only differ by a word: "lire un fichier JSON" and "écrire un fichier
+## JSON" are 0.975 apart with nomic-embed-text, more than most questions asked in other words (python -m cache.evaluate,
+## docs/CACHE.md). So the cross-encoder of the reranker reads each one with the new question (~20 ms), and gives its
+## answer at once when it finds they ask the same (cache.rerank.min_score). It was trained to tell whether a passage
+## answers a question, not whether two questions are the same: it reads an answer of the model against the question it
+## was given for (an answer about reading JSON also "answers" a question about writing it: 0.977), but an answer of the
+## seed against the new question (cache.seed.min_score), those tell all of what Louis does about something. It never
+## confirmed a wrong one, but misses most questions asked otherwise. The closest ones it did not confirm are then asked
+## to a small model (cache/matcher.py, ~2.4 s on the CPU): the last word. Without either, nothing is given but the same
+## question written the same way: the answers are still stored, for when they are there
 ##
 ## The app looks a message up as it was typed, before the input rails of the guard and the model, wherever it comes in
 ## the session as long as it stands alone (cache/rules.py): on a hit, it gives the answer as a reply (CACHE_HIT), a
@@ -34,6 +34,7 @@
 ## What is stored is what the user read: the question as the guard let it through (masked), the reply as it was shown
 ##
 from cache.rules import why_not, same_specifics, same_text, clean, personal
+from cache.matcher import Matcher, MatchError
 from cache.seeding import SEED_DIR, load as load_seed
 from cache.store import Store, Scope, Entry, normalized, SEED
 from rag.embedder import Embedder, EmbedError
@@ -58,6 +59,8 @@ import time
 RAG_TOOLS: tuple[str, ...] = ("search_knowledge",)
 # Entries compared with each question beyond the closest: the closest may differ by a number, the next one not
 CANDIDATES: int = 5
+# Of those the reranker did not confirm, the closest ones asked to the matcher: ~2.4 s each, paid by the misses too
+MATCHED: int = 2
 
 def cache_path() -> str:
     """ Where the cache is: LOUIS_CACHE, or the file of the settings in the working directory (as louis.db) """
@@ -67,7 +70,8 @@ def cache_path() -> str:
 class Hit:
     """
         An answer given before, to give again: score is how close the questions are in meaning (0 to 1), verified how
-        sure the reranker is they ask the same (0 to 1, None without it), age its seconds, seed whether the team wrote it
+        sure the reranker is they ask the same (0 to 1, None without it), age its seconds, seed whether the team wrote
+        it, by what found them the same: "text" (written the same), "reranker", "matcher" or "meaning" (verify off)
     """
     id      : int
     question: str
@@ -77,6 +81,7 @@ class Hit:
     age     : float
     hits    : int
     seed    : bool = False
+    by      : str  = "reranker"
 
 @dataclass
 class Pending:
@@ -97,14 +102,16 @@ class Turn:
 class SemanticCache:
     """ Looked up by the app before the model, fed by the bus once a turn is done """
     def __init__(self, bus: EventBus, store: Store, embedder: Embedder | None, *, enabled: bool = True,
-                 threshold: float = 0.80, reranker: Reranker | None = None, verify: bool = True,
+                 threshold: float = 0.78, reranker: Reranker | None = None, matcher: Matcher | None = None,
+                 verify: bool = True,
                  min_score: float = 0.35, seed_min_score: float = 0.75, ttl: float = 7 * 24 * 3600, most: int = 1000,
                  tools: list[str] | None = None, user_id: int | None = None, user_name: str | None = None,
                  guard: bool = False, seed: str | None = None, clock: Callable[[], float] = time.time):
         """
             Init the cache on the bus of the app. With verify, a question close enough in meaning (threshold) must also be
-            the same for the reranker (min_score; seed_min_score for its answer, against an answer of the seed): without
-            one, nothing is given but the same question written the same way. Without verify, the meaning is enough
+            the same for the reranker (min_score; seed_min_score for its answer, against an answer of the seed), or for
+            the matcher: without either, nothing is given but the same question written the same way. Without verify,
+            the meaning is enough
             (questions that differ by one word get each other's answer). user_id is None for a cache the users share;
             user_name: an answer that names them is never stored (None: the anonymous user). guard: the guard checks the
             replies, an answer stored without it is never given while it does. seed: the folder of the seed files (None:
@@ -116,6 +123,7 @@ class SemanticCache:
         self.__enabled  : bool            = enabled
         self.__threshold: float           = threshold
         self.__reranker : Reranker | None = reranker
+        self.__matcher  : Matcher | None  = matcher
         self.__verify   : bool            = verify
         self.__min_score: float           = min_score
         self.__seed_min : float           = seed_min_score
@@ -142,6 +150,7 @@ class SemanticCache:
         # The embedding model or the reranker failed: said once in the log, not at every message
         self.__warned   : bool            = False
         self.__unverified: bool           = False
+        self.__unmatched: bool            = False
 
         bus.subscribe(self.__on_turn_started, CHAT_TURN_STARTED)
         bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
@@ -167,11 +176,16 @@ class SemanticCache:
         if verify and (reranker is None or reranker.model != settings.get("rag.rerank.model")):
             reranker = Reranker(settings.get("rag.rerank.model", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"),
                                 max_chars=settings.get("rag.rerank.max_chars", 0))
+        judge: str | None = settings.get("cache.match.model")
+        matcher: Matcher | None = Matcher(
+            settings["chat.uri"], judge, settings.get("cache.match.gpu", False), settings.get("scribe.keepalive", "30m")
+        ) if verify and judge else None
         return cls(
             bus, Store(cache_path()), embedder,
             enabled=bool(settings.get("cache.enabled", True)),
-            threshold=float(settings.get("cache.threshold", 0.80)),
+            threshold=float(settings.get("cache.threshold", 0.78)),
             reranker=reranker if verify else None,
+            matcher=matcher,
             verify=verify,
             min_score=float(settings.get("cache.rerank.min_score", 0.35)),
             seed_min_score=float(settings.get("cache.seed.min_score", 0.75)),
@@ -208,6 +222,8 @@ class SemanticCache:
         jobs: list[Callable[[], None]] = [self.__prepare_seed]
         if self.__verify and self.__reranker is not None:
             jobs.append(lambda: self.__reranker.score("Louis", ["Louis"]))
+        if self.__matcher is not None:
+            jobs.append(lambda: self.__matcher.same("Louis", "Louis"))
         for job in jobs:
             thread = threading.Thread(target=self.__quietly, args=(job,), daemon=True, name="louis-cache-warm")
             self.__warming.append(thread)
@@ -221,7 +237,7 @@ class SemanticCache:
         """ Run a job of the warm-up: one that fails is done by the first lookup, as without the warm-up """
         try:
             job()
-        except (EmbedError, RerankError) as e:
+        except (EmbedError, RerankError, MatchError) as e:
             log.info(f"[cache] warm-up left to the first lookup: {e.message}")
         except Exception:
             log.exception("[cache] the warm-up failed")
@@ -267,7 +283,7 @@ class SemanticCache:
                 reason = "embed"
         if reason is not None:
             self.__bus.dispatch(CACHE_LOOKUP, hit=False, score=None, duration=round(time.perf_counter() - start, 3),
-                                reason=reason)
+                                reason=reason, matched=0)
             return None
 
         scope: Scope = Scope(self.__user_id, model, prompt_version(prompt), self.__embedder.model)
@@ -286,15 +302,26 @@ class SemanticCache:
                 continue
             close.append((entry, score))
         found: Hit | None = None
-        for (entry, score), verified in zip(close, self.__verified(question, [entry for entry, _ in close])):
-            if verified is None or verified >= (self.__seed_min if entry.origin == SEED else self.__min_score):
-                found = Hit(entry.id, entry.question, entry.answer, round(score, 4),
-                            round(verified, 4) if verified is not None else None, now - entry.created_at, entry.hits + 1,
-                            entry.origin == SEED)
+        verified: list[float | None] = self.__verified(question, [entry for entry, _ in close])
+        unsure: list[tuple[Entry, float, float]] = []
+        for (entry, score), checked in zip(close, verified):
+            if checked is None or checked >= (self.__seed_min if entry.origin == SEED else self.__min_score):
+                by: str = "meaning" if checked is None else "text" if same_text(question, entry.question) else "reranker"
+                found = self.__hit(entry, score, checked, now, by)
                 break
             log.info(f"[cache] {score:.3f} close to #{entry.id}, but not "
                      f"{'its answer' if entry.origin == SEED else 'the same question'} for the reranker "
-                     f"({verified:.3f}): {entry.question!r}")
+                     f"({checked:.3f}): {entry.question!r}")
+            unsure.append((entry, score, checked))
+        judged: int = 0
+        if found is None and self.__matcher is not None:
+            for entry, score, checked in unsure[:MATCHED]:
+                judged += 1
+                if self.__matched(question, entry):
+                    found = self.__hit(entry, score, checked, now, "matcher")
+                    break
+                log.info(f"[cache] {score:.3f} close to #{entry.id}, but not the same question for "
+                         f"{self.__matcher.model}: {entry.question!r}")
 
         self.__lookups += 1
         if found is None:
@@ -305,10 +332,27 @@ class SemanticCache:
             self.__store.hit(found.id, now)
             self.__served = found.id
             self.__hits += 1
-            log.info(f"[cache] hit #{found.id} ({found.score:.3f}, verified {found.verified}): {found.question!r}")
+            log.info(f"[cache] hit #{found.id} ({found.score:.3f}, by {found.by}, verified {found.verified}): "
+                     f"{found.question!r}")
         self.__bus.dispatch(CACHE_LOOKUP, hit=found is not None, score=found.score if found else best,
-                            duration=round(time.perf_counter() - start, 3), reason=None)
+                            duration=round(time.perf_counter() - start, 3), reason=None, matched=judged)
         return found
+
+    @staticmethod
+    def __hit(entry: Entry, score: float, verified: float | None, now: float, by: str) -> Hit:
+        return Hit(entry.id, entry.question, entry.answer, round(score, 4),
+                   round(verified, 4) if verified is not None else None, now - entry.created_at, entry.hits + 1,
+                   entry.origin == SEED, by)
+
+    def __matched(self, question: str, entry: Entry) -> bool:
+        """ Whether the matcher finds the question the same as the one of the entry. One that fails finds nothing """
+        try:
+            return self.__matcher.same(entry.question, question)
+        except MatchError as e:
+            if not self.__unmatched:
+                log.warning(f"[cache] the questions are not compared by {self.__matcher.model}: {e.message}")
+                self.__unmatched = True
+            return False
 
     def __plant(self, now: float) -> None:
         """
