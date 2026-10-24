@@ -5,6 +5,7 @@
 ## Git tool: status, diff, log, branches, commits and pushes of the project
 ##
 from tool.tool import Tool
+from tool.risk import Risk, NONE, REVERSIBLE, IRREVERSIBLE
 from utils.path import ROOT, resolve_path
 import os
 import subprocess
@@ -126,6 +127,37 @@ class GitTool(Tool):
                 "required": ["action"]
             }
         )
+
+    def risk(self, app, **kwargs) -> Risk:
+        """
+            What the action would do: the ones that only read change nothing, a branch, a pull or a commit can be
+            undone here, a push or a deleted branch can not
+        """
+        action = kwargs.get("action")
+        if not isinstance(action, str):
+            return NONE
+        action = ALIASES.get(action.strip().lower(), action.strip().lower())
+        branch: str = current_branch() or "HEAD"
+        name = kwargs.get("branch")
+        if action == "branch" and isinstance(name, str) and name:
+            return Risk(REVERSIBLE, f"passe sur la branche {name}, créée si elle n'existe pas",
+                        f"repasser sur {branch} (et supprimer {name} si elle vient d'être créée)")
+        if action == "pull":
+            return Risk(REVERSIBLE, f"{branch} reçoit les commits d'origin", "git reset --keep ORIG_HEAD")
+        if action == "commit":
+            files: str = "\n".join(f"  {path}" for path in as_list(kwargs.get("paths")) if isinstance(path, str))
+            message = kwargs.get("message")
+            return Risk(REVERSIBLE, f"un commit sur {branch}", "git reset --soft HEAD~1 (les changements restent)",
+                        f"{message if isinstance(message, str) else ''}\n{files}".strip())
+        if action == "push":
+            # The commits no remote has yet: what the team will see
+            _, ahead = run("git", "log", "--oneline", "HEAD", "--not", "--remotes")
+            return Risk(IRREVERSIBLE, f"les commits de {branch} seront sur origin, visibles par toute l'équipe",
+                        preview=ahead)
+        if action == "delete_branch" and isinstance(name, str) and name:
+            return Risk(IRREVERSIBLE, f"la branche {name} sera supprimée ici (git la garde si son travail n'est ni "
+                                      "fusionné ni sur origin)")
+        return NONE
 
     def handle(self, app, **kwargs) -> str:
         """ Run the git action asked for """

@@ -18,6 +18,7 @@ from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
 from events.event_list import RAG_DESCRIBE_PROGRESS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT
 from events.event_list import CACHE_HIT, CACHE_ENABLED, CACHE_DISABLED, CACHE_CLEARED, CACHE_STATS
+from events.event_list import PLAN_SETTINGS, PLAN_PROPOSED, PLAN_DECIDED
 import json
 import os
 import re
@@ -115,6 +116,26 @@ def thought_lines(thought: str) -> list[str]:
     text: str = re.sub(r"^\s*(?:étape|step)\s*\d+\s*[:.)-]?\s*", "", thought.replace("**", ""), flags=re.IGNORECASE)
     return [line.strip() for line in text.splitlines() if line.strip()]
 
+# The risk of an action of a plan, said to the user: what can not be undone stands out
+RISKS: dict[str, str] = {"safe": "sans risque", "reversible": "réversible", "irreversible": "IRRÉVERSIBLE"}
+
+def plan_title(action: dict) -> str:
+    """ An action of a plan on one line, as its call is shown:  Modification /README.md """
+    return f"{LABELS.get(action['tool'], action['tool'])} {call_detail(action['tool'], action['arguments'])}".rstrip()
+
+def plan_details(action: dict) -> str:
+    """ What an action would do, and how to undo it:  /README.md sera modifié · annulable : git restore README.md """
+    undo: str = f"annulable : {action['undo']}" if action["undo"] else ""
+    return " · ".join(part for part in (action["consequence"], undo) if part)
+
+def plan_settings(data: dict) -> str:
+    """ What /plan set, said to the user """
+    if not data["enabled"]:
+        return "Plan avant d'agir désactivé : chaque outil demande ton accord comme d'habitude. /plan on pour le remettre."
+    which: str = ("seulement ce qui ne s'annule pas (un push, un merge, un fichier dont le contenu serait perdu)"
+                  if data["level"] == "irreversible" else "toute action qui change quelque chose")
+    return f"Plan avant d'agir activé, pour {which} : Louis te montre ce qu'il va faire et attend ton accord. /plan off pour le couper."
+
 def short_path(path: str) -> str:
     """ A path, with ~ for the home folder """
     home: str = os.path.expanduser("~")
@@ -189,6 +210,7 @@ class CLI(Interface):
         bus.subscribe(self._on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(lambda event: self.debug("\nUser has closed the session...\n"), APP_STOPPED)
         bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
+        bus.subscribe(self._on_plan, PLAN_PROPOSED)
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
         bus.subscribe(self.__on_session_list, SESSION_LIST)
         bus.subscribe(self.__on_session_resumed, SESSION_RESUMED)
@@ -207,6 +229,7 @@ class CLI(Interface):
         bus.subscribe(self.__on_reasoning_disabled, REASONING_DISABLED)
         bus.subscribe(self._on_reasoning_step, REASONING_STEP)
         bus.subscribe(self._on_reasoning_check, REASONING_CHECK)
+        bus.subscribe(self.__on_plan_settings, PLAN_SETTINGS)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_rag_indexing, RAG_INDEXING)
         bus.subscribe(self.__on_rag_progress, RAG_INDEX_PROGRESS)
@@ -306,6 +329,10 @@ class CLI(Interface):
     def __on_reasoning_disabled(self, event: Event) -> None:
         """ Back to the usual replies """
         self.out("\nRaisonnement pas à pas désactivé : Louis répond comme d'habitude.\n")
+
+    def __on_plan_settings(self, event: Event) -> None:
+        """ Whether the plans are shown, and for which actions """
+        self.out(f"\n{plan_settings(event.data)}\n")
 
     def _on_reasoning_step(self, event: Event) -> None:
         """
@@ -436,6 +463,30 @@ class CLI(Interface):
                 self.__always.add(tool)
             granted = choice in "ya"
         self.__bus.dispatch(TOOL_GRANT_PERMISSION, id=event.data["id"], granted=granted)
+
+    def _on_plan(self, event: Event) -> None:
+        """
+            The plan of a reply that would do something risky, before any of its calls runs: what the model meant,
+            then each action numbered with its risk, what it would do, how to undo it and what it would change. The
+            user approves it, refuses it, or answers what they would rather have, given to the model
+        """
+        data: dict = event.data
+        self._newline()
+        intent: list[str] = thought_lines(data["intent"])
+        self.out(f"\nMon plan : {intent[0]}" if intent else "\nAvant d'agir, voici ce que je vais faire :")
+        for line in intent[1:]:
+            self.out(f"  {line}")
+        for number, action in enumerate(data["actions"], 1):
+            self.out(f"  {number}. {plan_title(action)} · {RISKS.get(action['risk'], action['risk'])}")
+            if details := plan_details(action):
+                self.out(f"     {details}", dim=True)
+            if action["preview"]:
+                self._show_diff(action["preview"])
+        choice: str = self._choose("Approuver ce plan ? [y] oui  [n] non  [r] répondre  ", "ynr")
+        feedback: str = self.ask("Ta réponse : ").strip() if choice == "r" else ""
+        approved: bool = choice == "y"
+        self.out("(plan approuvé : j'y vais)" if approved else "(plan refusé : je ne fais rien de tout ça)", dim=True)
+        self.__bus.dispatch(PLAN_DECIDED, id=data["id"], approved=approved, feedback=feedback)
 
     def _choose(self, question: str, choices: str) -> str:
         """ One of the letters of choices, typed after question: "n" for anything else """

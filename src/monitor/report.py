@@ -77,6 +77,7 @@ def text(summary: dict, alerts: list[dict], path: str) -> str:
     structured: dict = summary.get("structured") or {"replies": 0}
     reasoning: dict = summary.get("reasoning") or {"answers": 0}
     cache: dict = summary.get("cache") or {"lookups": 0}
+    plans: dict = summary.get("plans") or {"plans": 0}
     lines: list[str] = [
         f"Louis monitoring · {path}",
         f"  {when(summary['start'])} → {when(summary['end'])} · {summary['runs']} run{'s' if summary['runs'] != 1 else ''}",
@@ -94,6 +95,9 @@ def text(summary: dict, alerts: list[dict], path: str) -> str:
         *([f"  cache        {count(cache['lookups']):>7}   answered {percent(cache['hit_rate'])} · "
            f"median {seconds(cache['cached_p50'])} against {seconds(turns['p50'])} · "
            f"lookup {seconds(cache['lookup_p50'])}"] if cache["lookups"] else []),
+        *([f"  plans        {count(plans['plans']):>7}   approved {percent(plans['approved_rate'])} · "
+           f"refused {percent(plans['refused_rate'])} · unanswered {count(plans['unanswered'])} · "
+           f"decided in {seconds(plans['decision_p50'])}"] if plans["plans"] else []),
         *judged(summary.get("eval") or {"answers": 0}),
         "",
         "Drift",

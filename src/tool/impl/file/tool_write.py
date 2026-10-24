@@ -5,6 +5,7 @@
 ## Write tool: create a file, or replace its whole content
 ##
 from tool.tool import Tool
+from tool.risk import Risk, NONE, REVERSIBLE, change_risk
 import ast
 import os
 from utils.path import resolve_path, display_path
@@ -61,6 +62,27 @@ class WriteTool(Tool):
                 "required": ["path", "content"]
             }
         )
+
+    def risk(self, app, **kwargs) -> Risk:
+        """ A new file can be removed again; a file replaced loses its content, unless git has it as it is now """
+        path = kwargs.get("path")
+        full = resolve_path(app, path) if isinstance(path, str) and path else None
+        if full is None or os.path.isdir(full):
+            return NONE
+        content = kwargs.get("content")
+        content = fix_newlines(full, content) if isinstance(content, str) else ""
+        if not os.path.exists(full):
+            shown: str = display_path(full)
+            return Risk(REVERSIBLE, f"{shown} sera créé", f"supprimer {shown}", diff_preview("", content))
+        # Without overwrite, the tool refuses: nothing is written
+        if str(kwargs.get("overwrite", False)).lower() != "true":
+            return NONE
+        try:
+            with open(full, "r", encoding="utf-8", newline="") as f:
+                before = f.read()
+        except (OSError, UnicodeDecodeError):
+            before = ""
+        return change_risk(full, diff_preview(before, content))
 
     def handle(self, app, **kwargs) -> str:
         """Create a file, or replace it when overwrite is set."""
