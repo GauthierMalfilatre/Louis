@@ -5,9 +5,9 @@
 ## Web interface: Louis in a browser (louis --web), and the pages of the public links of /share
 ##
 from interface.interface import Interface
-from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings
+from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings, preview as one_line
+from interface.cli import cache_hit, cache_cleared, cache_stats
 from interface.cli import plan_title, plan_details
-from interface.cli import preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import APP_STARTED, APP_STOPPED, THINKING_ENABLED, THINKING_DISABLED
@@ -20,6 +20,7 @@ from events.event_list import EXPORT_DONE, SHARE_CREATED, SHARE_LIST, SHARE_REVO
 from events.event_list import COMMAND_UNKNOWN, COMMAND_ERROR
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_DESCRIBE_PROGRESS, RAG_INDEXED, RAG_SOURCES
 from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
+from events.event_list import CACHE_HIT, CACHE_ENABLED, CACHE_DISABLED, CACHE_CLEARED, CACHE_STATS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, PLAN_SETTINGS
 from events.event_list import PLAN_PROPOSED, PLAN_DECIDED
 from config.settings import settings
@@ -338,6 +339,14 @@ class WebInterface(Interface):
         bus.subscribe(lambda event: self.__notice(
             f"Source « {event.data['source']} » retirée ({plural(event.data['chunks'], 'passage')})."
         ), RAG_FORGOTTEN)
+        # Before the answer it gives: where it comes from
+        bus.subscribe(lambda event: self.__notice(cache_hit(event.data)), CACHE_HIT)
+        bus.subscribe(lambda event: self.__notice(
+            "Je réponds tout de suite aux questions déjà posées, avec la réponse d'alors. /cache off pour l'arrêter."
+            if event.name == CACHE_ENABLED else "Je réponds de nouveau à chaque question, sans le cache."
+        ), CACHE_ENABLED, CACHE_DISABLED)
+        bus.subscribe(lambda event: self.__notice(cache_cleared(event.data), "success"), CACHE_CLEARED)
+        bus.subscribe(lambda event: self.__notice("\n".join(cache_stats(event.data))), CACHE_STATS)
         return self
 
     def getUserInput(self) -> str:

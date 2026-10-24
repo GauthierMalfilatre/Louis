@@ -61,6 +61,8 @@ from command.impl.command_index import IndexCommand, UnindexCommand
 from command.impl.command_eval import EvalCommand
 from eval.evaluator import Evaluator
 from command.impl.command_find import FindCommand
+from command.impl.command_cache import CacheCommand
+from cache.semantic_cache import SemanticCache, Hit
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -166,6 +168,7 @@ class App:
             .register(UnindexCommand())\
             .register(EvalCommand())\
             .register(FindCommand())\
+            .register(CacheCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -175,6 +178,17 @@ class App:
             if settings.get("guard.enabled", False) else None
         # The calls the guard refused in the current turn, by tool: counted again from 0 on each message
         self.__refused: Counter[str] = Counter()
+
+        # The answers given before, given again without the model to a question that means the same (cache.enabled,
+        # /cache on|off). It listens to the bus to store the answers once their turn is done: nothing is opened on the
+        # disk before the first lookup. It checks the questions with the reranker of the knowledge base: loaded once
+        self.__cache: SemanticCache = SemanticCache.from_settings(
+            settings, self.__bus, user, guard=self.__guard is not None,
+            reranker=self.__knowledge.reranker if self.__knowledge is not None else None
+        )
+        # Its models loaded while the user types: the first question does not wait for them
+        if self.__cache.enabled:
+            self.__cache.warm()
 
         # The answers judged once their turn is done (eval.enabled), or the last one when /eval asks. It only listens to
         # the bus: what it reads is what the guard let through
@@ -364,6 +378,11 @@ class App:
         return self.__evaluator
 
     @property
+    def cache(self) -> SemanticCache:
+        """ Get the semantic cache, for /cache to show it, switch it, or clear it """
+        return self.__cache
+
+    @property
     def knowledge(self) -> Knowledge | None:
         """ Get the knowledge base the user indexed, None if it is turned off (rag.enabled) """
         return self.__knowledge
@@ -490,7 +509,8 @@ class App:
             Answer a message of the user: the model replies, calling tools, until a reply calls none.
             With the guard, the model only reads what the input rails let through, and the user only
             reads what the output rails let through. Whatever goes wrong in the guard ends the turn:
-            a guard that cannot check never lets a message go unchecked
+            a guard that cannot check never lets a message go unchecked. A message the semantic cache answers is not
+            read by the rails: its answer went through them when it was kept (__cached)
         """
         self.__bus.dispatch(CHAT_TURN_STARTED)
         rounds: int = self.__settings.get("chat.tools.maxdepth", 8)
@@ -503,6 +523,9 @@ class App:
         made: Counter = Counter()
         repeats: int = 0
         try:
+            # Before the guard: the answer of the cache went through its output rails when it was kept
+            if self.__cached(text):
+                return
             question: str = text
             if self.__guard is not None:
                 verdict: Verdict = self.__guard.check_input(text)
@@ -510,7 +533,7 @@ class App:
                 if verdict.refused:
                     self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
                     return
-                question = verdict.content
+                question = self.__checked(text, verdict.content)
 
             saved: bool = self.session.saved
             self.session.add("user", question)
@@ -599,13 +622,15 @@ class App:
         made: Counter = Counter()
         repeats: int = 0
         try:
+            if self.__cached(text):
+                return
             question: str = text
             if self.__guard is not None:
                 verdict: Verdict = self.__guard.check_input(text)
                 if verdict.refused:
                     self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
                     return
-                question = verdict.content
+                question = self.__checked(text, verdict.content)
 
             saved: bool = self.session.saved
             self.session.add("user", question)
@@ -682,6 +707,46 @@ class App:
 
         log.warning(f"[app] reasoning stopped after {rounds} steps")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} étapes de raisonnement.")
+
+    def __cached(self, text: str) -> bool:
+        """
+            Answer a message of the user from the semantic cache, when it holds the answer to one that means the same:
+            neither the model nor the input rails of the guard are asked. The user only ever gets a reply the output rails
+            checked when it was kept, given to a question the input rails let through then, that the reranker finds the
+            same: at worst a wrong answer, never one the guard would refuse. The message is kept in the session masked by
+            the patterns of the guard (no model), the answer as any reply: the conversation goes on from them. The cache
+            reads the session: what the model read in it tells if the answer may be stored. A cache that fails never
+            fails the turn: the model answers. Whether it answered
+        """
+        try:
+            hit: Hit | None = self.__cache.lookup(text, model=self.__model.model, prompt=self.__prompt(),
+                                                  history=self.session.history)
+        except Exception:
+            log.exception("[cache] the lookup failed: the model answers")
+            return False
+        if hit is None:
+            return False
+        saved: bool = self.session.saved
+        self.session.add("user", self.__guard.mask(text) if self.__guard is not None else text)
+        if not saved and self.session.saved:
+            self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+        self.session.add("assistant", hit.answer)
+        self.__bus.dispatch(CACHE_HIT, id=hit.id, score=hit.score, verified=hit.verified, question=hit.question,
+                            age=round(hit.age, 1), hits=hit.hits, seed=hit.seed, by=hit.by)
+        self.__bus.dispatch(CHAT_TEXT, text=hit.answer)
+        self.__bus.dispatch(CHAT_REPLY, content=hit.answer, tools=[])
+        self.__bus.dispatch(CHAT_TURN_ENDED, reason="done", message=None)
+        self.__estimate_context()
+        return True
+
+    def __checked(self, text: str, question: str) -> str:
+        """
+            The message as the input rails let it through: masked, its answer is never kept by the cache (the cache looked
+            it up as it was typed, its sensitive data would be shared with the other users)
+        """
+        if question != text:
+            self.__cache.discard()
+        return question
 
     def __reasoning_view(self, question: str) -> list[dict]:
         """

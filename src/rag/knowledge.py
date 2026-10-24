@@ -150,6 +150,11 @@ class Knowledge:
         """ Get the file of the index """
         return self.__index.path
 
+    @property
+    def reranker(self) -> Reranker | None:
+        """ Get the reranker, None if it is turned off: the semantic cache reads its questions with the same model """
+        return self.__reranker
+
     def sources(self) -> list[dict]:
         """ The sources indexed: {name, root, files, chunks, embedded, model, updated_at} """
         return self.__index.sources()

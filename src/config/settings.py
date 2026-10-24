@@ -138,6 +138,51 @@ settings: dict[str] = {
     "rag.rerank.min_score" : 0.05,
     # What it reads of each passage: its time grows with it, and the start of a passage tells what it is about
     "rag.rerank.max_chars" : 1000,
+    # Semantic cache (cache/, docs/CACHE.md): a question that means the same as one already answered gets its answer back
+    # at once, without the chat model. Its meaning is read by the embedding model of the knowledge base (rag.embed.model,
+    # on the CPU: ~30 ms). Any question that stands alone is looked up ("et pour la deuxième ?" is not), and only the
+    # answers safe to give again are stored: to a question that does not depend on the time nor the project, in a session
+    # where the model read nothing of the project yet, using no tool but those of cache.tools, let through by the guard.
+    # The cache is in the working directory, unless LOUIS_CACHE gives another path (the launcher of install.sh: the
+    # global one). /cache to see it. Without the embedding model or the reranker, it does nothing: the model answers
+    "cache.enabled"        : True,
+    "cache.file"           : "louis.cache.db",
+    # A question is looked up in three steps. threshold: how close in meaning (cosine, 0 to 1) a question stored must be
+    # to be read again by the reranker (rag.rerank.model, the same model loaded once), which gives its answer if it
+    # finds they ask the same (rerank.min_score), else by the small model (match.model). The meaning alone can not tell
+    # apart questions that differ by one word: "lire un fichier JSON" and "écrire un fichier JSON" are 0.975 close, more
+    # than most questions asked in other words (0.80 to 0.88). Measured with: cd src && python -m cache.evaluate
+    # (docs/CACHE.md): 0.78 finds "Que fait yield ?" (0.795) for no more questions asked to the small model; lower finds
+    # no more, and asks it more of the misses (~2.7 s each). rerank.enabled False: the meaning is enough (unsafe)
+    "cache.threshold"      : 0.78,
+    "cache.rerank.enabled" : True,
+    "cache.rerank.min_score": 0.35,
+    # The reranker never confirmed a wrong question, but misses most of those asked otherwise (4 out of 27, "tu peux me
+    # redire comment fonctionne X" against "comment marche X": 0.010). The closest ones it did not confirm are asked to
+    # a small model, "same question?" (cache/matcher.py): 20 out of 27, and none of the 26 that ask something else.
+    # ~2.4 s on the CPU, paid by the misses that have a close question too (2 at most). The model of the scribe: one model
+    # loaded for both. It must answer without thinking first: an "instruct" model. "": the reranker alone
+    "cache.match.model"    : "qwen3:4b-instruct",
+    "cache.match.gpu"      : False,
+    # Seconds an answer may be given again (7 days), and the answers kept at most, the ones served least lately dropped first
+    "cache.ttl"            : 7 * 24 * 3600,
+    "cache.max_entries"    : 1000,
+    # The tools an answer may have used and still be given again: their sources are known, and the cache forgets the answers
+    # when they change (/index, /unindex). An answer that read the project, ran code or searched the web is never stored
+    "cache.tools"          : ["search_knowledge"],
+    # Whether the users share their answers: a question one asked is answered at once for the others (an answer that
+    # names its user is never stored). Off: each user gets only their own, for a louis --web open to people who must not
+    # read each other's answers
+    "cache.shared"         : True,
+    # The seed: answers written by the team (src/cache/seed/*.jsonl), about Louis itself, useful from the first question
+    # of a new install. Stored on the first lookup, again when its files change; never removed by /cache clear
+    "cache.seed"           : True,
+    # The reranker reads an answer of the seed against the new question (they tell all Louis does about something),
+    # where it reads the answers of the model against the question they were given for: a score of its own. Measured
+    # with python -m cache.evaluate: "valider un JSON avec un schéma en Python" gets 0.74 against the answer about /json,
+    # the questions about Louis asked otherwise 0.06 to 1. Strict: the questions written in the seed files are always
+    # given (the same text needs no reranker), the way to answer more of them is to write more of them there
+    "cache.seed.min_score" : 0.75,
     # Evaluation (eval/): a model, the judge, reads each answer of Louis again once its turn is done. It splits it into
     # claims and checks each one against what the tools read (the sources): supported, contradicted, or unverifiable.
     # It also scores the relevance and the coherence of the answer, from 1 to 5. The scores go to the traces

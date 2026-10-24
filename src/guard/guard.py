@@ -84,6 +84,13 @@ class Guard:
             result, variable="tool_message", tool=tool
         )
 
+    def mask(self, text: str) -> str:
+        """
+            A text with its sensitive data replaced, as the log keeps it: by the patterns only, never the model (instant).
+            For a message the rails do not read: the semantic cache answers it with a reply they checked when it was kept
+        """
+        return redact(text)
+
     def hide(self, arguments: dict) -> dict:
         """
             The arguments of a call as the user sees them: masked the way the log is. Only what is shown:

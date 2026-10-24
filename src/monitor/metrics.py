@@ -100,8 +100,12 @@ def working(record: dict, key: str) -> float:
     return max(0.0, record.get(key, 0.0) - record.get("waited", 0.0))
 
 def turns_stats(turns: list[dict]) -> dict:
-    """ What the answers tell: how many, how many failed, how long the user waited for the ones that ended well """
-    answered: list[float] = [working(turn, "latency") for turn in turns if turn.get("reason") == "done"]
+    """
+        What the answers tell: how many, how many failed, how long the user waited for the ones that ended well. An answer
+        of the semantic cache takes milliseconds: kept out of the latencies, they would hide a slower model
+    """
+    answered: list[float] = [working(turn, "latency") for turn in turns
+                             if turn.get("reason") == "done" and not turn.get("cached")]
     failed: int = sum(1 for turn in turns if turn.get("reason") in FAILED_TURNS)
     return {
         "turns"       : len(turns),
@@ -110,6 +114,22 @@ def turns_stats(turns: list[dict]) -> dict:
         "p50"         : percentile(answered, 0.50),
         "p95"         : percentile(answered, 0.95),
         "rounds"      : mean([turn.get("rounds", 0) for turn in turns]),
+    }
+
+def cache_stats(lookups: list[dict], turns: list[dict]) -> dict:
+    """
+        The semantic cache: the questions looked up (not those it may not answer: a follow-up, the time...), the share it
+        answered, and how long the user waited for its answers against the model's
+    """
+    looked: list[dict] = [lookup for lookup in lookups if lookup.get("reason") is None]
+    hits: int = sum(1 for lookup in looked if lookup.get("hit"))
+    return {
+        "lookups"   : len(looked),
+        "skipped"   : len(lookups) - len(looked),
+        "hits"      : hits,
+        "hit_rate"  : ratio(hits, len(looked)),
+        "cached_p50": percentile([working(turn, "latency") for turn in turns if turn.get("cached")], 0.50),
+        "lookup_p50": percentile([lookup.get("duration", 0.0) for lookup in looked], 0.50),
     }
 
 def structured_stats(replies: list[dict]) -> dict:
@@ -395,6 +415,7 @@ def summarize(records: list[dict], *, days: float | None = None, by: str | None 
         "guard": sum(1 for record in records if record["type"] == "guard"),
         "structured": structured_stats([record for record in records if record["type"] == "structured"]),
         "reasoning": reasoning_stats(turns, calls),
+        "cache": cache_stats([record for record in records if record["type"] == "cache"], turns),
         "plans": plan_stats([record for record in records if record["type"] == "plan"]),
         "eval": eval_stats([record for record in records if record["type"] == "eval"]),
         "series": series(records, start, end, by),

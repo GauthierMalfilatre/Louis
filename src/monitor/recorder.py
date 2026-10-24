@@ -19,6 +19,8 @@
 ##           what the user answered, how long they took to decide (waited)
 ## An llm record tells what the call was for (purpose): a reply, JSON, the check of a draft, a summary of the context.
 ## Only the replies make the rounds and the output of a turn: the JSON of a check is no answer
+##   cache   a question looked up in the semantic cache (cache/): whether its answer was there, how close the closest
+##           one was, how long it took, or why it was not looked up. A turn answered from the cache is cached: no llm record
 ##   eval    an answer judged (eval/): its scores, and the claims its sources do not support. Written by the thread of
 ##           the judge, once the turn is over: it names the answer by the session, the prompt and the model instead
 ## The records of a turn share its id. The long texts are cut: the whole conversation is in the database and the log.
@@ -32,7 +34,7 @@ from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, GUARD_TRIGGERED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, RAG_RETRIEVED, STRUCTURED_REPLY
-from events.event_list import REASONING_STEP, REASONING_CHECK, EVAL_SCORED, PLAN_PROPOSED, PLAN_DECIDED
+from events.event_list import REASONING_STEP, REASONING_CHECK, EVAL_SCORED, CACHE_LOOKUP, CACHE_HIT, PLAN_PROPOSED, PLAN_DECIDED
 from config.settings import settings as default_settings
 from config.prompt import REACT_PROMPT
 from logger.logger import log, scrub
@@ -50,7 +52,8 @@ VERSION: int = 1
 RUN_SETTINGS: tuple[str, ...] = (
     "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth", "guard.enabled",
     "rag.enabled", "rag.rerank.enabled", "rag.rerank.model", "rag.rerank.pool", "rag.rerank.min_score",
-    "rag.rerank.max_chars", "rag.embed.gpu", "eval.enabled", "eval.model", "hitl.enabled", "hitl.level"
+    "rag.rerank.max_chars", "rag.embed.gpu", "eval.enabled", "eval.model", "cache.enabled", "cache.threshold",
+    "cache.rerank.enabled", "cache.rerank.min_score", "cache.seed.min_score", "cache.match.model", "hitl.enabled", "hitl.level"
 )
 
 # Characters kept of each text: enough to know what it was about
@@ -115,6 +118,8 @@ class Turn:
     checks           : int        = 0
     revised          : int        = 0
     left             : bool       = False
+    # Answered from the semantic cache, without the model
+    cached           : bool       = False
     # The plans of the turn shown to the user, and those they did not approve (refused, or left without an answer)
     plans            : int        = 0
     refused_plans    : int        = 0
@@ -167,6 +172,8 @@ class Recorder:
         bus.subscribe(self.__on_step, REASONING_STEP)
         bus.subscribe(self.__on_check, REASONING_CHECK)
         bus.subscribe(self.__on_retrieved, RAG_RETRIEVED)
+        bus.subscribe(self.__on_lookup, CACHE_LOOKUP)
+        bus.subscribe(self.__on_cache_hit, CACHE_HIT)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
         bus.subscribe(self.__on_eval, EVAL_SCORED)
         return self
@@ -372,38 +379,24 @@ class Recorder:
             duration=data["duration"]
         )
 
-    def __on_plan_proposed(self, event: Event) -> None:
-        """ A plan shown to the user: from now on, the time is theirs """
-        actions: list[dict] = [{"tool": action["tool"], "risk": action["risk"]} for action in event.data["actions"]]
-        self.__plan = (event.data["id"], time.perf_counter(), actions)
-
-    def __on_plan_decided(self, event: Event) -> None:
-        """ The user decided: the first answer counts, as it is the one the app keeps """
-        if self.__plan is None or event.data.get("id") != self.__plan[0]:
-            return
-        self.__write_plan(True, event.data.get("approved") is True, event.data.get("feedback") or "")
-
-    def __write_plan(self, answered: bool, approved: bool, feedback: str) -> None:
-        """ The plan shown, once decided, or once its turn ended without an answer (a script, Ctrl+C): refused """
-        _, start, actions = self.__plan
-        self.__plan = None
-        waited: float = time.perf_counter() - start
-        if self.__turn is not None:
-            self.__turn.waited += waited
-            self.__turn.plans += 1
-            self.__turn.refused_plans += not approved
-        risks: list[str] = [action["risk"] for action in actions]
+    def __on_lookup(self, event: Event) -> None:
+        """ A question looked up in the semantic cache, or why it was not """
+        data: dict = event.data
         self.__write(
-            "plan",
+            "cache",
             turn=self.__turn.id if self.__turn else None,
             session=self.__session,
-            actions=actions,
-            irreversible=risks.count("irreversible"),
-            answered=answered,
-            approved=approved,
-            feedback=text(feedback, RESULT_CHARS) if feedback else None,
-            waited=round(waited, 3)
+            hit=data["hit"],
+            score=data["score"],
+            duration=data["duration"],
+            reason=data["reason"],
+            matched=data.get("matched", 0)
         )
+
+    def __on_cache_hit(self, event: Event) -> None:
+        """ The turn is answered from the cache: its latency is not the model's """
+        if self.__turn is not None:
+            self.__turn.cached = True
 
     def __on_turn_ended(self, event: Event) -> None:
         """ The whole answer: how it ended, how long the user waited, what it cost """
@@ -438,8 +431,7 @@ class Recorder:
             checks=turn.checks,
             revised=turn.revised,
             left=turn.left,
-            plans=turn.plans,
-            refused_plans=turn.refused_plans
+            cached=turn.cached
         )
 
     def __on_eval(self, event: Event) -> None:

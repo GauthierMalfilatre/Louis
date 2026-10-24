@@ -8,6 +8,7 @@ import os
 import subprocess
 import pytest
 import utils.path
+from config.settings import settings
 from tool.seen_files import SeenFiles
 
 COAUTHOR = "Louis <louis@example.com>"
@@ -33,6 +34,14 @@ class FakeApp:
 def git(cwd, *args: str) -> str:
     """ Run git in cwd, as the user would: the state a test starts from, or what it checks after """
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+@pytest.fixture(autouse=True)
+def no_cache(monkeypatch):
+    """
+        The semantic cache is on by default: an app of a test would ask the embedding model of the machine, and store the
+        seed. Off unless a test turns it on (tests/test_cache.py)
+    """
+    monkeypatch.setitem(settings, "cache.enabled", False)
 
 @pytest.fixture
 def app() -> FakeApp:

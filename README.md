@@ -77,6 +77,10 @@ Il sert aussi les liens publics de `/share` (`/s/<jeton>`) : les liens pointent 
 
 Louis cherche dans la documentation et les exemples de code que tu lui indexes (`/index <dossier>`, ou `louis --index <dossier>`) avec l'outil `search_knowledge`, par mots-clés et par le sens (`ollama pull nomic-embed-text`). Le fonctionnement, le garde-fou qui filtre ce que la base rend, et **où trouver de gros jeux de données de code** sont dans [docs/RAG.md](docs/RAG.md).
 
+## Cache sémantique
+
+Une question déjà posée, même dite autrement et par un autre utilisateur, reçoit tout de suite la réponse d'alors, sans le modèle. Le sens de la question est lu par `nomic-embed-text`, et le reranker du RAG vérifie que les deux questions sont vraiment les mêmes : « lire un fichier JSON » n'a jamais la réponse de « écrire un fichier JSON ». N'importe quelle question de la session est cherchée si elle se comprend seule (« et pour la deuxième ? » ne l'est pas), et seules les réponses sûres sont gardées : qui ne dépendent ni du moment ni du projet, dans une session où le modèle n'a encore rien lu du projet. Dès la première question d'une installation neuve, le cache répond aussi aux questions sur Louis, avec des réponses écrites par l'équipe (`src/cache/seed/`). `/cache` montre ce qu'il garde, `/cache forget` oublie la dernière réponse qu'il a donnée, `/cache clear` les oublie toutes, `/cache off` le coupe. Le fonctionnement et les mesures sont dans [docs/CACHE.md](docs/CACHE.md).
+
 ## Exécution de code (sandbox)
 
 Louis peut tester du code (`python`, `sh`, `c`, `cpp`, `go` ou `rust`, bibliothèque standard seulement) avec l'outil `run_code`, après que tu as lu le code et l'as autorisé. Il tourne dans un conteneur Docker sans réseau, sans accès au projet, avec un disque en lecture seule (sauf un petit `/tmp`), limité en temps (10 s, 30 s pour c et c++, une minute pour go et rust, compilation comprise), en mémoire et en processus. Sans Docker, l'outil n'est pas proposé. Les images ne sont jamais téléchargées par Louis : `docker pull python:3.13-alpine alpine:latest golang:alpine rust:alpine gcc:latest` (2 Go pour gcc : `sandbox.languages` permet d'en indiquer une plus légère). Les réglages sont les `sandbox.*` de `src/config/settings.py`.
@@ -95,8 +99,9 @@ Chaque appel au modèle et aux outils est enregistré, une ligne JSON par évén
 | `rag`    | une recherche dans la base de connaissances : la requête, le mode (`hybrid` ou `keyword`), les passages trouvés, la durée |
 | `step`   | une étape du raisonnement pas à pas (`/react`) : ce que le modèle pensait, les outils qu'il a appelés |
 | `check`  | la vérification d'un brouillon du raisonnement pas à pas : s'il est passé, ses problèmes, s'il a été réécrit |
+| `cache`  | une question cherchée dans le cache sémantique : trouvée ou non, le score le plus proche, la durée, ou pourquoi elle n'a pas été cherchée |
+| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours ; en pas à pas, les étapes, les vérifications, les brouillons réécrits ; `cached` si le cache sémantique y a répondu |
 | `plan`   | un plan montré avant une action risquée (`/plan`) : ses actions et leur risque, s'il a été approuvé, ce que tu as répondu, le temps que tu as pris pour décider (`waited`) |
-| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours ; en pas à pas, les étapes, les vérifications, les brouillons réécrits ; les plans montrés, et ceux refusés |
 
 Les lignes d'un même tour partagent son `turn`. Le temps que tu mets à répondre à une demande de permission est retiré des latences du tableau de bord. Les textes longs sont coupés, et masqués comme dans `louis.log` quand le garde-fou est actif.
 

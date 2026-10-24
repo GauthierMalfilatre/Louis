@@ -7,7 +7,8 @@
 ## A turn gives a sample when it is done: the question (as the model read it), the last reply of the model (the one
 ## that called no tool: the answer the user read), and the results of the tools of eval.sources that worked. A turn
 ## that ended otherwise (cancelled, error, refused...) gave no answer to judge, and neither did a reply the guard
-## refused (its text is the refusal) nor a structured one (/json: its JSON is checked by its schema)
+## refused (its text is the refusal) nor a structured one (/json: its JSON is checked by its schema). An answer of the
+## semantic cache is none either: it was judged when the model gave it
 ##
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from events.event import Event
 from events.event_bus import EventBus
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_REPLY, MODEL_CALL, GUARD_TRIGGERED
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED
+from events.event_list import CACHE_HIT
 from eval.sample import Sample, Source
 from monitor.recorder import prompt_version
 import uuid
@@ -28,6 +30,7 @@ class Turn:
     prompt  : str | None   = None
     sources : list[Source] = field(default_factory=list)
     refused : bool         = False
+    cached  : bool         = False
 
 class Collector:
     """ Listens to the bus, and gives each answer of Louis to on_sample once its turn is done """
@@ -49,8 +52,14 @@ class Collector:
         bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_reply, CHAT_REPLY)
+        bus.subscribe(self.__on_cache_hit, CACHE_HIT)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
         return self
+
+    def __on_cache_hit(self, event: Event) -> None:
+        """ An answer given again by the cache, without the model: nothing new to judge """
+        if self.__turn is not None:
+            self.__turn.cached = True
 
     def __on_session(self, event: Event) -> None:
         """ The session of the next answers: a new one has no id until the user writes in it """
@@ -94,7 +103,8 @@ class Collector:
         """ A turn done with an answer gives its sample """
         turn: Turn | None = self.__turn
         self.__turn = None
-        if turn is None or event.data["reason"] != "done" or turn.refused or not turn.answer or not turn.question:
+        if turn is None or event.data["reason"] != "done" or turn.refused or turn.cached or not turn.answer \
+                or not turn.question:
             return
         self.__on_sample(Sample(
             id=uuid.uuid4().hex[:12],
