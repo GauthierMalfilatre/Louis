@@ -398,6 +398,39 @@ class Recorder:
         if self.__turn is not None:
             self.__turn.cached = True
 
+    def __on_plan_proposed(self, event: Event) -> None:
+        """ A plan shown to the user: from now on, the time is theirs """
+        actions: list[dict] = [{"tool": action["tool"], "risk": action["risk"]} for action in event.data["actions"]]
+        self.__plan = (event.data["id"], time.perf_counter(), actions)
+
+    def __on_plan_decided(self, event: Event) -> None:
+        """ The user decided: the first answer counts, as it is the one the app keeps """
+        if self.__plan is None or event.data.get("id") != self.__plan[0]:
+            return
+        self.__write_plan(True, event.data.get("approved") is True, event.data.get("feedback") or "")
+
+    def __write_plan(self, answered: bool, approved: bool, feedback: str) -> None:
+        """ The plan shown, once decided, or once its turn ended without an answer (a script, Ctrl+C): refused """
+        _, start, actions = self.__plan
+        self.__plan = None
+        waited: float = time.perf_counter() - start
+        if self.__turn is not None:
+            self.__turn.waited += waited
+            self.__turn.plans += 1
+            self.__turn.refused_plans += not approved
+        risks: list[str] = [action["risk"] for action in actions]
+        self.__write(
+            "plan",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            actions=actions,
+            irreversible=risks.count("irreversible"),
+            answered=answered,
+            approved=approved,
+            feedback=text(feedback, RESULT_CHARS) if feedback else None,
+            waited=round(waited, 3)
+        )
+
     def __on_turn_ended(self, event: Event) -> None:
         """ The whole answer: how it ended, how long the user waited, what it cost """
         if self.__plan is not None:
@@ -431,6 +464,8 @@ class Recorder:
             checks=turn.checks,
             revised=turn.revised,
             left=turn.left,
+            plans=turn.plans,
+            refused_plans=turn.refused_plans,
             cached=turn.cached
         )
 
