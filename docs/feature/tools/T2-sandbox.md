@@ -37,4 +37,18 @@ La liste vide plantait (IndexError) : j'ai ajouté un test au début de la fonct
 "sandbox.languages": {"cpp": {"image": "gcc:14-bookworm", "timeout": 60}}   # src/config/settings.py
 ```
 
+## Mesure réelle : avec et sans
+
+`qwen3.5:9b` sur le processeur, `chat.context` à 12 288, nouvelle session à chaque question. Ce sont deux calculs qu'on ne fait pas de tête. On regarde la justesse.
+
+| | Sans sandbox (`sandbox.enabled: False`) | Avec sandbox |
+| - | - | - |
+| Nombres premiers < 200 000 (vrai : 17 984) | « 18 031 » ✗ | « 17 984 » ✓ |
+| SHA-256 de « louis », 12 premiers caractères (vrai : `5f16795c54ab`) | « `4b4c8f5a5c0a` » ✗ | « `5f16795c54ab` » ✓ |
+| Outils appelés | `run_code` ✗ (inconnu), puis `web_search` ×2 / `run_code` ✗ | `run_code` / `run_code` |
+| Appels au modèle | 4 et 3 | 2 et 2 |
+| Temps | 478 s et 367 s | 330 s et 321 s |
+
+Sans sandbox, le modèle cherche quand même à exécuter du code. Il tombe sur un outil qui n'existe pas, puis il invente un nombre et un hash plausibles, présentés comme « la réponse exacte ». Avec la sandbox, il calcule et les deux réponses sont justes. Il va aussi plus vite : 2 appels au lieu de 3 ou 4.
+
 Tests : `tests/test_run_tool.py`.

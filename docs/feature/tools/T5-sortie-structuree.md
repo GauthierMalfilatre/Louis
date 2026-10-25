@@ -44,4 +44,17 @@ louis --schema ./mon_schema.json --ask "..." | jq '.champ'
 
 Code de retour : `0` réponse valide, `1` réponse invalide ou modèle injoignable, `2` schéma introuvable ou invalide.
 
+## Mesure réelle : avec et sans
+
+`qwen3.5:9b` sur le processeur, `chat.context` à 12 288, nouvelle session à chaque texte. On a 4 signatures à transformer en contact. D'un côté `/json contact`, de l'autre un message qui demande « en JSON, avec exactement les champs nom, entreprise, poste, email, telephone, sans rien d'autre que le JSON ». On regarde si la sortie est utilisable telle quelle par un programme.
+
+| | Sans (`JSON` demandé dans le texte) | Avec `/json contact` |
+| - | - | - |
+| JSON brut, lisible directement | 1 / 4 : les 3 autres sont dans un bloc ```` ```json ```` | 4 / 4 |
+| Conforme au schéma, une fois le bloc enlevé | 4 / 4 | 4 / 4, au premier essai |
+| Erreurs de contenu | « nom » : « Malfilatre », sans le prénom | « poste » vide pour « développeur chez Sensai », « entreprise » : la chaîne `"null"` |
+| Tokens de prompt / temps par texte | ~3 870 / 282 à 297 s | ~1 515 / 112 à 124 s |
+
+Ce qui change surtout, c'est la forme. Avec `/json`, on obtient à chaque fois du JSON brut, validé contre le schéma, que `louis --schema … --ask` peut passer directement à `jq`. Sans, le modèle l'enveloppe 3 fois sur 4 dans du Markdown, malgré la consigne. `/json` est aussi 2,5 fois plus rapide : il n'envoie ni les outils ni leurs ~2 300 tokens de schémas. Le schéma ne garantit pas le contenu : dans les deux cas, le modèle se trompe parfois sur une valeur. Ici, `"null"` en chaîne passe le schéma, parce que `entreprise` accepte n'importe quel texte.
+
 Tests : `tests/test_structured.py`.

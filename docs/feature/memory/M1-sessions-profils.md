@@ -39,4 +39,25 @@ Sessions de ada (* : en cours) :
 > /clear Tu réponds toujours en anglais.
 ```
 
+## Mesure réelle : avec et sans
+
+`qwen3.5:9b` sur le processeur, `chat.context` à 12 288. On regarde la justesse de ce dont le modèle se souvient. Le temps dépend surtout du cache de prompt d'Ollama (voir [B1](../base/B1-cli-chatbot.md#mesure-réelle--avec-et-sans)).
+
+**Profil**. « Comment je m'appelle ? », dans une nouvelle session.
+
+| | Anonyme | `--user ada` |
+| - | - | - |
+| Réponse | « Tu t'appelles Louis. » ✗ | « Tu t'appelles ada. » ✓ |
+
+Sans profil, le modèle ne connaît pas ton nom et te donne le sien. Avec un profil, ton nom est ajouté après le prompt système.
+
+**Reprise après un redémarrage**. Une session dit « Mon projet s'appelle Pendu, il est écrit en Rust et la sauvegarde est dans save.json ». Ensuite, une nouvelle app de Louis demande « Rappelle-moi le nom, le langage et le fichier de sauvegarde de mon projet ».
+
+| | Avec `/resume <id>` | Sans (session neuve) |
+| - | - | - |
+| Réponse | « Nom : Pendu, Langage : Rust, Fichier de sauvegarde : save.json » ✓ 3/3 | « tree-sitter-… », Rust, `.cargo/config.toml` ✗ 1/3, inventé |
+| Temps | 8,7 s | 86,9 s |
+
+Sans reprise, le modèle n'a rien et invente avec assurance. Il ne tombe juste sur « Rust » que par chance. Avec `/resume`, la conversation est rechargée depuis `louis.db` et les trois faits reviennent. `/resume` lui-même prend moins de 0,1 s et ne fait aucun appel au modèle.
+
 Tests : `tests/test_session.py`, `tests/test_scribe.py`.

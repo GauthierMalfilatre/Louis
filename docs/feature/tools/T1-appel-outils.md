@@ -53,4 +53,18 @@ app._App__toolManager.register(AddTool())
 
 > Louis n'a pas encore de client MCP : les outils sont ceux de Louis, appelés par le tool calling d'Ollama.
 
+## Mesure réelle : avec et sans
+
+`qwen3.5:9b` sur le processeur, `chat.context` à 12 288, nouvelle session à chaque fois. La question : « Quels sont tous les champs de la dataclass Reply de ce projet (src/model/reply.py) ? ». On regarde la justesse.
+
+| | Sans outils | Avec outils |
+| - | - | - |
+| Réponse | un bloc bash : `cat_file src/model/reply.py` | les 11 champs, dans l'ordre |
+| Champs justes | 0 / 11 | **11 / 11** |
+| Outils appelés | aucun | `cat_file` |
+| Appels au modèle / tokens de prompt | 1 / 1 342 | 2 / 8 196 |
+| Temps | 97 s | 317 s |
+
+Sans outils, le modèle ne peut pas lire le fichier. Il écrit en texte la commande qu'il aurait voulu lancer, sans aucune réponse. Avec les outils, il lit le fichier et donne tous les champs. Ça coûte un appel de plus et 3 fois plus de temps : les schémas des outils pèsent ~2 500 tokens dans le prompt, et le fichier lu s'y ajoute.
+
 Tests : `tests/test_tool_calls.py`.

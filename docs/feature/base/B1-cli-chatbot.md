@@ -42,4 +42,28 @@ Ce fichier est le point d'entrée de Louis : …
 > /clear                 # nouvelle session
 ```
 
+## Mesure réelle : avec et sans
+
+`qwen3.5:9b` sur le processeur (pas de GPU), `chat.context` à 12 288 (avec les 24 576 par défaut, Ollama manquait de mémoire). « À froid », c'est une nouvelle session : le modèle relit les ~3 800 tokens du prompt et des outils. Ici ça a pris 4 à 5 min, parce que la machine swappait. « À chaud », c'est la question suivante de la même session.
+
+**Streaming** (`chat.stream`). On regarde le délai avant le premier mot affiché. La question à froid est « Explique en trois phrases ce qu'est une closure en Python », la suite à chaud est « Donne un exemple de closure en cinq lignes ».
+
+| | Sans streaming | Avec streaming |
+| - | - | - |
+| À froid : premier texte affiché | 310,6 s | 284,2 s |
+| À froid : réponse complète | 310,7 s | 309,4 s |
+| À chaud : premier texte affiché | 21,7 s | **11,2 s** |
+| À chaud : réponse complète | 21,7 s | 25,0 s |
+
+Le streaming ne rend pas le modèle plus rapide : la réponse complète arrive au même moment, à ±3 s près. Par contre, on lit dès le premier token au lieu d'attendre la fin. À chaud, l'attente avant le premier mot est divisée par deux. À froid, on ne gagne que 26 s, parce que presque tout le temps passe à lire le prompt, avant le premier token.
+
+**Historique**. On regarde la justesse. Le message d'avant était « Je m'appelle Ada et je code surtout en Rust », puis on demande « Dans quel langage je code surtout ? ».
+
+| | Avec l'historique (même session) | Sans (nouvelle session) |
+| - | - | - |
+| Réponse | « Rust » ✓ | « Python » ✗ |
+| Temps | 4,7 s | 346,5 s |
+
+Sans historique, le modèle répond au hasard le langage le plus courant. Avec, il a juste, et il répond aussi bien plus vite : la requête prolonge la précédente, donc Ollama ne relit pas le prompt.
+
 Tests : `tests/test_chat.py`.

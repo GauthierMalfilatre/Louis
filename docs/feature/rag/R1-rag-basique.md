@@ -40,4 +40,18 @@ louis --index ~/docs/python --name python      # sans lancer le chat
     ⎿ 4 passages
 ```
 
+## Mesure réelle : avec et sans
+
+`qwen3.5:9b` sur le processeur, `chat.context` à 12 288, nouvelle session à chaque question. Le dossier `docs/` de Louis est indexé dans la base `louis-docs` (`/index`, 75 s). Les questions sont posées depuis un dossier vide, sans `web_search`, pour que la doc ne soit trouvable que par la base. On regarde la justesse.
+
+| Question | Sans base (`rag.enabled: False`) | Avec base |
+| - | - | - |
+| Valeur par défaut de `cache.threshold`, et la question qui l'a fixée | « le dossier semble vide », pas de réponse ✗ | « 0.78 », « Que fait yield ? » (0.795) ✓ |
+| Reranker utilisé, temps d'une recherche sur CPU | liste de rerankers « courants » (Cohere, BGE…) ✗ | `mmarco-mMiniLMv2-L12-H384-v1`, ~2,6 s ✓ |
+| Requêtes au modèle par évaluation du juge | demande le chemin du projet ✗ | « 2 ou 3 requêtes » ✓ |
+| Outils appelés | `tree`, `search`, `cat_file`… dans le vide | `search_knowledge`, 1 à 4 fois |
+| Temps | 377 s, 377 s, 300 s | 735 s, 506 s, 438 s |
+
+Sans la base, le modèle cherche dans le dossier, n'y trouve rien, puis répond « je ne sais pas » ou invente des généralités. Avec la base, les trois réponses sont justes et citent la doc. Le prix, c'est le temps : les passages trouvés alourdissent le prompt, de 10 000 à 28 000 tokens. Sur la première question, le modèle s'est aussi trompé deux fois d'arguments pour `search_knowledge` avant de les corriger.
+
 Détails et mesures : [docs/RAG.md](../../RAG.md). Tests : `tests/test_rag.py`, `tests/test_ingest.py`, `tests/test_index.py`, `tests/test_context.py`.

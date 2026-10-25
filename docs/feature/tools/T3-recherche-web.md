@@ -27,4 +27,17 @@ Avec l'outil `web_search`, le modèle cherche sur internet (DuckDuckGo, par `ddg
 La dernière version stable est Python 3.14 (python.org/downloads).
 ```
 
+## Mesure réelle : avec et sans
+
+`qwen3.5:9b` sur le processeur, `chat.context` à 12 288, nouvelle session à chaque fois. La mesure date du 24 octobre 2026. La question : « Quelle est la dernière version stable de Python publiée à ce jour, et à quelle date est-elle sortie ? ». On regarde si la réponse est à jour.
+
+| | Sans `web_search` | Avec `web_search` |
+| - | - | - |
+| Réponse | « Python 3.12, sortie le 21 octobre 2023 », et la 3.13 serait « en bêta » ✗ | « Python 3.15.0, publiée le 9 octobre 2026 », puis la 3.15.1 du 21 octobre ✓ |
+| Outils appelés | aucun | `web_search` ×2 |
+| Appels au modèle / tokens de prompt | 1 / 3 733 | 3 / 13 752 |
+| Temps | 285 s | 430 s |
+
+Sans le web, le modèle répond depuis ses données d'entraînement, vieilles de trois ans. Il le dit, mais il donne quand même une réponse fausse. Avec le web, la réponse est celle du jour. Ça coûte deux recherches, ~10 000 tokens de résultats à lire et 2 min 30 de plus.
+
 Tests : `tests/test_web_search.py`.
