@@ -8,7 +8,7 @@ from interface.interface import Interface
 from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings
 from interface.cli import plan_title, plan_details
 from interface.cli import RISKS, MCP_STATES, NO_MCP, mcp_started, mcp_changed, mcp_progress, mcp_command
-from interface.cli import mcp_trouble, mcp_trust, mcp_prompt_usage
+from interface.cli import mcp_trouble, mcp_trust, mcp_prompt_usage, mcp_held
 from interface.cli import preview as one_line
 from events.event_bus import EventBus
 from events.event import Event
@@ -774,7 +774,8 @@ class WebInterface(Interface):
                              mcp_command(server["command"]), server["error"],
                              f"déclaré par {server['source']} : {mcp_trust(server['name'])}"
                              if server["state"] == "pending" else "",
-                             f"{plural(server['hidden'], 'outil')} masqués par son réglage" if server.get("hidden") else ""
+                             f"{plural(server['hidden'], 'outil')} masqués par son réglage" if server.get("hidden") else "",
+                             f"{mcp_held(server)} ({', '.join(server['held'])})" if server.get("held") else ""
                          ) if part)})
             rows += [{"text": f"  {tool['name']}",
                       "meta": " · ".join(part for part in (RISKS.get(tool["risk"], tool["risk"]), tool["description"]) if part)}

@@ -150,6 +150,16 @@ def mcp_trust(name: str) -> str:
     """ What starts a server the project declared """
     return f"/mcp trust {name} pour l'approuver et le lancer"
 
+def mcp_held(server: dict) -> str:
+    """
+        The tools of a server that changed since they were first listed, held:
+        1 outil modifié depuis sa première liste, retenu : /mcp trust fake pour accepter sa nouvelle version
+    """
+    count: int = len(server.get("held", []))
+    many: str = "s" if count > 1 else ""
+    return (f"{count} outil{many} modifié{many} depuis {'leur' if many else 'sa'} première liste, retenu{many} : "
+            f"/mcp trust {server['name']} pour accepter {'leur' if many else 'sa'} nouvelle version")
+
 def mcp_started(servers: list[dict]) -> str:
     """ The MCP servers once Louis started them, on one line:  MCP : calc (1 outil) · time : n'a pas démarré (/mcp) """
     parts: list[str] = [
@@ -175,14 +185,19 @@ def mcp_changed(data: dict) -> tuple[str, bool]:
     if server.get("state") != "running":
         why: str = server.get("error") or MCP_STATES.get(server.get("state", ""), "")
         return f"MCP : {name} n'a pas pu être {'lancé' if data['change'] == 'trusted' else 'relancé'} : {why}", False
-    if data["change"] == "restarted":
-        return f"MCP : {name} relancé ({tools})", True
     if data["change"] == "trusted":
         return f"MCP : {name} approuvé et lancé ({tools})", True
+    if data["change"] == "accepted":
+        return f"MCP : les outils modifiés de {name} sont acceptés ({tools})", True
     if data["change"] == "prompts":
         count = len(server.get("prompts", []))
         return f"MCP : {name} a changé ses prompts ({count} prompt{'s' if count > 1 else ''})", True
-    return f"MCP : {name} a changé ses outils ({tools})", True
+    text: str = f"MCP : {name} relancé ({tools})" if data["change"] == "restarted" else \
+        f"MCP : {name} a changé ses outils ({tools})"
+    # A tool that changed waits for the user: they are told
+    if server.get("held"):
+        return f"{text} · {mcp_held(server)}", False
+    return text, True
 
 def mcp_prompt_usage(prompt: dict) -> str:
     """ How a prompt of a server is run:  /calc:explain <expression> """
@@ -491,6 +506,8 @@ class CLI(Interface):
                 lines.append(f"    déclaré par {server['source']}, un fichier du projet : {mcp_trust(server['name'])}")
             if server.get("hidden"):
                 lines.append(f"    {server['hidden']} outils masqués par son réglage (tools, exclude)")
+            if server.get("held"):
+                lines.append(f"    {mcp_held(server)} ({', '.join(server['held'])})")
             for tool in server["tools"]:
                 lines.append(f"    {tool['name']:32} {RISKS.get(tool['risk'], tool['risk']):12} "
                              f"{shorten(tool['description'], PREVIEW_LENGTH)}")

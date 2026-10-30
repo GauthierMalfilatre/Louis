@@ -10,7 +10,7 @@ from tool.mcp.client import McpClient, McpError
 from tool.mcp.config import Declaration, Trust, HTTP, declarations
 from tool.mcp.transport_http import HttpTransport
 from tool.mcp.transport_stdio import StdioTransport
-from tool.mcp.tool_mcp import McpTool, prompt_name
+from tool.mcp.tool_mcp import McpTool, prompt_name, tool_name
 import atexit
 import fnmatch
 import shlex
@@ -51,6 +51,9 @@ class McpServer:
         self.tools   : list[McpTool]     = []
         # The tools of the server its declaration does not offer (tools, exclude)
         self.hidden  : int               = 0
+        # Its tools that changed since they were first listed, as tools/list gives them now: offered to the model
+        # neither in their old version nor in their new one, until the user accepts them (/mcp trust)
+        self.held    : list[dict]        = []
         # Its prompts, as prompts/list gives them: the user runs them as /<server>:<prompt>
         self.prompts : list[dict]        = []
         # Why it did not start, None if it did
@@ -64,6 +67,11 @@ class McpServer:
         self.__restarts     : int        = max(0, restarts)
         # Started again by itself since its tools were last offered: they may have changed
         self.__renewed      : bool       = False
+        # Each of its tools as it was first listed, by its name on the server: the one the user saw in /mcp. Kept
+        # through the restarts, so that a restart never takes a tool that changed
+        self.__pinned       : dict[str, dict] = {}
+        # What tools/list last gave, every tool of it
+        self.__specs        : list[dict] = []
 
     @property
     def state(self) -> str:
@@ -100,6 +108,7 @@ class McpServer:
                        shlex.join([self.command, *self.args]) if self.command else "",
             "state"  : self.state,
             "hidden" : self.hidden,
+            "held"   : [tool_name(self.name, spec["name"]) for spec in self.held],
             "error"  : self.error if self.error is not None else (self.client.why or None) if self.client else None,
             "tools"  : [{"name": tool.name, "remote": tool.remote, "description": tool.about, "risk": tool.level}
                         for tool in self.tools],
@@ -120,7 +129,7 @@ class McpServer:
         if self.invalid or not self.trusted:
             return self
         deadline: float = time.monotonic() + self.__start_timeout
-        self.error, self.tools, self.prompts = None, [], []
+        self.error, self.tools, self.prompts, self.held = None, [], [], []
         self.client = McpClient(self.name, self.__transport())
         try:
             self.client.start(self.__start_timeout, self.log_level)
@@ -212,6 +221,15 @@ class McpServer:
             changed = changed or "prompts"
         return changed
 
+    def accept(self) -> int:
+        """ Take the tools held as they are now: the user saw them. How many there were """
+        held: list[dict] = self.held
+        for spec in held:
+            self.__pinned[spec["name"]] = spec
+        self.tools = self.__offered(self.__specs)
+        log.info(f"[mcp] {self.name}: {len(held)} tools that changed accepted ({', '.join(spec['name'] for spec in held)})")
+        return len(held)
+
     def __wanted(self, remote: str) -> bool:
         """ Whether the declaration offers the tool to the model: in tools (all without it), not in exclude """
         allowed: list[str] | None = self.declaration.tools
@@ -222,15 +240,24 @@ class McpServer:
     def __offered(self, specs: list[dict]) -> list[McpTool]:
         """
             The tools of the server the declaration offers, from what tools/list gave: two that would have the same
-            name, the first only. A model offers fewer tools, it chooses better among them
+            name, the first only. A model offers fewer tools, it chooses better among them. One that changed since it
+            was first listed is held: the model reads its description as it reads the user, a server must not change
+            it behind their back
         """
+        self.__specs = specs
         wanted: list[dict] = [spec for spec in specs if self.__wanted(spec["name"])]
         self.hidden = len(specs) - len(wanted)
         tools: list[McpTool] = []
+        self.held = []
         for spec in wanted:
             tool: McpTool = McpTool(self, spec)
             if any(known.name == tool.name for known in tools):
                 log.warning(f"[mcp] {self.name}: {spec['name']} left out, another of its tools is named {tool.name}")
+                continue
+            if self.__pinned.setdefault(spec["name"], spec) != spec:
+                log.warning(f"[mcp] {self.name}: {spec['name']} changed since it was first listed, held until the "
+                            "user accepts it (/mcp trust)")
+                self.held.append(spec)
                 continue
             tools.append(tool)
         return tools
