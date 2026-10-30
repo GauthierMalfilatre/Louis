@@ -54,8 +54,16 @@ info "Using $("$PYTHON" --version) ($PYTHON)"
 
 info "Creating the virtual environment in $VENV"
 mkdir -p "$LOUIS_HOME"
-"$PYTHON" -m venv --clear "$VENV" \
-    || die "Cannot create the virtual environment. On Debian/Ubuntu: sudo apt install python3-venv"
+if ! "$PYTHON" -m venv --clear "$VENV" 2>/dev/null; then
+    # Debian/Ubuntu ship venv without ensurepip (python3.12-venv, which needs root): create it without pip, then fetch pip
+    warn "ensurepip is missing (python3-venv): installing pip in the venv from bootstrap.pypa.io instead"
+    "$PYTHON" -m venv --clear --without-pip "$VENV" || die "Cannot create the virtual environment."
+    GETPIP="$(mktemp)"
+    "$PYTHON" -c 'import sys, urllib.request; urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", sys.argv[1])' "$GETPIP" \
+        && "$VENV/bin/python" "$GETPIP" --quiet --disable-pip-version-check \
+        || die "Cannot install pip in the virtual environment (no network?). Or: sudo apt install python3-venv"
+    rm -f "$GETPIP"
+fi
 
 info "Installing the dependencies"
 "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$REPO/requirements.txt"
