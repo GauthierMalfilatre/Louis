@@ -4,7 +4,8 @@
 ## File description:
 ## Context window: what the model sees of a session, cut down before it overflows
 ##
-from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT
+from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT, REVISE_PROMPT, SUMMARY_ASKED, SUMMARY_TITLE
+from collections.abc import Callable
 import json
 
 # Characters of the history (as JSON, with the tools) for a token of qwen3: measured on Ollama, 3.91 to 3.93. On text
@@ -74,14 +75,22 @@ class ContextWindow:
         lines, and at last its oldest exchanges left out. Left to itself, Ollama drops the start of the conversation
         (the request of the user first), and even cuts in the middle of a message: here the system prompt, the
         request and the last round of calls always stay, and the calls made before as long as there is room (the
-        model knows what it did).
+        model knows what it did). With summarize, what is left out is summed up by it (the chat model), and the summary
+        put right after the system prompt: the model goes on knowing what was asked, learnt and done.
         The cut only moves forward, a block at a time: between two cuts, what is sent starts the same, and Ollama
         reuses its cache instead of reading the whole conversation again
     """
-    def __init__(self, size: int, tools: list[dict]):
-        """ Init the window of a context of size tokens, with these tools in every request """
+    def __init__(self, size: int, tools: list[dict], summarize: Callable[[str, list[dict]], str | None] | None = None):
+        """
+            Init the window of a context of size tokens, with these tools in every request. summarize(previous, left):
+            the summary of the messages left out, with the one made before, or None to leave them out only
+        """
         self.__size   : int = size
         self.__fixed  : int = len(json.dumps(tools, ensure_ascii=False))
+        self.__summarize: Callable[[str, list[dict]], str | None] | None = summarize
+        # The summary of what was left out, and the index it goes to: the messages from it to __hidden are not in it yet
+        self.__summary: str = ""
+        self.__summed : int = 1
         # The tool results before this index are cut down, the messages from 1 to this one are left out (but the
         # system prompt and the request being answered)
         self.__stubbed: int = 0
@@ -110,6 +119,7 @@ class ContextWindow:
         """ Another session: nothing of it is cut yet, nor measured """
         self.__stubbed, self.__hidden = 0, 1
         self.__ratio, self.__sent = CHARS_PER_TOKEN, 0
+        self.__summary, self.__summed = "", 1
 
     def measured(self, prompt_tokens: int) -> None:
         """
@@ -127,25 +137,37 @@ class ContextWindow:
         """ The tokens of these messages, sent with the tools """
         return self.__count(self.__fixed + sum(size_of(message) for message in messages))
 
-    def view(self, history: list[dict]) -> tuple[list[dict], dict | None]:
+    def view(self, history: list[dict], summarize: bool = True) -> tuple[list[dict], dict | None]:
         """
-            The messages to send for this history, and what was cut this time: {"results", "dropped"}, the tool
-            results cut down and the messages left out, or None if nothing more was
+            The messages to send for this history, and what was cut this time: {"results", "dropped", "summarized"},
+            the tool results cut down, the messages left out, and whether what was left out was summed up, or None if
+            nothing more was. summarize False never asks the model (an estimate): what is left out then is summed up
+            by the next view
         """
         # The last reply of the model, and the results of its calls after it, are what it works on: never cut
         last: int = max((i for i, message in enumerate(history) if message["role"] == "assistant"), default=len(history))
-        # The request being answered is never left out (the nudge is no request)
+        # The request being answered is never left out (the nudge, and the problems of a draft to fix, are no request)
         request: int = max(
             (i for i, message in enumerate(history) if message["role"] == "user" and message["content"] != NUDGE_PROMPT
-             and not message["content"].startswith(EMPTY_PROMPT.split("{")[0])),
+             and not message["content"].startswith(EMPTY_PROMPT.split("{")[0])
+             and not message["content"].startswith(REVISE_PROMPT.split("{")[0])),
             default=len(history)
         )
         messages: list[dict | None] = [self.__shown(message, i, request) for i, message in enumerate(history)]
-        used: int = self.__fixed + sum(size_of(message) for message in messages if message is not None)
-        if self.__count(used) <= self.__size * TRIGGER:
-            self.__sent = used
-            return [message for message in messages if message is not None], None
+        used: int = self.__fixed + sum(size_of(message) for message in messages if message is not None) + self.__extra()
+        results: int = 0
+        dropped: int = 0
+        if self.__count(used) > self.__size * TRIGGER:
+            results, dropped = self.__cut(history, messages, used, last, request)
+        summarized: bool = summarize and self.__sum_up(history, request)
+        shown: list[dict] = self.__with_summary([message for message in messages if message is not None])
+        self.__sent = self.__fixed + sum(size_of(message) for message in shown)
+        cut: dict | None = {"results": results, "dropped": dropped, "summarized": summarized} \
+            if results or dropped or summarized else None
+        return shown, cut
 
+    def __cut(self, history: list[dict], messages: list[dict | None], used: int, last: int, request: int) -> tuple[int, int]:
+        """ Cut the old tool results down, then leave the oldest messages out, until under TARGET: how many of each """
         target: float = self.__size * TARGET
         results: int = 0
         while self.__count(used) > target and self.__stubbed < last:
@@ -169,9 +191,41 @@ class ContextWindow:
                     messages[i] = None
                     dropped += 1
             self.__hidden = end
-        cut: dict | None = {"results": results, "dropped": dropped} if results or dropped else None
-        self.__sent = used
-        return [message for message in messages if message is not None], cut
+        return results, dropped
+
+    def __extra(self) -> int:
+        """ The characters the summary adds, with the question it answers """
+        return sum(size_of(message) for message in self.__recalled()) if self.__summary else 0
+
+    def __recalled(self) -> list[dict]:
+        """
+            The summary, as an exchange right after the system prompt: the user asks what was said, the model answers
+            with it. A model trusts what it said itself far more than the end of a long system prompt (it read the
+            files again)
+        """
+        return [{"role": "user", "content": SUMMARY_ASKED},
+                {"role": "assistant", "content": SUMMARY_TITLE + self.__summary}]
+
+    def __sum_up(self, history: list[dict], request: int) -> bool:
+        """ The messages left out since the last summary, summed up with it: whether a summary was made """
+        if self.__summarize is None or self.__hidden <= self.__summed:
+            return False
+        left: list[dict] = [history[i] for i in range(self.__summed, min(self.__hidden, len(history)))
+                            if history[i]["role"] != "system" and i != request]
+        # Never asked twice for the same messages, even if the model failed: they are then only left out
+        self.__summed = self.__hidden
+        summary: str | None = self.__summarize(self.__summary, left) if left else None
+        if not summary:
+            return False
+        self.__summary = summary
+        return True
+
+    def __with_summary(self, shown: list[dict]) -> list[dict]:
+        """ The summary of what was left out, after the system prompt """
+        if not self.__summary:
+            return shown
+        start: int = 1 if shown and shown[0]["role"] == "system" else 0
+        return [*shown[:start], *self.__recalled(), *shown[start:]]
 
     def __shown(self, message: dict, index: int, request: int) -> dict | None:
         """ A message as the model sees it now: left out, cut down, or whole """

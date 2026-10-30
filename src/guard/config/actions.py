@@ -3,10 +3,26 @@
 ## SENSAI
 ## File description:
 ## Actions of the rails: the code the flows of rails.co call with "execute", loaded by NeMo itself.
-## They only read a text and answer: no bus, no interface, no log of Louis (they run in the loop of NeMo)
+## They only read a text and answer: no bus, no interface (they run in the loop of NeMo)
 ##
 from nemoguardrails.actions import action
-from guard import patterns
+from guard import patterns, policy
+import asyncio
+
+@action(name="check_policy")
+async def check_policy(task: str, text: str, config=None) -> str:
+    """
+        The model reads the text against the policy of prompts.yml named task: "allowed", "blocked", or "error" when it
+        could not be asked (the flow refuses then). The model is the one Guard put in custom_data.louis, asked by the
+        native API of Ollama with the context of the chat: never NeMo's (see guard/policy.py)
+    """
+    prompt = next((prompt.content for prompt in (config.prompts or []) if prompt.task == task), None) if config else None
+    judge: dict | None = ((config.custom_data if config else {}) or {}).get("louis")
+    if prompt is None or judge is None:
+        # A rail without its policy or its model checks nothing: it must not pass silently
+        return policy.ERROR
+    # The request blocks: in a thread, the loop of NeMo goes on meanwhile
+    return await asyncio.to_thread(policy.check, policy.Judge(**judge), prompt, user_input=text, bot_response=text)
 
 # async: NeMo runs them in its event loop, and warns about the synchronous ones
 @action(name="mask_french_ids")

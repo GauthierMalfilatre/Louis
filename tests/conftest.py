@@ -2,15 +2,35 @@
 ## EPITECH PROJECT, 2026
 ## SENSAI
 ## File description:
-## Fixtures of the tests: a project folder the tools work in, its git repository, and what they use of the app
+## Fixtures of the tests: a project folder the tools work in, its git repository, and what they use of the app.
+## The MCP servers of a test (calc, the fake one of mcp_fake_server.py), and a Louis that runs them
 ##
 import os
 import subprocess
+import sys
 import pytest
 import utils.path
+from app.app import App
+from config.prompt import SYSTEM_PROMPT
+from config.settings import settings, CALC_SERVER
+from events.event import Event
+from events.event_bus import EventBus
+from events.event_list import PLAN_PROPOSED, PLAN_DECIDED, TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
+from interface.interface import Interface
+from model.model import OllamaModel
+from model.reply import Reply
+from monitor.recorder import Recorder
+from session.user import User as Account
+from tool.mcp.manager import McpManager
 from tool.seen_files import SeenFiles
+from events.event import Event
+from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION
+from interface.interface import Interface
 
 COAUTHOR = "Louis <louis@example.com>"
+
+FAKE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_fake_server.py")
+CALC: dict = {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]}
 
 class Permissions:
     """ Gives answer to every request, and keeps what was asked: the user, without a terminal """
@@ -29,10 +49,99 @@ class FakeApp:
         self.permissions: Permissions = Permissions()
         self.seen_files: SeenFiles = SeenFiles()
         self.knowledge = None
+        self.events: EventBus = EventBus()
 
 def git(cwd, *args: str) -> str:
     """ Run git in cwd, as the user would: the state a test starts from, or what it checks after """
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+@pytest.fixture(autouse=True)
+def no_cache(monkeypatch):
+    """
+        The semantic cache is on by default: an app of a test would ask the embedding model of the machine, and store the
+        seed. Off unless a test turns it on (tests/test_cache.py)
+    """
+    monkeypatch.setitem(settings, "cache.enabled", False)
+
+def fake(name: str = "fake", *options: str, **extra) -> dict:
+    """ The fake MCP server, declared as in the settings """
+    return {"name": name, "command": sys.executable, "args": [FAKE, *options], **extra}
+
+class Person(Interface):
+    """ The user of Louis: the plans and the permissions it was asked, all approved, and every event """
+    describes = False
+
+    def __init__(self):
+        self.plans: list[dict] = []
+        self.asked: list[str] = []
+        self.events: list[Event] = []
+
+    def bind(self, bus):
+        self.bus = bus
+        bus.subscribe(self.events.append)
+        bus.subscribe(self.__on_plan, PLAN_PROPOSED)
+        bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
+        return self
+
+    def __on_plan(self, event: Event) -> None:
+        self.plans.append(event.data)
+        self.bus.dispatch(PLAN_DECIDED, id=event.data["id"], approved=True, feedback="")
+
+    def __on_permission(self, event: Event) -> None:
+        self.asked.append(event.data["tool"])
+        self.bus.dispatch(TOOL_GRANT_PERMISSION, id=event.data["id"], granted=True)
+
+    def getUserInput(self) -> str:
+        raise EOFError
+
+    def seen(self, name: str) -> list[dict]:
+        return [event.data for event in self.events if event.name == name]
+
+@pytest.fixture(autouse=True)
+def no_mcp_servers(monkeypatch, tmp_path):
+    """
+        An app of a test starts no MCP server, unless the test declares its own: none of the settings, nor uvx, nor
+        those of the files of whoever runs the tests
+    """
+    monkeypatch.setitem(settings, "mcp.servers", [])
+    monkeypatch.setitem(settings, "mcp.files", [])
+    monkeypatch.setitem(settings, "mcp.trust_file", str(tmp_path / "mcp-trusted.json"))
+
+@pytest.fixture
+def mcp(folder):
+    """ Start the servers given, as Louis does: they are all stopped after the test. None restarts by itself """
+    managers: list[McpManager] = []
+    def start(*servers: dict, timeout: float = 5.0, start_timeout: float = 5.0, restarts: int = 0, **conf) -> McpManager:
+        manager = McpManager({"mcp.servers": list(servers), "mcp.timeout": timeout, "mcp.start_timeout": start_timeout,
+                              "mcp.restarts": restarts, **conf})
+        managers.append(manager.start())
+        return manager
+    yield start
+    for manager in managers:
+        manager.close()
+
+@pytest.fixture
+def louis(folder, monkeypatch, tmp_path):
+    """ An app with the MCP servers given, its model answering the replies given: the requests it got in app.sent """
+    monkeypatch.setattr(OllamaModel, "_OllamaModel__probe", staticmethod(lambda uri, model: {"tools"}))
+    apps: list[App] = []
+
+    def make(servers: list[dict], replies: list[Reply], user: Person, **extra) -> App:
+        conf = {**settings, "scribe.model": "", "rag.enabled": False, "sandbox.enabled": False, "guard.enabled": False,
+                "eval.enabled": False, "hitl.enabled": True, "mcp.servers": servers, **extra}
+        app = App(conf, SYSTEM_PROMPT, Account.anonymous(), user, Recorder(str(tmp_path / "traces.jsonl"), conf))
+        apps.append(app)
+        answers = iter(replies)
+        app.sent, app.offered = [], []
+        def chat(messages, tools, *args, **kwargs):
+            app.sent.append(messages)
+            app.offered.append([tool["function"]["name"] for tool in tools])
+            return next(answers)
+        app.model.chat = chat
+        return app
+    yield make
+    for app in apps:
+        app.close()
 
 @pytest.fixture
 def app() -> FakeApp:
@@ -69,3 +178,61 @@ def repo(project):
     git(project, "push", "-q", "-u", "origin", "main")
     git(project, "push", "-q", "origin", "main:dev")
     return project
+
+class Listener(Interface):
+    """ The user of a scripted app: every event it saw, the permissions answered with grant, its messages typed """
+    describes = False
+
+    def __init__(self, typed: list[str] | None = None, grant: bool = True):
+        self.typed: list[str] = list(typed or [])
+        self.grant: bool = grant
+        self.events: list[Event] = []
+
+    def bind(self, bus):
+        self.bus = bus
+        bus.subscribe(self.events.append)
+        bus.subscribe(lambda event: bus.dispatch(TOOL_GRANT_PERMISSION, id=event.data["id"], granted=self.grant),
+                      TOOL_BEGFOR_PERMISSION)
+        return self
+
+    def getUserInput(self) -> str:
+        if not self.typed:
+            raise EOFError
+        return self.typed.pop(0)
+
+    def seen(self, name: str) -> list[dict]:
+        """ The data of the events of that name, in their order """
+        return [event.data for event in self.events if event.name == name]
+
+@pytest.fixture
+def chat(folder, monkeypatch, tmp_path):
+    """
+        An app whose model answers the replies given, in order (no Ollama): what it was sent is kept in app.sent, its
+        calls recorded in app.traces, its interface is app.listener
+    """
+    from app.app import App
+    from config.prompt import SYSTEM_PROMPT
+    from model.model import OllamaModel
+    from monitor.recorder import Recorder
+    from session.user import User
+    monkeypatch.setattr(OllamaModel, "_OllamaModel__probe", staticmethod(lambda uri, model: {"tools"}))
+
+    def make(replies: list, *, user=None, listener: Listener | None = None, **options):
+        conf = {**settings, "scribe.model": "", "rag.enabled": False, "sandbox.enabled": False, "guard.enabled": False,
+                "eval.enabled": False, "hitl.enabled": False, **options}
+        traces = tmp_path / f"traces-{len(list(tmp_path.glob('traces-*')))}.jsonl"
+        listener = listener or Listener()
+        app = App(conf, SYSTEM_PROMPT, user or User.anonymous(), listener, Recorder(str(traces), conf))
+        app.traces, app.listener, app.sent = traces, listener, []
+        answers = iter(replies)
+
+        def answer(messages, tools=[], images=[], *, on_text=None, schema=None, **kwargs):
+            app.sent.append({"messages": [dict(message) for message in messages], "schema": schema,
+                             "tools": [tool["function"]["name"] for tool in tools]})
+            reply = next(answers)
+            if on_text is not None and reply.content and not reply.tool_calls:
+                on_text(reply.content)
+            return reply
+        app.model.chat = answer
+        return app
+    return make

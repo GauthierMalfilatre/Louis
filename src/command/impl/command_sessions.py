@@ -21,6 +21,10 @@ class SessionsCommand(Command):
             self.error(app, "anonymous", NOT_SAVED)
             return
         here: str = os.getcwd()
+        # Written by the scribe in its thread: read from the database, the sessions in memory never see them
+        notes: dict[int, tuple] = {row["id"]: (row["title"], row["summary"]) for row in app.user.db.fetchall(
+            "SELECT id, title, summary FROM sessions WHERE user_id = ?", (app.user.id,)
+        )}
         sessions: list[dict] = []
         for session in app.user.sessions:
             # Not saved yet, so still empty: nothing to come back to
@@ -29,6 +33,8 @@ class SessionsCommand(Command):
             sessions.append({
                 "id"           : session.id,
                 "first_message": session.first_user_message(),
+                "title"        : notes.get(session.id, (None, None))[0],
+                "summary"      : notes.get(session.id, (None, None))[1],
                 "cwd"          : session.cwd,
                 "here"         : session.cwd == here,
                 "current"      : session.id == app.session.id,

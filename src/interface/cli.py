@@ -11,9 +11,15 @@ from events.event_list import SESSION_CREATED, SESSION_LIST, SESSION_RESUMED, CO
 from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, THINKING_ENABLED, THINKING_DISABLED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_TEXT, CHAT_REPLY, CHAT_COMPACTED
 from events.event_list import TOOL_CALL_STARTED, TOOL_CALL_ENDED, APP_STOPPED, GUARD_TRIGGERED, EXPORT_DONE
-from events.event_list import SHARE_CREATED, SHARE_LIST, SHARE_REVOKED
+from events.event_list import SHARE_CREATED, SHARE_LIST, SHARE_REVOKED, SESSION_FOUND
 from datetime import datetime, timezone
 from events.event_list import RAG_INDEXING, RAG_INDEX_PROGRESS, RAG_INDEXED, RAG_SOURCES, RAG_FORGOTTEN
+from events.event_list import STRUCTURED_REPLY, SCHEMA_LIST
+from events.event_list import RAG_DESCRIBE_PROGRESS
+from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT
+from events.event_list import CACHE_HIT, CACHE_ENABLED, CACHE_DISABLED, CACHE_CLEARED, CACHE_STATS
+from events.event_list import PLAN_SETTINGS, PLAN_PROPOSED, PLAN_DECIDED
+from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED, MCP_PROGRESS, MCP_PROMPT
 import json
 import os
 import re
@@ -103,10 +109,158 @@ def preview(text: str) -> str:
     text = " ".join(text.split())
     return text if len(text) <= PREVIEW_LENGTH else text[:PREVIEW_LENGTH - 1] + "…"
 
+def thought_lines(thought: str) -> list[str]:
+    """
+        A thought of the reasoning loop as it is shown: its lines, without the Markdown bold nor the number the model
+        sometimes gives its step itself, the interfaces number them
+    """
+    text: str = re.sub(r"^\s*(?:étape|step)\s*\d+\s*[:.)-]?\s*", "", thought.replace("**", ""), flags=re.IGNORECASE)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+# The risk of an action of a plan, said to the user: what can not be undone stands out
+RISKS: dict[str, str] = {"safe": "sans risque", "reversible": "réversible", "irreversible": "IRRÉVERSIBLE"}
+
+def plan_title(action: dict) -> str:
+    """ An action of a plan on one line, as its call is shown:  Modification /README.md """
+    return f"{LABELS.get(action['tool'], action['tool'])} {call_detail(action['tool'], action['arguments'])}".rstrip()
+
+def plan_details(action: dict) -> str:
+    """ What an action would do, and how to undo it:  /README.md sera modifié · annulable : git restore README.md """
+    undo: str = f"annulable : {action['undo']}" if action["undo"] else ""
+    return " · ".join(part for part in (action["consequence"], undo) if part)
+
+def plan_settings(data: dict) -> str:
+    """ What /plan set, said to the user """
+    if not data["enabled"]:
+        return "Plan avant d'agir désactivé : chaque outil demande ton accord comme d'habitude. /plan on pour le remettre."
+    which: str = ("seulement ce qui ne s'annule pas (un push, un merge, un fichier dont le contenu serait perdu)"
+                  if data["level"] == "irreversible" else "toute action qui change quelque chose")
+    return f"Plan avant d'agir activé, pour {which} : Louis te montre ce qu'il va faire et attend ton accord. /plan off pour le couper."
+
+# How an MCP server goes, said to the user
+MCP_STATES: dict[str, str] = {"running": "actif", "failed": "n'a pas démarré", "crashed": "s'est arrêté", "stopped": "arrêté",
+                              "disabled": "désactivé", "pending": "attend ton accord"}
+
+NO_MCP: str = "Aucun serveur MCP : déclare-les dans un fichier .mcp.json ou le réglage mcp.servers (voir le README)."
+
+def mcp_trouble(servers: list[dict]) -> bool:
+    """ Whether a server needs the user: it did not start, it stopped by itself, or it waits for its accord """
+    return any(server["state"] in ("failed", "crashed", "pending") for server in servers)
+
+def mcp_trust(name: str) -> str:
+    """ What starts a server the project declared """
+    return f"/mcp trust {name} pour l'approuver et le lancer"
+
+def mcp_held(server: dict) -> str:
+    """
+        The tools of a server that changed since they were first listed, held:
+        1 outil modifié depuis sa première liste, retenu : /mcp trust fake pour accepter sa nouvelle version
+    """
+    count: int = len(server.get("held", []))
+    many: str = "s" if count > 1 else ""
+    return (f"{count} outil{many} modifié{many} depuis {'leur' if many else 'sa'} première liste, retenu{many} : "
+            f"/mcp trust {server['name']} pour accepter {'leur' if many else 'sa'} nouvelle version")
+
+def mcp_started(servers: list[dict]) -> str:
+    """ The MCP servers once Louis started them, on one line:  MCP : calc (1 outil) · time : n'a pas démarré (/mcp) """
+    parts: list[str] = [
+        f"{server['name']} ({len(server['tools'])} outil{'s' if len(server['tools']) > 1 else ''})"
+        if server["state"] == "running" else
+        f"{server['name']} : {MCP_STATES['pending']} ({mcp_trust(server['name'])})" if server["state"] == "pending" else
+        f"{server['name']} : {MCP_STATES.get(server['state'], server['state'])}"
+        for server in servers
+    ]
+    trouble: bool = any(server["state"] in ("failed", "crashed") for server in servers)
+    return f"MCP : {' · '.join(parts)}{' (/mcp pour savoir pourquoi)' if trouble else ''}"
+
+def mcp_changed(data: dict) -> tuple[str, bool]:
+    """ What happened to a server once Louis started, on one line, and whether it went well:  MCP : calc relancé (1 outil) """
+    name: str = data["server"]
+    server: dict = next((server for server in data["servers"] if server["name"] == name), {})
+    count: int = len(server.get("tools", []))
+    tools: str = f"{count} outil{'s' if count > 1 else ''}"
+    if data["change"] == "stopped":
+        return f"MCP : {name} arrêté, ses outils ne sont plus proposés au modèle", True
+    if data["change"] == "trusted" and server.get("state") == "disabled":
+        return f"MCP : {name} approuvé, désactivé par son réglage (/mcp restart {name} le lance)", True
+    if server.get("state") != "running":
+        why: str = server.get("error") or MCP_STATES.get(server.get("state", ""), "")
+        return f"MCP : {name} n'a pas pu être {'lancé' if data['change'] == 'trusted' else 'relancé'} : {why}", False
+    if data["change"] == "trusted":
+        return f"MCP : {name} approuvé et lancé ({tools})", True
+    if data["change"] == "accepted":
+        return f"MCP : les outils modifiés de {name} sont acceptés ({tools})", True
+    if data["change"] == "prompts":
+        count = len(server.get("prompts", []))
+        return f"MCP : {name} a changé ses prompts ({count} prompt{'s' if count > 1 else ''})", True
+    text: str = f"MCP : {name} relancé ({tools})" if data["change"] == "restarted" else \
+        f"MCP : {name} a changé ses outils ({tools})"
+    # A tool that changed waits for the user: they are told
+    if server.get("held"):
+        return f"{text} · {mcp_held(server)}", False
+    return text, True
+
+def mcp_prompt_usage(prompt: dict) -> str:
+    """ How a prompt of a server is run:  /calc:explain <expression> """
+    arguments: str = " ".join(f"<{argument['name']}>" if argument["required"] else f"[{argument['name']}]"
+                              for argument in prompt["arguments"])
+    return f"/{prompt['name']} {arguments}".rstrip()
+
+def mcp_progress(data: dict) -> str:
+    """ How far a long call of an MCP tool is, as its server tells it:  3/10 — Téléchargement """
+    progress, total = data.get("progress"), data.get("total")
+    number: bool = isinstance(progress, (int, float))
+    done: str = f"{progress:g}/{total:g}" if number and isinstance(total, (int, float)) and total else \
+        f"{progress:g}" if number else ""
+    return " — ".join(part for part in (done, data.get("message") or "") if part) or "en cours"
+
+def mcp_command(command: str, length: int = 60) -> str:
+    """ How a server is launched, cut from its start if it is too long: its end (the script) says the most """
+    return command if len(command) <= length else "…" + command[-(length - 1):]
+
 def short_path(path: str) -> str:
     """ A path, with ~ for the home folder """
     home: str = os.path.expanduser("~")
     return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
+
+def ago(seconds: float) -> str:
+    """ How long ago, in a few words: « il y a 3 h » """
+    if seconds < 60:
+        return "à l'instant"
+    for unit, length in (("j", 86400), ("h", 3600), ("min", 60)):
+        if seconds >= length:
+            return f"il y a {int(seconds // length)} {unit}"
+    return "à l'instant"
+
+def cache_hit(data: dict) -> str:
+    """ Where an answer of the cache comes from:  ⚡ Réponse du cache (similarité 0.95), donnée il y a 2 h à « ... » """
+    if data.get("seed"):
+        return f"⚡ Réponse de l'aide de Louis (similarité {data['score']:.2f}), à « {preview(data['question'])} »"
+    return f"⚡ Réponse du cache (similarité {data['score']:.2f}), donnée {ago(data['age'])} à « {preview(data['question'])} »"
+
+def cache_cleared(data: dict) -> str:
+    """ The answers the cache forgot, and why """
+    count: int = data["entries"]
+    answers: str = f"{count} réponse{'s' if count != 1 else ''}"
+    if data["scope"] == "rag":
+        return f"La base de connaissances a changé : {answers} du cache oubliée{'s' if count != 1 else ''}."
+    if data["scope"] == "last":
+        return "Réponse oubliée : la prochaine fois, le modèle répondra." if count else "Cette réponse n'était plus dans le cache."
+    return f"Cache effacé : {answers} oubliée{'s' if count != 1 else ''}."
+
+def cache_stats(data: dict) -> list[str]:
+    """ The lines of /cache """
+    rate: str = f"{data['hit_rate'] * 100:.0f} %" if data["hit_rate"] is not None else "–"
+    state: str = "activé (/cache off pour le couper)" if data["enabled"] else "désactivé (/cache on pour l'activer)"
+    return [
+        f"Cache sémantique {state}",
+        f"  {data['entries']} réponse{'s' if data['entries'] != 1 else ''} gardée{'s' if data['entries'] != 1 else ''}"
+        f"{' (partagées entre les utilisateurs)' if data.get('shared') else ''}, {data.get('seeds', 0)} question"
+        f"{'s' if data.get('seeds', 0) != 1 else ''} de l'aide de Louis, données {data['hits']} fois en tout",
+        f"  depuis le lancement : {data['served']} sur {data['lookups']} question{'s' if data['lookups'] != 1 else ''} "
+        f"({rate})",
+        f"  seuil de similarité {data['threshold']:.2f} · {short_path(data['file'])}",
+    ]
 
 class CLI(Interface):
     """ Class CLI to interact with the user in the terminal """
@@ -138,9 +292,13 @@ class CLI(Interface):
         bus.subscribe(self._on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(lambda event: self.debug("\nUser has closed the session...\n"), APP_STOPPED)
         bus.subscribe(self.__on_permission, TOOL_BEGFOR_PERMISSION)
+        bus.subscribe(self._on_plan, PLAN_PROPOSED)
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
         bus.subscribe(self.__on_session_list, SESSION_LIST)
         bus.subscribe(self.__on_session_resumed, SESSION_RESUMED)
+        bus.subscribe(self.__on_session_found, SESSION_FOUND)
+        bus.subscribe(self._on_structured, STRUCTURED_REPLY)
+        bus.subscribe(self.__on_schema_list, SCHEMA_LIST)
         bus.subscribe(self.__on_export_done, EXPORT_DONE)
         bus.subscribe(self.__on_share_created, SHARE_CREATED)
         bus.subscribe(self.__on_share_list, SHARE_LIST)
@@ -149,12 +307,34 @@ class CLI(Interface):
         bus.subscribe(self.__on_command_error, COMMAND_ERROR)
         bus.subscribe(self.__on_thinking_enabled, THINKING_ENABLED)
         bus.subscribe(self.__on_thinking_disabled, THINKING_DISABLED)
+        bus.subscribe(self.__on_reasoning_enabled, REASONING_ENABLED)
+        bus.subscribe(self.__on_reasoning_disabled, REASONING_DISABLED)
+        bus.subscribe(self._on_reasoning_step, REASONING_STEP)
+        bus.subscribe(self._on_reasoning_check, REASONING_CHECK)
+        bus.subscribe(self.__on_plan_settings, PLAN_SETTINGS)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
         bus.subscribe(self.__on_rag_indexing, RAG_INDEXING)
         bus.subscribe(self.__on_rag_progress, RAG_INDEX_PROGRESS)
+        bus.subscribe(self.__on_rag_described, RAG_DESCRIBE_PROGRESS)
         bus.subscribe(self.__on_rag_indexed, RAG_INDEXED)
         bus.subscribe(self.__on_rag_sources, RAG_SOURCES)
         bus.subscribe(self.__on_rag_forgotten, RAG_FORGOTTEN)
+        bus.subscribe(self.__on_eval_report, EVAL_REPORT)
+        # Before the answer it gives: where it comes from
+        bus.subscribe(lambda event: self.out(cache_hit(event.data), dim=True), CACHE_HIT)
+        bus.subscribe(lambda event: self.out("\nCache sémantique activé : les questions déjà posées sont répondues sans "
+                                             "le modèle. /cache off pour le couper.\n"), CACHE_ENABLED)
+        bus.subscribe(lambda event: self.out("\nCache sémantique désactivé : le modèle répond à chaque question.\n"),
+                      CACHE_DISABLED)
+        bus.subscribe(self.__on_cache_cleared, CACHE_CLEARED)
+        bus.subscribe(lambda event: self.out("\n" + "\n".join(cache_stats(event.data)) + "\n"), CACHE_STATS)
+        bus.subscribe(self.__on_mcp_started, MCP_STARTED)
+        bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
+        bus.subscribe(self.__on_mcp_changed, MCP_CHANGED)
+        bus.subscribe(lambda event: self.out(f"  … {event.data['tool']} : {mcp_progress(event.data)}", dim=True),
+                      MCP_PROGRESS)
+        bus.subscribe(lambda event: self.out(f"↳ prompt de {event.data['server']} : {preview(event.data['text'])}", dim=True),
+                      MCP_PROMPT)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -177,6 +357,8 @@ class CLI(Interface):
             parts.append(f"{event.data['results']} anciens résultats d'outils réduits à leurs premières lignes")
         if event.data["dropped"]:
             parts.append(f"{event.data['dropped']} anciens messages mis de côté")
+        if event.data.get("summarized"):
+            parts.append("résumés par le modèle")
         self._newline()
         self.out(f"  {BULLETS['system']} Contexte allégé : {', '.join(parts)}.", dim=True)
 
@@ -228,6 +410,46 @@ class CLI(Interface):
         """ Back to direct replies """
         self.out("\nRéflexion désactivée : Louis répond directement.\n")
 
+    def __on_reasoning_enabled(self, event: Event) -> None:
+        """ Say the replies will be slower, and what is shown of them """
+        self.out("\nRaisonnement pas à pas activé : Louis dit ce qu'il fait à chaque étape et vérifie sa réponse avant "
+                 "de la donner, c'est plus long. /react pour le couper.\n")
+
+    def __on_reasoning_disabled(self, event: Event) -> None:
+        """ Back to the usual replies """
+        self.out("\nRaisonnement pas à pas désactivé : Louis répond comme d'habitude.\n")
+
+    def __on_plan_settings(self, event: Event) -> None:
+        """ Whether the plans are shown, and for which actions """
+        self.out(f"\n{plan_settings(event.data)}\n")
+
+    def _on_reasoning_step(self, event: Event) -> None:
+        """
+            A step of the reasoning loop, dim, on its own line: its number and what the model thinks before it acts,
+            its tool calls below it. A draft is only said to be written: its check comes next, the answer once checked
+        """
+        self._newline()
+        lines: list[str] = thought_lines(event.data["thought"])
+        if not event.data["tools"]:
+            lines = ["réponse écrite"] + lines
+        if lines:
+            self.out(f"  ⟳ Étape {event.data['step']} : {lines[0]}" + "".join(f"\n      {line}" for line in lines[1:]),
+                     dim=True)
+
+    def _on_reasoning_check(self, event: Event) -> None:
+        """
+            What the check of the draft found, dim: ✔ when it goes, ✘ when it is written again, ⚠ when it is given with
+            problems left (the attempts are spent). The problems follow, one per line
+        """
+        self._newline()
+        data: dict = event.data
+        if data["ok"]:
+            self.out(f"  ✔ Réponse vérifiée{f' (vérification {data["attempt"]})' if data['attempt'] > 1 else ''}", dim=True)
+            return
+        what: str = "à corriger" if data["revise"] else "problèmes restants, réponse donnée quand même"
+        self.out(f"  {'✘' if data['revise'] else '⚠'} Vérification {data['attempt']} : {what}"
+                 + "".join(f"\n      - {problem}" for problem in data["problems"]), dim=True)
+
     def __on_guard(self, event: Event) -> None:
         """ What the guard changed, dim, before the reply or the refusal:  ⛨ Message anonymisé : … """
         self._newline()
@@ -255,6 +477,12 @@ class CLI(Interface):
         """ How far it is, dim:   … 300/2000 fichiers """
         self.out(f"  … {event.data['done']}/{event.data['total']} fichiers", dim=True)
 
+    def __on_rag_described(self, event: Event) -> None:
+        """ A file described: the model takes seconds a passage, the user sees it moving, dim """
+        data: dict = event.data
+        self.out(f"  … {short_path(data['path'])} décrit ({data['described']} passages décrits, "
+                 f"{data['reused']} repris, {data['seconds']:.0f}s)", dim=True)
+
     def __on_rag_indexed(self, event: Event) -> None:
         """ What the folder gave: the source, its files, its passages, and if the search by meaning works on them """
         data: dict = event.data
@@ -265,6 +493,21 @@ class CLI(Interface):
         if data["chunks"] and data["embedded"] < data["chunks"]:
             lines.append(f"  Recherche par mots-clés seulement pour {data['chunks'] - data['embedded']} passages : "
                          f"{data['warning'] or "aucun modèle d'embedding"}. Relance /index quand il répond.")
+        if data.get("excluded"):
+            lines.append(f"  {data['excluded']} fichiers exclus par {', '.join(data['exclude'])}.")
+        if data.get("describe"):
+            lines.append(f"  Code décrit : {data['described']} passages par le modèle ({data['describe_seconds']:.0f}s), "
+                         f"{data['reused']} repris des descriptions déjà faites.")
+            if data.get("describe_warning"):
+                lines.append(f"  Le reste sans description : {data['describe_warning']}. Relance /index quand il répond.")
+        made: list[dict] = data.get("generated") or []
+        if made:
+            # Left out without being asked: the user must see which, and how to keep one
+            lines.append(f"  Laissés de côté, générés par un programme ({len(made)}) :")
+            lines.extend(f"    {item['path']} ({item['reason']})" for item in made[:5])
+            if len(made) > 5:
+                lines.append(f"    … et {len(made) - 5} autres")
+            lines.append("  Pour en garder : réglage rag.index.generated_ratio (0 : seulement ceux marqués « @generated »).")
         self.out("\n".join(lines) + "\n")
 
     def __on_rag_sources(self, event: Event) -> None:
@@ -275,13 +518,55 @@ class CLI(Interface):
         lines: list[str] = [f"\nBase de connaissances ({len(event.data['sources'])} sources) :"]
         for source in event.data["sources"]:
             words: str = "" if source["embedded"] == source["chunks"] else "  (mots-clés seulement)"
+            excluded: str = f"  sans {', '.join(source['exclude'])}" if source.get("exclude") else ""
+            described: str = "  (code décrit)" if source.get("describe") else ""
             lines.append(f"  {source['name']:16} {source['files']:>6} fichiers {source['chunks']:>7} passages  "
-                         f"[{short_path(source['root'])}]{words}")
+                         f"[{short_path(source['root'])}]{words}{described}{excluded}")
         self.out("\n".join(lines) + "\n")
+
+    def __on_cache_cleared(self, event: Event) -> None:
+        """ What the cache forgot: dim when it did it alone (the knowledge base changed) """
+        self._newline()
+        self.out(cache_cleared(event.data), dim=event.data["scope"] == "rag")
 
     def __on_rag_forgotten(self, event: Event) -> None:
         """ The source removed """
         self.out(f"\nSource « {event.data['source']} » retirée ({event.data['chunks']} passages).\n")
+
+    def __on_mcp_started(self, event: Event) -> None:
+        """ The MCP servers on one line: dim while they all run, plain when one did not start """
+        servers: list[dict] = event.data["servers"]
+        self.out(mcp_started(servers), dim=not mcp_trouble(servers))
+
+    def __on_mcp_changed(self, event: Event) -> None:
+        """ A server started again, stopped, or with other tools: one line, dim when it went well """
+        text, fine = mcp_changed(event.data)
+        self.out(text, dim=fine)
+
+    def __on_mcp_servers(self, event: Event) -> None:
+        """ Each server with its state and how it is launched, why it does not answer, then its tools and their risk """
+        servers: list[dict] = event.data["servers"]
+        if not servers:
+            self.out(f"\n{NO_MCP}\n")
+            return
+        lines: list[str] = [f"\nServeurs MCP ({len(servers)}) :"]
+        for server in servers:
+            lines.append(f"  {server['name']:12} {MCP_STATES.get(server['state'], server['state']):16} "
+                         f"[{mcp_command(server['command'])}]")
+            if server["error"]:
+                lines.append(f"    {server['error']}")
+            if server["state"] == "pending":
+                lines.append(f"    déclaré par {server['source']}, un fichier du projet : {mcp_trust(server['name'])}")
+            if server.get("hidden"):
+                lines.append(f"    {server['hidden']} outils masqués par son réglage (tools, exclude)")
+            if server.get("held"):
+                lines.append(f"    {mcp_held(server)} ({', '.join(server['held'])})")
+            for tool in server["tools"]:
+                lines.append(f"    {tool['name']:32} {RISKS.get(tool['risk'], tool['risk']):12} "
+                             f"{shorten(tool['description'], PREVIEW_LENGTH)}")
+            for prompt in server.get("prompts", []):
+                lines.append(f"    {mcp_prompt_usage(prompt):45} {shorten(prompt['description'], PREVIEW_LENGTH)}")
+        self.out("\n".join(lines) + "\n")
 
     def __on_permission(self, event: Event) -> None:
         """ Show what a tool wants to do and its diff, then grant it if the user agrees, or always agrees """
@@ -303,6 +588,30 @@ class CLI(Interface):
             granted = choice in "ya"
         self.__bus.dispatch(TOOL_GRANT_PERMISSION, id=event.data["id"], granted=granted)
 
+    def _on_plan(self, event: Event) -> None:
+        """
+            The plan of a reply that would do something risky, before any of its calls runs: what the model meant,
+            then each action numbered with its risk, what it would do, how to undo it and what it would change. The
+            user approves it, refuses it, or answers what they would rather have, given to the model
+        """
+        data: dict = event.data
+        self._newline()
+        intent: list[str] = thought_lines(data["intent"])
+        self.out(f"\nMon plan : {intent[0]}" if intent else "\nAvant d'agir, voici ce que je vais faire :")
+        for line in intent[1:]:
+            self.out(f"  {line}")
+        for number, action in enumerate(data["actions"], 1):
+            self.out(f"  {number}. {plan_title(action)} · {RISKS.get(action['risk'], action['risk'])}")
+            if details := plan_details(action):
+                self.out(f"     {details}", dim=True)
+            if action["preview"]:
+                self._show_diff(action["preview"])
+        choice: str = self._choose("Approuver ce plan ? [y] oui  [n] non  [r] répondre  ", "ynr")
+        feedback: str = self.ask("Ta réponse : ").strip() if choice == "r" else ""
+        approved: bool = choice == "y"
+        self.out("(plan approuvé : j'y vais)" if approved else "(plan refusé : je ne fais rien de tout ça)", dim=True)
+        self.__bus.dispatch(PLAN_DECIDED, id=data["id"], approved=approved, feedback=feedback)
+
     def _choose(self, question: str, choices: str) -> str:
         """ One of the letters of choices, typed after question: "n" for anything else """
         answer: str = self.ask(question).strip().lower()
@@ -323,8 +632,24 @@ class CLI(Interface):
         lines: list[str] = [f"\nSessions de {event.data['user']} (* : en cours) :"]
         for session in event.data["sessions"]:
             where: str = "" if session["here"] else f"[{short_path(session['cwd'])}] "
-            first: str = preview(session["first_message"]) if session["first_message"] else "(vide)"
+            first: str = preview(session.get("title") or session["first_message"] or "(vide)")
             lines.append(f"{'*' if session['current'] else ' '} #{session['id']:<4} {where}{first}")
+        self.out("\n".join(lines) + "\n")
+
+    def __on_session_found(self, event: Event) -> None:
+        """ The sessions found, the closest first: their title (or first message), then their summary """
+        sessions: list[dict] = event.data["sessions"]
+        if not sessions:
+            self.out(f"\nAucune session ne parle de « {event.data['query']} ».\n")
+            return
+        how: str = "par le sens" if event.data["mode"] == "meaning" else "par les mots"
+        lines: list[str] = [f"\nSessions sur « {event.data['query']} » ({how}, /resume <id> pour en reprendre une) :"]
+        for session in sessions:
+            where: str = "" if session["here"] else f"[{short_path(session['cwd'])}] "
+            lines.append(f"{'*' if session['current'] else ' '} #{session['id']:<4} {where}"
+                         f"{preview(session['title'] or session['first_message'] or '(vide)')}")
+            if session["summary"]:
+                lines.append(f"        {preview(session['summary'])}")
         self.out("\n".join(lines) + "\n")
 
     def __on_session_resumed(self, event: Event) -> None:
@@ -335,6 +660,69 @@ class CLI(Interface):
             lines.append(f"  Toi   : {preview(event.data['last_question'])}")
         if event.data["last_answer"]:
             lines.append(f"  Louis : {preview(event.data['last_answer'])}")
+        self.out("\n".join(lines) + "\n")
+
+    def _on_structured(self, event: Event) -> None:
+        """ The JSON of a reply that matches its schema, indented. One that does not is told by the end of the turn """
+        if not event.data["valid"]:
+            return
+        self._newline()
+        self.out(json.dumps(event.data["data"], ensure_ascii=False, indent=2))
+        attempts: int = event.data["attempts"]
+        self.out(f"(schéma {event.data['schema']}{f', {attempts} essais' if attempts > 1 else ''})", dim=True)
+
+    def __on_eval_report(self, event: Event) -> None:
+        """
+            The scores of the last answer (/eval), then the claims its sources do not support:
+              ✗ contredite   « ... »  [2] cat_file {"path": "src/app.py"} : « the passage »
+              ? invérifiable « ... »
+        """
+        data: dict = event.data
+        self._newline()
+        if data["status"] != "ok":
+            self.out(f"⚖ Le juge ({data['judge']}) n'a pas pu évaluer la dernière réponse : {data['error']}\n")
+            return
+        claims: list[dict] = data["claims"]
+        supported: int = sum(1 for claim in claims if claim["verdict"] == "supported")
+        sources: int = len(data["sources"])
+        if data["faithfulness"] is not None:
+            faithful: str = (f"{round(data['faithfulness'] * 100)} %  ({supported} affirmation{'s' if supported > 1 else ''}"
+                             f" sur {len(claims)} appuyée{'s' if supported > 1 else ''} par {sources} source{'s' if sources > 1 else ''})")
+        else:
+            faithful = "aucune source lue : réponse de mémoire" if not sources else "aucun fait à vérifier"
+        spent: dict = data["spent"]
+        detail: str = f", dont {spent['generation']:.0f} s à écrire {spent['completion_tokens']} tokens"
+        if spent["load"] >= 1.0:
+            detail += f" et {spent['load']:.0f} s à recharger le modèle"
+        self.out(f"⚖ Dernière réponse, notée par {data['judge']} en {data['duration']:.1f} s{detail}")
+        self.out(f"  fidélité aux sources  {faithful}")
+        self.out(f"  pertinence            {data['relevance']}/5  {data['relevance_reason']}", dim=True)
+        self.out(f"  cohérence             {data['coherence']}/5  {data['coherence_reason']}", dim=True)
+        labels: dict[str, str] = {"contradicted": "✗ contredite  ", "unverifiable": "? invérifiable"}
+        for claim in sorted((c for c in claims if c["verdict"] != "supported"), key=lambda c: c["verdict"] != "contradicted"):
+            self.out(f"  {labels[claim['verdict']]} « {claim['text']} »")
+            if claim["source"]:
+                source: dict = data["sources"][claim["source"] - 1]
+                where: str = f"[{claim['source']}] {LABELS.get(source['tool'], source['tool'])} {call_detail(source['tool'], source['arguments'])}"
+                quote: str = f" : « {shorten(claim['evidence'], PREVIEW_LENGTH)} »" if claim["evidence"] else ""
+                self.out(f"      {where}{quote}{'' if claim['quoted'] or not claim['evidence'] else ' (citation introuvable dans la source)'}", dim=True)
+            elif claim["reason"]:
+                self.out(f"      {claim['reason']}", dim=True)
+        self.out("")
+
+    def __on_schema_list(self, event: Event) -> None:
+        """ One schema per line: its name for /json, what it is for, and where it comes from """
+        folder: str = short_path(event.data["folder"])
+        if not event.data["schemas"]:
+            self.out(f"\nAucun schéma : ajoutes-en dans {folder}/ (un fichier <nom>.json par schéma).\n")
+            return
+        lines: list[str] = ["\nSchémas de /json <schéma> <question> :"]
+        width: int = max(len(schema["name"]) for schema in event.data["schemas"])
+        for schema in event.data["schemas"]:
+            mark: str = "" if schema["ok"] else "⚠ "
+            origin: str = " (projet)" if schema["origin"] == "projet" else ""
+            lines.append(f"  {schema['name']:<{width}}  {mark}{preview(schema['description'] or '')}{origin}")
+        lines.append(f"Les tiens vont dans {folder}/, ils passent avant ceux de Louis du même nom.")
         self.out("\n".join(lines) + "\n")
 
     def __on_export_done(self, event: Event) -> None:

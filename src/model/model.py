@@ -72,9 +72,14 @@ class OllamaModel:
             *,
             think: bool = False,
             on_text: Callable | None = None,
-            on_thinking: Callable | None = None
+            on_thinking: Callable | None = None,
+            schema: dict | None = None
         ) -> Reply:
-        """ Send a conversation to the model, and returning its reply. Images are a list of path """
+        """
+            Send a conversation to the model, and returning its reply. Images are a list of path.
+            With a JSON Schema, Ollama only lets the model write JSON that matches it (format): no tool is offered then,
+            a call would be no such JSON
+        """
         payload: dict[str] = {
             "model": self.__model,
             "messages": messages,
@@ -94,7 +99,9 @@ class OllamaModel:
         if self.thinking:
             payload["think"] = think
 
-        if tools and self.tools:
+        if schema is not None:
+            payload["format"] = schema
+        elif tools and self.tools:
             payload["tools"] = tools
 
         names: set[str] = {tool["function"]["name"] for tool in payload.get("tools") or []}
@@ -103,7 +110,6 @@ class OllamaModel:
 
         self.__requests += 1
         log.debug(f"[model] request #{self.__requests}: {len(messages)} messages, last one from {messages[-1]['role'] if messages else None}")
-        thinking: str = ""
         stats: dict = {}
 
         shown: int = 0
@@ -125,7 +131,7 @@ class OllamaModel:
                     if reply.ttft is None and any(message.get(key) for key in ("content", "thinking", "tool_calls")):
                         reply.ttft = round(time.perf_counter() - start, 3)
                     if thought := message.get("thinking"):
-                        thinking += thought
+                        reply.thinking += thought
                         if on_thinking is not None:
                             on_thinking(thought)
                     if text := message.get("content"):
@@ -162,14 +168,14 @@ class OllamaModel:
         reply.load, reply.prompt_eval, reply.generation = (
             round(stats.get(key, 0) / 1e9, 3) for key in ("load_duration", "prompt_eval_duration", "eval_duration")
         )
-        OllamaModel.__log_reply(reply, thinking, stats)
+        OllamaModel.__log_reply(reply, stats)
         return reply
 
     @staticmethod
-    def __log_reply(reply: Reply, thinking: str, stats: dict) -> None:
+    def __log_reply(reply: Reply, stats: dict) -> None:
         """ Log what the model thought and answered, and how long Ollama took """
-        if thinking:
-            log.debug(f"[model] thinking:\n{thinking}")
+        if reply.thinking:
+            log.debug(f"[model] thinking:\n{reply.thinking}")
         if reply.content:
             log.info(f"[model] reply:\n{reply.content}")
         for call in reply.tool_calls:

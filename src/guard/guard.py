@@ -4,13 +4,14 @@
 ## File description:
 ## Guard Class: the rails of NeMo Guardrails, around the messages of the user and the replies of the model
 ##
-## Usage:  guard = Guard(bus)
+## Usage:  guard = Guard(bus, settings)
 ##         verdict = guard.check_input(text)           before the message reaches the model
 ##         verdict = guard.check_output(text, reply)   before the reply reaches the user
 ##         verdict = guard.check_tool_call(call)       before the tool the model asked for runs
 ##         verdict = guard.check_tool_result(tool, result)   before the model reads what a tool gave (see screens_result)
 ##
 import os
+from .policy import Judge
 from .verdict import Verdict, PASS, MASKED, REFUSED
 from .patterns import redact
 from tool.tool_call import ToolCall
@@ -27,8 +28,12 @@ class Guard:
         The model is still called by OllamaModel: its tools, streaming and thinking stay as they are.
         The app asks and gets a verdict back; what the guard did is told on the bus (GUARD_TRIGGERED)
     """
-    def __init__(self, bus: EventBus, path: str = CONFIG):
-        """ Load the rails of the given folder. NOTE: Raisable (NeMo missing, bad config) """
+    def __init__(self, bus: EventBus, settings: dict, path: str = CONFIG):
+        """
+            Load the rails of the given folder. The policy checks ask the model of the settings (guard.model, or the chat
+            model with the context of the chat): it is put in custom_data.louis, where the actions read it.
+            NOTE: Raisable (NeMo missing, bad config)
+        """
         # The log sees everything before the rails do (the message typed, the reply, what a tool read):
         # it keeps it only masked
         protect(redact)
@@ -39,8 +44,11 @@ class Guard:
             raise ImportError(f"guard.enabled needs NeMo Guardrails: pip install -r requirements-guard.txt ({e})") from e
 
         self.__bus  : EventBus = bus
-        self.__rails = LLMRails(RailsConfig.from_path(path))
-        log.info(f"[guard] rails loaded from {path}")
+        config = RailsConfig.from_path(path)
+        judge: Judge = Judge.from_settings(settings)
+        config.custom_data = {**(config.custom_data or {}), "louis": judge.as_dict()}
+        self.__rails = LLMRails(config)
+        log.info(f"[guard] rails loaded from {path}, policies read by {judge.model} (num_ctx {judge.context})")
 
     def check_input(self, question: str) -> Verdict:
         """ Check a message of the user, before the model reads it """
@@ -75,6 +83,13 @@ class Guard:
             [{"role": "user", "content": tool}, {"role": "tool", "content": result, "name": tool, "tool_call_id": tool}],
             result, variable="tool_message", tool=tool
         )
+
+    def mask(self, text: str) -> str:
+        """
+            A text with its sensitive data replaced, as the log keeps it: by the patterns only, never the model (instant).
+            For a message the rails do not read: the semantic cache answers it with a reply they checked when it was kept
+        """
+        return redact(text)
 
     def hide(self, arguments: dict) -> dict:
         """

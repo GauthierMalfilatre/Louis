@@ -5,6 +5,7 @@
 ## Tool class
 ##
 from abc import abstractmethod
+from tool.risk import Risk, NONE
 
 # How the result of a tool starts when it could not do what was asked: it can not, or the user refused
 FAILURES: tuple[str, ...] = ("Erreur", "Refusé")
@@ -40,6 +41,18 @@ class Tool:
     def schema(self) -> dict[str]:
         """ Get the schema of the tool """
         return self.__schema
+
+    def describe(self, desc: str) -> None:
+        """ Change the description of the tool, when what it can reach changed (what the knowledge base holds) """
+        self.__schema["function"]["description"] = desc
+
+    def risk(self, app, **kwargs) -> Risk:
+        """
+            What the call would do, judged before it runs, without running it: the app suspends the calls risky
+            enough to show their plan first. A tool that only reads changes nothing. A call it can not judge (wrong
+            arguments) is safe: the tool refuses it itself
+        """
+        return NONE
 
     @abstractmethod
     def handle(self, app, **kwargs):

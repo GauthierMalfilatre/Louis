@@ -12,6 +12,17 @@
 ##   guard   a rail of the guard changed a message
 ##   rag     one look-up in the knowledge base: its query, how it searched, what it found, how long it took
 ##   turn    one message of the user answered: how it ended, how long the whole answer took, what it cost
+##   structured  a reply asked as JSON (/json, --ask): its schema, whether it matched, after how many replies
+##   step    a step of the reasoning loop (/react): what the model thought, the tools it called
+##   check   the check of a draft of the reasoning loop: whether it went, its problems, whether it was written again
+##   plan    the plan of a risky reply shown to the user (/plan): its actions and their risk, whether it was approved,
+##           what the user answered, how long they took to decide (waited)
+## An llm record tells what the call was for (purpose): a reply, JSON, the check of a draft, a summary of the context.
+## Only the replies make the rounds and the output of a turn: the JSON of a check is no answer
+##   cache   a question looked up in the semantic cache (cache/): whether its answer was there, how close the closest
+##           one was, how long it took, or why it was not looked up. A turn answered from the cache is cached: no llm record
+##   eval    an answer judged (eval/): its scores, and the claims its sources do not support. Written by the thread of
+##           the judge, once the turn is over: it names the answer by the session, the prompt and the model instead
 ## The records of a turn share its id. The long texts are cut: the whole conversation is in the database and the log.
 ## A tool that asks the user waits for the answer: the duration of the call and the latency of the turn count that
 ## time, waited tells how much of it was the user's (the metrics take it out)
@@ -22,12 +33,15 @@ from events.event import Event
 from events.event_bus import EventBus
 from events.event_list import APP_STARTED, SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, GUARD_TRIGGERED
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
-from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, RAG_RETRIEVED
+from events.event_list import TOOL_BEGFOR_PERMISSION, TOOL_GRANT_PERMISSION, RAG_RETRIEVED, STRUCTURED_REPLY
+from events.event_list import REASONING_STEP, REASONING_CHECK, EVAL_SCORED, CACHE_LOOKUP, CACHE_HIT, PLAN_PROPOSED, PLAN_DECIDED
 from config.settings import settings as default_settings
+from config.prompt import REACT_PROMPT
 from logger.logger import log, scrub
 import hashlib
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -36,8 +50,10 @@ VERSION: int = 1
 
 # The settings that change the latency or the tokens of a reply: kept with each run, to explain a drift
 RUN_SETTINGS: tuple[str, ...] = (
-    "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth",
-    "guard.enabled", "rag.enabled"
+    "chat.context", "chat.predict", "chat.options", "chat.stream", "chat.keepalive", "chat.tools.maxdepth", "guard.enabled",
+    "rag.enabled", "rag.rerank.enabled", "rag.rerank.model", "rag.rerank.pool", "rag.rerank.min_score",
+    "rag.rerank.max_chars", "rag.embed.gpu", "eval.enabled", "eval.model", "cache.enabled", "cache.threshold",
+    "cache.rerank.enabled", "cache.rerank.min_score", "cache.seed.min_score", "cache.match.model", "hitl.enabled", "hitl.level"
 )
 
 # Characters kept of each text: enough to know what it was about
@@ -95,6 +111,18 @@ class Turn:
     tool_errors      : int        = 0
     guard            : int        = 0
     waited           : float      = 0.0
+    # The reasoning loop (/react): its steps, the checks of its drafts, the drafts written again, and whether the
+    # answer was given with problems left
+    react            : bool       = False
+    steps            : int        = 0
+    checks           : int        = 0
+    revised          : int        = 0
+    left             : bool       = False
+    # Answered from the semantic cache, without the model
+    cached           : bool       = False
+    # The plans of the turn shown to the user, and those they did not approve (refused, or left without an answer)
+    plans            : int        = 0
+    refused_plans    : int        = 0
 
 class Recorder:
     """
@@ -116,6 +144,10 @@ class Recorder:
         # The prompts already written whole in this run
         self.__prompts  : set[str]          = set()
         self.__broken   : bool              = False
+        # The plan being shown: its id, since when, and its actions (their tool and their risk)
+        self.__plan     : tuple[int, float, list[dict]] | None = None
+        # The judge writes from its own thread: one record at a time
+        self.__lock     : threading.Lock    = threading.Lock()
 
     @property
     def path(self) -> str:
@@ -132,10 +164,18 @@ class Recorder:
         # Bound before the interface: the question is timed before the user reads it, the answer as soon as it comes
         bus.subscribe(self.__on_asked, TOOL_BEGFOR_PERMISSION)
         bus.subscribe(self.__on_answered, TOOL_GRANT_PERMISSION)
+        bus.subscribe(self.__on_plan_proposed, PLAN_PROPOSED)
+        bus.subscribe(self.__on_plan_decided, PLAN_DECIDED)
         bus.subscribe(self.__on_tool_ended, TOOL_CALL_ENDED)
         bus.subscribe(self.__on_guard, GUARD_TRIGGERED)
+        bus.subscribe(self.__on_structured, STRUCTURED_REPLY)
+        bus.subscribe(self.__on_step, REASONING_STEP)
+        bus.subscribe(self.__on_check, REASONING_CHECK)
         bus.subscribe(self.__on_retrieved, RAG_RETRIEVED)
+        bus.subscribe(self.__on_lookup, CACHE_LOOKUP)
+        bus.subscribe(self.__on_cache_hit, CACHE_HIT)
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
+        bus.subscribe(self.__on_eval, EVAL_SCORED)
         return self
 
     def __on_started(self, event: Event) -> None:
@@ -166,11 +206,14 @@ class Recorder:
 
         reply: dict = data["reply"] or {}
         turn: Turn | None = self.__turn
+        # Older traces have no purpose: every call was a reply then
+        purpose: str = data.get("purpose", "reply")
         self.__write(
             "llm",
             turn=turn.id if turn else None,
             session=self.__session,
             round=turn.rounds if turn else None,
+            purpose=purpose,
             model=data["model"],
             prompt=version,
             think=data["think"],
@@ -193,14 +236,19 @@ class Recorder:
         )
         if turn is None:
             return
-        # The request of the user is the last message the first call is given (the nudge comes later)
-        if turn.rounds == 0:
-            turn.input = next((m.get("content") for m in reversed(data["messages"]) if m["role"] == "user"), None)
-        turn.rounds += 1
-        turn.model, turn.prompt, turn.think = data["model"], version, data["think"]
+        # Every call costs the turn, only the replies make it: a check or a summary is no round, nor its answer
         turn.llm_time += data["latency"]
         turn.prompt_tokens += reply.get("prompt_tokens", 0)
         turn.completion_tokens += reply.get("completion_tokens", 0)
+        if purpose not in ("reply", "structured"):
+            return
+        # The request of the user is the last message the first call is given (the nudge comes later), without how
+        # the reasoning loop told it to reason
+        if turn.rounds == 0:
+            asked: str | None = next((m.get("content") for m in reversed(data["messages"]) if m["role"] == "user"), None)
+            turn.input = asked.removesuffix(REACT_PROMPT) if asked else asked
+        turn.rounds += 1
+        turn.model, turn.prompt, turn.think = data["model"], version, data["think"]
         if reply.get("content"):
             turn.output = reply["content"]
 
@@ -259,21 +307,134 @@ class Recorder:
         if self.__turn is not None:
             self.__turn.guard += 1
 
+    def __on_structured(self, event: Event) -> None:
+        """ A reply asked as JSON: its schema, whether it matched, after how many replies, and why not """
+        self.__write(
+            "structured",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            schema=event.data["schema"],
+            valid=event.data["valid"],
+            attempts=event.data["attempts"],
+            errors=[text(error, RESULT_CHARS) for error in event.data["errors"]]
+        )
+
+    def __on_step(self, event: Event) -> None:
+        """ A step of the reasoning loop: what the model thought before it acted, and the tools it called """
+        if self.__turn is not None:
+            self.__turn.react = True
+            self.__turn.steps += 1
+        self.__write(
+            "step",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            step=event.data["step"],
+            thought=text(event.data["thought"], INPUT_CHARS),
+            tools=event.data["tools"]
+        )
+
+    def __on_check(self, event: Event) -> None:
+        """ The check of a draft: whether it went, what was wrong with it, whether it was written again """
+        data: dict = event.data
+        if self.__turn is not None:
+            self.__turn.checks += 1
+            self.__turn.revised += data["revise"]
+            self.__turn.left = not data["ok"] and not data["revise"]
+        self.__write(
+            "check",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            attempt=data["attempt"],
+            ok=data["ok"],
+            revise=data["revise"],
+            problems=[text(problem, RESULT_CHARS) for problem in data["problems"]]
+        )
+
     def __on_retrieved(self, event: Event) -> None:
-        """ A look-up in the knowledge base: the query (cleaned as any text), the paths it found, not their text """
+        """
+            A look-up in the knowledge base: the query (cleaned as any text), the paths it found with their scores, not
+            their text. With the reranker, its score and the index's (fused) both: what the reranker changed, how much
+            it dropped, and how long it took, to tune its threshold and its pool
+        """
+        data: dict = event.data
         self.__write(
             "rag",
             turn=self.__turn.id if self.__turn else None,
             session=self.__session,
-            query=text(event.data["query"], INPUT_CHARS),
-            source=event.data["source"],
-            mode=event.data["mode"],
-            hits=[f"{hit['source']} {hit['path']}:{hit['start']}-{hit['end']}" for hit in event.data["hits"]],
-            duration=event.data["duration"]
+            query=text(data["query"], INPUT_CHARS),
+            source=data["source"],
+            # Whether the model filters, and how: what its description and its size change
+            path=data.get("path"),
+            kind=data.get("kind"),
+            after=data.get("after"),
+            files=data.get("files"),
+            mode=data["mode"],
+            reranker=data.get("reranker"),
+            candidates=data.get("candidates"),
+            dropped=data.get("dropped", 0),
+            hits=[f"{hit['source']} {hit['path']}:{hit['start']}-{hit['end']}" for hit in data["hits"]],
+            scores=[hit["score"] for hit in data["hits"]],
+            fused=[hit.get("fused") for hit in data["hits"]] if data.get("reranker") else None,
+            rerank=data.get("rerank"),
+            duration=data["duration"]
+        )
+
+    def __on_lookup(self, event: Event) -> None:
+        """ A question looked up in the semantic cache, or why it was not """
+        data: dict = event.data
+        self.__write(
+            "cache",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            hit=data["hit"],
+            score=data["score"],
+            duration=data["duration"],
+            reason=data["reason"],
+            matched=data.get("matched", 0)
+        )
+
+    def __on_cache_hit(self, event: Event) -> None:
+        """ The turn is answered from the cache: its latency is not the model's """
+        if self.__turn is not None:
+            self.__turn.cached = True
+
+    def __on_plan_proposed(self, event: Event) -> None:
+        """ A plan shown to the user: from now on, the time is theirs """
+        actions: list[dict] = [{"tool": action["tool"], "risk": action["risk"]} for action in event.data["actions"]]
+        self.__plan = (event.data["id"], time.perf_counter(), actions)
+
+    def __on_plan_decided(self, event: Event) -> None:
+        """ The user decided: the first answer counts, as it is the one the app keeps """
+        if self.__plan is None or event.data.get("id") != self.__plan[0]:
+            return
+        self.__write_plan(True, event.data.get("approved") is True, event.data.get("feedback") or "")
+
+    def __write_plan(self, answered: bool, approved: bool, feedback: str) -> None:
+        """ The plan shown, once decided, or once its turn ended without an answer (a script, Ctrl+C): refused """
+        _, start, actions = self.__plan
+        self.__plan = None
+        waited: float = time.perf_counter() - start
+        if self.__turn is not None:
+            self.__turn.waited += waited
+            self.__turn.plans += 1
+            self.__turn.refused_plans += not approved
+        risks: list[str] = [action["risk"] for action in actions]
+        self.__write(
+            "plan",
+            turn=self.__turn.id if self.__turn else None,
+            session=self.__session,
+            actions=actions,
+            irreversible=risks.count("irreversible"),
+            answered=answered,
+            approved=approved,
+            feedback=text(feedback, RESULT_CHARS) if feedback else None,
+            waited=round(waited, 3)
         )
 
     def __on_turn_ended(self, event: Event) -> None:
         """ The whole answer: how it ended, how long the user waited, what it cost """
+        if self.__plan is not None:
+            self.__write_plan(False, False, "")
         turn: Turn | None = self.__turn
         if turn is None:
             return
@@ -297,11 +458,61 @@ class Recorder:
             tool_errors=turn.tool_errors,
             guard=turn.guard,
             input=text(turn.input, INPUT_CHARS),
-            output=text(turn.output, OUTPUT_CHARS)
+            output=text(turn.output, OUTPUT_CHARS),
+            react=turn.react,
+            steps=turn.steps,
+            checks=turn.checks,
+            revised=turn.revised,
+            left=turn.left,
+            plans=turn.plans,
+            refused_plans=turn.refused_plans,
+            cached=turn.cached
+        )
+
+    def __on_eval(self, event: Event) -> None:
+        """
+            An answer judged: its scores, and the claims the sources do not support (cut as any text). From the thread
+            of the judge: only the data of the event is read, never the turn running
+        """
+        data: dict = event.data
+        claims: list[dict] = data["claims"]
+        self.__write(
+            "eval",
+            sample=data["id"],
+            session=data["session"],
+            model=data["model"],
+            prompt=data["prompt"],
+            judge=data["judge"],
+            status=data["status"],
+            error=data["error"],
+            faithfulness=data["faithfulness"],
+            relevance=data["relevance"],
+            coherence=data["coherence"],
+            claims=len(claims),
+            supported=sum(1 for claim in claims if claim["verdict"] == "supported"),
+            contradicted=sum(1 for claim in claims if claim["verdict"] == "contradicted"),
+            unverifiable=sum(1 for claim in claims if claim["verdict"] == "unverifiable"),
+            flagged=[{"claim": text(claim["text"], ARGUMENT_CHARS), "verdict": claim["verdict"], "source": claim["source"]}
+                     for claim in claims if claim["verdict"] != "supported"],
+            sources=[f"{source['tool']} {json.dumps(arguments(source['arguments']), ensure_ascii=False, default=str)}"
+                     for source in data["sources"]],
+            duration=data["duration"],
+            # Where the time of the judge went: a load is a reload of the model (another num_ctx, another model)
+            requests=data["spent"]["requests"],
+            load=data["spent"]["load"],
+            generation=data["spent"]["generation"],
+            prompt_tokens=data["spent"]["prompt_tokens"],
+            completion_tokens=data["spent"]["completion_tokens"],
+            input=text(data["question"], INPUT_CHARS)
         )
 
     def __write(self, kind: str, **fields) -> None:
         """ Append one record. A file that can not be written stops the recording, told once: louis goes on without """
+        with self.__lock:
+            self.__append(kind, fields)
+
+    def __append(self, kind: str, fields: dict) -> None:
+        """ Append one record, under the lock """
         if self.__broken:
             return
         record: dict = {

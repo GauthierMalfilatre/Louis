@@ -6,7 +6,7 @@ Louis est un assistant basé sur un modèle de langage, qui permet à l'utilisat
 
 - **Environnement virtuel** : Le projet crée un environnement virtuel Python (venv) pour isoler les dépendances.
 - **Système de sessions** : Les sessions sont stockées dans une base de données SQLite, et les utilisateurs peuvent avoir des sessions personnalisées.
-- **Interface** : L'utilisateur peut interagir avec le système via une interface en ligne de commande (CLI), ou via une interface curses pour un affichage plus avancé.
+- **Interface** : L'utilisateur peut interagir avec le système via une interface en ligne de commande (CLI), via une interface curses pour un affichage plus avancé, ou depuis son navigateur (`louis --web`).
 - **Modèle de langage** : Le système utilise un modèle de langage (comme Ollama) pour générer des réponses.
 
 ## Équipe
@@ -51,34 +51,43 @@ python src/main.py
 - Créer un lanceur (`louis`) dans `$HOME/.local/bin`.
 - Configurer le PATH pour que `louis` soit accessible depuis n'importe quel répertoire.
 
-## Base de connaissances (RAG)
+## Fonctionnalités
 
-Louis cherche dans la documentation et les exemples de code que tu lui indexes (`/index <dossier>`, ou `louis --index <dossier>`) avec l'outil `search_knowledge`, par mots-clés et par le sens (`ollama pull nomic-embed-text`). Le fonctionnement, le garde-fou qui filtre ce que la base rend, et **où trouver de gros jeux de données de code** sont dans [docs/RAG.md](docs/RAG.md).
+Chaque fonctionnalité a sa fiche dans [docs/feature/](docs/feature/) : ce qu'elle fait et comment s'en servir.
 
-## Monitoring
+**Base**
+- [B1 · Chatbot en ligne de commande](docs/feature/base/B1-cli-chatbot.md)
 
-Chaque appel au modèle et aux outils est enregistré, une ligne JSON par événement, dans `louis.traces.jsonl` (à côté de `louis.db` : dans le dossier courant, ou dans `~/.local/share/louis/` avec le lanceur de `install.sh` ; `LOUIS_TRACES` change le chemin).
+**Mémoire et contexte**
+- [M1 · Sessions persistantes et profils](docs/feature/memory/M1-sessions-profils.md)
 
-| Type     | Ce qu'il contient |
-| -------- | ----------------- |
-| `run`    | un lancement de Louis : le modèle, les réglages qui jouent sur la vitesse |
-| `prompt` | un prompt système, en entier, la première fois qu'il est vu : les autres lignes le nomment par sa version (début de son hash) |
-| `llm`    | une requête au modèle : ce qu'on lui donne, sa réponse, les outils demandés, la latence, le temps jusqu'au premier token, les tokens (prompt / réponse), le temps de chargement, le statut (`ok`, `error`, `cancelled`) |
-| `tool`   | un appel d'outil : arguments, succès, durée, début du résultat, et le temps passé à attendre ta permission (`waited`) |
-| `guard`  | un rail du garde-fou a modifié un message |
-| `rag`    | une recherche dans la base de connaissances : la requête, le mode (`hybrid` ou `keyword`), les passages trouvés, la durée |
-| `turn`   | une réponse complète à un message : comment elle s'est terminée, le temps total, dont l'attente de tes permissions (`waited`), les tokens, le nombre de tours |
+**Outils**
+- [T1 · Appel d'outils (MCP)](docs/feature/tools/T1-appel-outils.md)
+- [T1 · Serveurs MCP : client et serveur](docs/feature/tools/T1-serveurs-mcp.md)
+- [T2 · Exécution de code isolée (sandbox)](docs/feature/tools/T2-sandbox.md)
+- [T3 · Recherche web](docs/feature/tools/T3-recherche-web.md)
+- [T4 · Accès aux fichiers avec permissions](docs/feature/tools/T4-acces-fichiers.md)
+- [T5 · Réponses structurées (JSON)](docs/feature/tools/T5-sortie-structuree.md)
 
-Les lignes d'un même tour partagent son `turn`. Le temps que tu mets à répondre à une demande de permission est retiré des latences du tableau de bord. Les textes longs sont coupés, et masqués comme dans `louis.log` quand le garde-fou est actif.
+**RAG**
+- [R1 · RAG de base](docs/feature/rag/R1-rag-basique.md)
+- [R2 · RAG avancé](docs/feature/rag/R2-rag-avance.md)
 
-Pour voir les métriques (volume d'appels, latence, taux d'erreur, tokens, dérive dans le temps) :
+**Orchestration et raisonnement**
+- [A1 · Raisonnement pas à pas (ReAct)](docs/feature/orchestration/A1-react.md)
+- [A3 · Plan avant d'agir (human in the loop)](docs/feature/orchestration/A3-human-in-the-loop.md)
+- [A6 · Cache sémantique](docs/feature/orchestration/A6-cache-semantique.md)
 
-```bash
-louis --dashboard                  # ou : python src/main.py --dashboard
-cd src && python -m monitor ../louis.traces.jsonl -o /tmp/dashboard.html --open
-```
+**Évaluation**
+- [EV1 · Évaluation automatique et détection d'hallucinations](docs/feature/evaluation/EV1-eval-hallucinations.md)
+- [EV2 · Garde-fous de contenu et de vie privée](docs/feature/evaluation/EV2-garde-fous.md)
+- [EV3 · Logs et tableau de bord](docs/feature/evaluation/EV3-monitoring.md)
 
-Le résumé s'affiche dans le terminal, et `louis.dashboard.html` (une page autonome, sans serveur) s'ouvre dans le navigateur. En haut, les **dérives** : chaque nouveau prompt ou modèle est comparé à celui qu'il remplace, et les dernières 24 h à la semaine d'avant. Une alerte apparaît au-delà de ±30 % de latence médiane, ±30 % de tokens par appel ou ±5 points de taux d'erreur, avec au moins 5 appels de chaque côté. Un prompt modifié hier qui double la latence apparaît donc en tête, avec la hausse des tokens qui l'explique.
+**Interface et cycle de vie**
+- [X1 · Interface web](docs/feature/ux/X1-web-ui.md)
+- [X3 · Export et publication](docs/feature/ux/X3-export-publication.md)
+
+Pour aller plus loin : [docs/RAG.md](docs/RAG.md), [docs/CACHE.md](docs/CACHE.md), [docs/EVAL.md](docs/EVAL.md), [docs/MCP.md](docs/MCP.md) et le guide [docs/MCP_GUIDE.md](docs/MCP_GUIDE.md).
 
 ## Notes
 

@@ -21,32 +21,56 @@ from tool.impl.file.tool_mkdir import MkdirTool
 from tool.impl.web.tool_websearch import InternetTool
 from tool.impl.git.tool_git import GitTool
 from tool.impl.git.tool_pr import PullRequestTool
+from tool.impl.exec.tool_run import RunTool, available as sandbox_available
 from tool.impl.rag.tool_knowledge import KnowledgeTool
+from tool.mcp.manager import McpManager, RUNNING
+from tool.mcp.tool_mcp import McpTool
 from tool.permission import PermissionManager
+from tool.risk import Risk, NONE, LEVELS, SAFE, IRREVERSIBLE
 from rag.knowledge import Knowledge
 from guard.guard import Guard
 from guard.verdict import Verdict
 from tool.seen_files import SeenFiles
-from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND
+from app.constants import (
+    ANNOUNCE, UNLOGGED, CONTEXT, CANCELLED_TOOL, SAME_CALLS, MAX_REFUSED, REPEATED_CALL, MAX_CALLS, MIN_ROOM,
+    IGNORED_CALLS, NO_ROOM, EMPTY_MESSAGE, GONE_TOOLS, LOOP_MESSAGE, SUMMARY_MESSAGE, SUMMARY_RESULT, SUMMARY_SHARE,
+    SUMMARY_CHARS, REFUSED_CALLS, MAX_PROBLEMS, PROBLEM_CHARS, CRITIQUE, CITED_FILE, UNSOURCED, REFUSED_PLAN,
+    PLAN_FEEDBACK, PLAN_NO_FEEDBACK,
+)
+from app.context_window import ContextWindow, capped, share, MAX_RESULT, ROUND, CHARS_PER_TOKEN
 from events.event_bus import EventBus, Event
 from events.event_list import *
 from logger.logger import log, log_event
-from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT
+from config.prompt import NUDGE_PROMPT, EMPTY_PROMPT, SUMMARY_PROMPT, MERGE_PROMPT, VERIFY_PROMPT, REACT_PROMPT, REVISE_PROMPT
 from session.user import User
 from session.session import Session
+from session.scribe import Scribe
 from command.command import CommandTree
 from command.impl.command_clear import ClearCommand
 from command.impl.command_think import ToggleThinkCommand
+from command.impl.command_react import ToggleReactCommand
+from command.impl.command_plan import PlanCommand
 from command.impl.command_sessions import SessionsCommand
 from command.impl.command_resume import ResumeCommand
+from command.impl.command_json import JsonCommand
+from command.impl.command_schemas import SchemasCommand
+from structured.reply import instruction, checked, retry, shown
 from command.impl.command_export import ExportCommand
 from command.impl.command_share import ShareCommand
 from command.impl.command_shares import SharesCommand
 from command.impl.command_unshare import UnshareCommand
 from command.impl.command_index import IndexCommand, UnindexCommand
+from command.impl.command_eval import EvalCommand
+from eval.evaluator import Evaluator
+from command.impl.command_find import FindCommand
+from command.impl.command_cache import CacheCommand
+from cache.semantic_cache import SemanticCache, Hit
+from command.impl.command_mcp import McpCommand
+from command.impl.command_mcp_prompt import McpPromptCommand
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
+from typing import Any
 from dataclasses import asdict
 from datetime import date
 import json
@@ -54,62 +78,26 @@ import os
 import re
 import time
 
-# A reply that says what the model is about to do, in French or English. In French, "je vais" must lead to
-# a verb ("je vais créer", "je vais d'abord lire"): "je vais bien" is only small talk, as "let me know" is.
-# "Vérifions game.py" too, but only at the start of a sentence: "ici, nous vérifions que..." explains the code
-ANNOUNCE: re.Pattern = re.compile(
-    r"\b(?:je vais (?:[\w']+ ){0,2}?[\w']+(?:er|ir|re|oir)|je m'apprête à|laisse-moi"
-    r"|i will|i'll|let me(?! know)|let's|i am going to|i'm going to)\b"
-    r"|(?:^|(?<=[.!?:] ))(?:vérifi|regard|lis|ajout|corrige|modifi|examin|cherch|cré|consult|voy|commenç"
-    r"|analys|ouvr|test|remplaç|renomm)ons\b",
-    re.IGNORECASE | re.MULTILINE
-)
-
-# Logged whole elsewhere (the reply and its stats by the model, the tool calls by __call): not once more per event
-UNLOGGED: frozenset[str] = frozenset({
-    CHAT_TEXT, CHAT_THINKING, CHAT_REPLY, MODEL_CALL, TOOL_CALL_STARTED, TOOL_CALL_ENDED
-})
-
-# Where the context Louis adds starts, after the system prompt
-CONTEXT: str = "\n\n# Contexte\n"
-
-CANCELLED_TOOL: str = "Annulé : l'utilisateur a interrompu Louis avant la fin de cet outil."
-
-# The same call (tool and arguments) made this many times already for a message is refused: the model goes round in
-# circles. After MAX_REFUSED refused calls, the turn stops
-SAME_CALLS : int = 2
-MAX_REFUSED: int = 3
-REPEATED_CALL: str = (
-    "Erreur : tu as déjà fait exactement cet appel 2 fois pour cette demande. N'en refais pas un troisième : "
-    "utilise ce que tu sais déjà, lis une autre partie, ou réponds à l'utilisateur. S'il n'a pas marché, dis-lui "
-    "ce qui a échoué : ne dis jamais avoir fait ce qui n'a pas été fait."
-)
-# The model sometimes asks for dozens of calls at once, often the same ones again (a list gone wrong): the first
-# MAX_CALLS different ones are kept, the others never made. And the results of a round, never cut by the window, must
-# still have this share of the context for one more call to run
-MAX_CALLS: int   = 6
-MIN_ROOM : float = 0.05
-IGNORED_CALLS: str = (
-    "\n[{} autres appels de ta réponse ont été ignorés (en double, ou trop nombreux à la fois) : "
-    "refais ceux qui manquent dans ta prochaine réponse.]"
-)
-NO_ROOM: str = (
-    "Erreur : les résultats de ta réponse prennent déjà trop de place dans le contexte : cet appel n'a pas été fait. "
-    "Refais-le dans ta prochaine réponse."
-)
-EMPTY_MESSAGE: str = "Louis n'a rien répondu, deux fois : le modèle a sans doute appelé un outil qui n'existe pas ici. "
-# Why, when the session called tools this version of Louis does not have: the model calls them again
-GONE_TOOLS: str = (
-    "Cette session a utilisé des outils absents de cette version de Louis (une autre branche ?), et le modèle les "
-    "appelle encore : {tools}. Lance Louis depuis une version qui les a, ou repars d'une session neuve avec /clear."
-)
-LOOP_MESSAGE: str = (
-    "Louis tournait en rond (les mêmes appels d'outils, encore et encore) : arrêté. Reformule ou découpe la demande."
-)
-
-# Calls of a tool the guard refuses in a turn before the tool is withdrawn until the next message: the model
-# may redo a call without the sensitive data once, but qwen3 can also ask the same one again and again
-REFUSED_CALLS: int = 2
+def unsourced(draft: str, history: list[dict]) -> list[str]:
+    """
+        The files a draft names that no tool of the session read, listed or wrote: the model can only have made up
+        what it says of them. Checked by the code, not asked to the model: a 9B model finds them in its own draft. A
+        path is found by its file name alone: the tools show it from the project root (/model/reply.py) or under its
+        folder (tree), the model from anywhere (src/model/reply.py). A made-up file with the name of a real one goes
+        through: better than asking again for an answer that was right. What the user wrote is no source: they ask,
+        the tools tell
+    """
+    sources: str = "\n".join(
+        (message.get("content") or "") if message["role"] == "tool" else
+        json.dumps([call.get("function", {}).get("arguments") for call in message.get("tool_calls") or []],
+                   ensure_ascii=False)
+        for message in history if message["role"] in ("tool", "assistant")
+    )
+    found: list[str] = []
+    for path in dict.fromkeys(match.group(1) for match in CITED_FILE.finditer(draft)):
+        if not re.search(rf"(?<![\w.-]){re.escape(path.split('/')[-1])}(?![\w-])", sources):
+            found.append(path)
+    return found
 
 class App:
     """ App Class: runs the conversation, and tells everything through the bus, never printing itself """
@@ -123,6 +111,7 @@ class App:
         self.__user: User = user
         self.__system_prompt: str = system_prompt
         self.__think: bool = bool(settings.get("chat.think", False))
+        self.__react: bool = bool(settings.get("reason.enabled", False))
 
         self.__bus: EventBus = EventBus()
         # Subscribed first: an event is logged before any other handler reacts to it
@@ -144,10 +133,16 @@ class App:
             .register(GitTool())\
             .register(PullRequestTool())\
 
-        log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
+        # Code runs in a container: no docker, or the setting off, and the model is not offered the tool
+        if settings.get("sandbox.enabled", True) and sandbox_available():
+            self.__toolManager.register(RunTool())
 
         # What the model sees of the session: cut down before it overflows the context, instead of Ollama cutting it
-        self.__window: ContextWindow = ContextWindow(settings.get("chat.context", 12288), self.__toolManager.all())
+        # With chat.compact.summary, what it leaves out is summed up by the model, which reads the summary instead
+        self.__window: ContextWindow = ContextWindow(
+            settings.get("chat.context", 12288), self.__toolManager.all(),
+            self.__summarize if settings.get("chat.compact.summary", True) else None
+        )
 
         # What the user indexed, looked up by the model with search_knowledge. Nothing is read or created on the disk
         # before something is indexed, and the tool is only offered while there is something to look up
@@ -162,31 +157,69 @@ class App:
             .register(ClearCommand())\
             .register(SessionsCommand())\
             .register(ResumeCommand())\
+            .register(JsonCommand())\
+            .register(SchemasCommand())\
             .register(ExportCommand())\
             .register(ShareCommand())\
             .register(SharesCommand())\
             .register(UnshareCommand())\
             .register(ToggleThinkCommand())\
+            .register(ToggleReactCommand())\
+            .register(PlanCommand())\
             .register(IndexCommand())\
             .register(UnindexCommand())\
+            .register(EvalCommand())\
+            .register(FindCommand())\
+            .register(CacheCommand())\
+            .register(McpCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
 
         # NOTE: Raisable. Loaded after the model: a model that does not answer fails before NeMo takes its time to load
-        self.__guard: Guard | None = Guard(self.__bus) if settings.get("guard.enabled", False) else None
+        self.__guard: Guard | None = Guard(self.__bus, settings) \
+            if settings.get("guard.enabled", False) else None
         # The calls the guard refused in the current turn, by tool: counted again from 0 on each message
         self.__refused: Counter[str] = Counter()
+
+        # The answers given before, given again without the model to a question that means the same (cache.enabled,
+        # /cache on|off). It listens to the bus to store the answers once their turn is done: nothing is opened on the
+        # disk before the first lookup. It checks the questions with the reranker of the knowledge base: loaded once
+        self.__cache: SemanticCache = SemanticCache.from_settings(
+            settings, self.__bus, user, guard=self.__guard is not None,
+            reranker=self.__knowledge.reranker if self.__knowledge is not None else None
+        )
+        # Its models loaded while the user types: the first question does not wait for them
+        if self.__cache.enabled:
+            self.__cache.warm()
+
+        # The answers judged once their turn is done (eval.enabled), or the last one when /eval asks. It only listens to
+        # the bus: what it reads is what the guard let through
+        self.__evaluator: Evaluator = Evaluator(settings, self.__bus)
 
         self.__stream: Interface = stream
         # The interface shows what happens (the conversation, the commands...) by listening to the bus
         self.__stream.bind(self.__bus)
+        # The titles and summaries of the sessions, the welcome of a new one: a small model, in its own thread. Started
+        # before the first session, which it welcomes; never for a script that asks one question and quits
+        if settings.get("scribe.model") and stream.describes and (user.db is not None or stream.welcomes):
+            Scribe(settings, self.__bus, user.db.path if user.db is not None else None, user.id, welcome=stream.welcomes)
+
+        # The MCP servers of the settings, started side by side, their tools offered to the model with the others.
+        # After the model and the guard, which may raise: a failed start leaves no server behind. close() stops them
+        self.__mcp: McpManager = McpManager(settings).start()
+        self.offer_mcp()
+        log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
+
         self.__bus.dispatch(
             APP_STARTED,
             model=self.__model.model,
             think=self.think,
+            react=self.react,
             commands=[command.describe() for command in self.__commands.commands]
         )
+        if self.__mcp.servers:
+            self.__bus.dispatch(MCP_STARTED, servers=self.__mcp.describe())
 
         # Started once the model answers: a failed start leaves no empty session behind
         self.new_session()
@@ -226,6 +259,16 @@ class App:
         """ Set the current thinking mode, for the next requests """
         if self.model.thinking:
             self.__think = state
+
+    @property
+    def react(self) -> bool:
+        """ Whether the messages are answered by the reasoning loop (ReAct, /react) """
+        return self.__react
+
+    @react.setter
+    def react(self, state: bool) -> None:
+        """ Answer the next messages by the reasoning loop, or as usual """
+        self.__react = state
 
     def new_session(self, system_prompt: str | None = None) -> Session:
         """ Start a new session of the user, on the given system prompt or on the one Louis started with """
@@ -275,7 +318,8 @@ class App:
 
     def __estimate_context(self) -> None:
         """ Tell how full the context is with the current session, as it will be sent, before the model measures it """
-        messages, _ = self.__window.view(self.__history())
+        # An estimate: what it leaves out is summed up by the next request, never here (a /resume does not wait for it)
+        messages, _ = self.__window.view(self.__history(), summarize=False)
         self.__bus.dispatch(CHAT_CONTEXT, used=self.__window.tokens(messages), size=self.__window.size, estimated=True)
 
     def __view(self) -> list[dict]:
@@ -283,11 +327,47 @@ class App:
         messages, cut = self.__window.view(self.__history())
         if cut:
             used: int = self.__window.tokens(messages)
-            log.info(f"[app] context cut down: {cut['results']} tool results, {cut['dropped']} messages left out, "
-                     f"{used} tokens left of {self.__window.size}")
+            log.info(f"[app] context cut down: {cut['results']} tool results, {cut['dropped']} messages left out"
+                     f"{' and summed up' if cut['summarized'] else ''}, {used} tokens left of {self.__window.size}")
             self.__bus.dispatch(CHAT_COMPACTED, **cut, used=used, size=self.__window.size)
             self.__bus.dispatch(CHAT_CONTEXT, used=used, size=self.__window.size, estimated=True)
         return messages
+
+    def __summarize(self, previous: str, left: list[dict]) -> str | None:
+        """
+            The messages left out of the context, summed up by the chat model for itself, after what it summed up before:
+            it reads them after its system prompt, merged into a shorter summary once they grow past SUMMARY_CHARS.
+            None if the model fails: they are then only left out
+        """
+        parts: list[str] = []
+        for message in left:
+            content: str = message.get("content") or ""
+            most: int = SUMMARY_RESULT if message["role"] == "tool" else SUMMARY_MESSAGE
+            text: str = content if len(content) <= most else content[:most] + " […]"
+            who: str = {"user": "Utilisateur", "assistant": "Toi"}.get(message["role"], f"Résultat de {message.get('tool_name') or 'un outil'}")
+            calls: str = ", ".join(
+                f"{call['function']['name']} {json.dumps(call['function'].get('arguments') or {}, ensure_ascii=False)[:200]}"
+                for call in message.get("tool_calls") or []
+            )
+            parts.append(f"{who} : {text}" + (f"\n  (appels : {calls})" if calls else ""))
+        text: str = "\n".join(parts)
+        room: int = int(self.__window.size * SUMMARY_SHARE * CHARS_PER_TOKEN)
+        if len(text) > room:
+            text = "[…]\n" + text[-room:]
+        try:
+            block: str = self.__chat([{"role": "system", "content": SUMMARY_PROMPT},
+                                      {"role": "user", "content": text}], [], None, think=False,
+                                      purpose="summary").content.strip()
+            summary: str = f"{previous}\n{block}".strip()
+            if len(summary) > SUMMARY_CHARS:
+                summary = self.__chat([{"role": "system", "content": MERGE_PROMPT},
+                                       {"role": "user", "content": summary}], [], None, think=False,
+                                      purpose="summary").content.strip()
+        except ModelException as e:
+            log.warning(f"[app] {len(left)} messages left out of the context without a summary: {e.message}")
+            return None
+        log.info(f"[app] {len(left)} messages left out of the context, summed up:\n{summary}")
+        return summary[:SUMMARY_CHARS * 2] or None
 
     @property
     def settings(self) -> dict[str]:
@@ -305,22 +385,86 @@ class App:
         return self.__seen_files
 
     @property
+    def evaluator(self) -> Evaluator:
+        """ Get the evaluator, for /eval to show the judgment of the last answer """
+        return self.__evaluator
+
+    @property
+    def cache(self) -> SemanticCache:
+        """ Get the semantic cache, for /cache to show it, switch it, or clear it """
+        return self.__cache
+
+    @property
     def knowledge(self) -> Knowledge | None:
         """ Get the knowledge base the user indexed, None if it is turned off (rag.enabled) """
         return self.__knowledge
 
+    @property
+    def mcp(self) -> McpManager:
+        """ Get the MCP servers of the settings, for /mcp to show them """
+        return self.__mcp
+
+    def close(self) -> None:
+        """ Stop what Louis started beside it: its MCP servers """
+        self.__mcp.close()
+
+    def offer_mcp(self) -> None:
+        """
+            Offer the model the tools of the MCP servers that run, and the user their prompts as commands; withdraw
+            those of the ones that do not run any more: again each time a server starts, stops or changes what it
+            offers. A tool of Louis is never replaced
+        """
+        # Always in the same order, after the tools of Louis, server after server: the same tools are the same
+        # request, and Ollama goes on from what it already read of the conversation instead of reading it all again
+        for tool in self.__toolManager.tools():
+            if isinstance(tool, McpTool):
+                self.__toolManager.unregister(tool.name)
+        for tool in self.__mcp.tools():
+            if self.__toolManager.has(tool.name):
+                log.warning(f"[mcp] {tool.name} left out: Louis already has a tool of that name")
+                continue
+            self.__toolManager.register(tool)
+        # The room the tools take in the context changes with them
+        self.__window.set_tools(self.__toolManager.all())
+        for command in self.__commands.commands:
+            if isinstance(command, McpPromptCommand):
+                self.__commands.unregister(command.name)
+        for server in self.__mcp.servers:
+            if server.state != RUNNING:
+                continue
+            for spec in server.prompts:
+                command: McpPromptCommand = McpPromptCommand(server, spec)
+                try:
+                    self.__commands.register(command)
+                except ValueError:
+                    log.warning(f"[mcp] {server.name}: its prompt {spec['name']} left out, /{command.name} is taken")
+
+    def mcp_changed(self, server: str, change: str) -> None:
+        """ A server started again, stopped or changed its tools: what it offers now is offered, the user is told """
+        self.offer_mcp()
+        self.__bus.dispatch(MCP_CHANGED, server=server, change=change, servers=self.__mcp.describe(),
+                            commands=[command.describe() for command in self.__commands.commands])
+
     def offer_knowledge(self) -> None:
-        """ Offer search_knowledge to the model while something is indexed, and withdraw it when nothing is any more """
+        """
+            Offer search_knowledge to the model while something is indexed, and withdraw it when nothing is any more.
+            Its description lists what the base holds, made again here after each change: the model looks up only
+            what it knows is there
+        """
         if self.__knowledge is None:
             return
         name: str = self.__knowledge_tool.name
-        if self.__knowledge.empty == self.__toolManager.has(name):
-            if self.__knowledge.empty:
+        if self.__knowledge.empty:
+            if self.__toolManager.has(name):
                 self.__toolManager.unregister(name)
-            else:
+                log.info(f"[app] {name} withdrawn")
+        else:
+            self.__knowledge_tool.refresh(self.__knowledge.catalog())
+            if not self.__toolManager.has(name):
                 self.__toolManager.register(self.__knowledge_tool)
-            self.__window.set_tools(self.__toolManager.all())
-            log.info(f"[app] {name} {'withdrawn' if self.__knowledge.empty else 'offered'}")
+                log.info(f"[app] {name} offered")
+        # The description may have grown or shrunk: the room the tools take in the context with it
+        self.__window.set_tools(self.__toolManager.all())
 
     def run(self) -> int:
         """ Run the application: answer the messages of the user, until the input ends or Ctrl+C there """
@@ -336,22 +480,107 @@ class App:
             log.info(f"[user] {u.strip()}")
             try:
                 if not self.__commands.fetch(u, self):
-                    self.__answer(u)
+                    self.answer(u)
             except KeyboardInterrupt:
                 # Ctrl+C in a command: back to the input, the answers handle it themselves
                 log.info("[app] command interrupted by the user")
+
+    def answer(self, text: str) -> None:
+        """
+            Answer a message of the user, by the reasoning loop with /react. The tools of the MCP servers that changed
+            since the last message (one started again, one that said its tools changed) are offered again first
+        """
+        for server, change in self.__mcp.refresh():
+            self.mcp_changed(server.name, change)
+        self.reason(text) if self.__react else self.__answer(text)
+
+    def structured(self, text: str, name: str, schema: dict) -> tuple[bool, Any]:
+        """
+            Answer a message of the user with JSON that matches the schema (its name for the user), without tools:
+            Ollama constrains the reply, then it is checked (a reply cut, or a constraint the grammar can not hold),
+            and asked again with what is wrong, structured.attempts times at most. Whether it matches, and its JSON.
+            Kept in the session as JSON when it matches. With the guard, the reply is checked again once masked: a
+            reply that no longer matches is refused, asking again would only mask it again
+        """
+        self.__bus.dispatch(CHAT_TURN_STARTED)
+        most: int = max(1, int(self.__settings.get("structured.attempts", 3)))
+        attempts: int = 0
+        errors: list[str] = []
+        data: Any = None
+        try:
+            question: str = text
+            if self.__guard is not None:
+                verdict: Verdict = self.__guard.check_input(text)
+                if verdict.refused:
+                    self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
+                    return False, None
+                question = verdict.content
+
+            saved: bool = self.session.saved
+            self.session.add("user", question)
+            if not saved and self.session.saved:
+                self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+            # The schema is told for this request only: the session keeps the question as the user asked it
+            messages: list[dict] = self.__view()
+            messages[-1] = {**messages[-1], "content": question + instruction(schema)}
+
+            while attempts < most:
+                attempts += 1
+                reply: Reply = self.__chat(messages, [], None, schema=schema, purpose="structured")
+                if reply.cut:
+                    data, errors = None, [f"réponse coupée : elle a dépassé {self.__settings.get('chat.predict')} tokens"]
+                else:
+                    data, errors = checked(reply.content, schema)
+                if not errors and self.__guard is not None:
+                    verdict = self.__guard.check_output(question, reply.content)
+                    if verdict.refused:
+                        self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
+                        return False, None
+                    if verdict.content != reply.content:
+                        data, errors = checked(verdict.content, schema)
+                        if errors:
+                            errors = ["le garde-fou a masqué des données sensibles, et la réponse masquée ne respecte "
+                                      "plus le schéma"] + errors
+                            break
+                if not errors:
+                    break
+                log.info(f"[app] structured reply #{attempts} does not match {name}: {'; '.join(errors)}")
+                messages = messages + [{"role": "assistant", "content": reply.content},
+                                       {"role": "user", "content": retry(errors)}]
+
+            valid: bool = not errors
+            if valid:
+                self.session.add("assistant", shown(data))
+            self.__bus.dispatch(
+                STRUCTURED_REPLY, schema=name, valid=valid, data=data if valid else None, attempts=attempts,
+                errors=errors
+            )
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="done" if valid else "invalid", message=None if valid else (
+                f"Réponse invalide pour le schéma {name} après {attempts} essai{'s' if attempts > 1 else ''} : "
+                + "; ".join(errors)
+            ))
+            return valid, data if valid else None
+        except KeyboardInterrupt:
+            log.info("[app] structured reply cancelled by the user")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="cancelled", message=None)
+        except ModelException as e:
+            log.error(f"[app] the model failed: {e.message}")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="error", message=e.message)
+        except Exception as e:
+            log.exception("[app] the structured reply failed")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="error", message=f"Erreur interne : {type(e).__name__}: {e}")
+        return False, None
 
     def __answer(self, text: str) -> None:
         """
             Answer a message of the user: the model replies, calling tools, until a reply calls none.
             With the guard, the model only reads what the input rails let through, and the user only
             reads what the output rails let through. Whatever goes wrong in the guard ends the turn:
-            a guard that cannot check never lets a message go unchecked
+            a guard that cannot check never lets a message go unchecked. A message the semantic cache answers is not
+            read by the rails: its answer went through them when it was kept (__cached)
         """
         self.__bus.dispatch(CHAT_TURN_STARTED)
         rounds: int = self.__settings.get("chat.tools.maxdepth", 8)
-        # The calls of the last reply not answered yet: each of them must get an answer, even if cancelled
-        pending: list[ToolCall] = []
         nudged: bool = False
         emptied: bool = False
         # A reply can only be checked whole: with the guard, it is shown once checked, not as it is written
@@ -361,6 +590,9 @@ class App:
         made: Counter = Counter()
         repeats: int = 0
         try:
+            # Before the guard: the answer of the cache went through its output rails when it was kept
+            if self.__cached(text):
+                return
             question: str = text
             if self.__guard is not None:
                 verdict: Verdict = self.__guard.check_input(text)
@@ -368,7 +600,7 @@ class App:
                 if verdict.refused:
                     self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
                     return
-                question = verdict.content
+                question = self.__checked(text, verdict.content)
 
             saved: bool = self.session.saved
             self.session.add("user", question)
@@ -381,31 +613,15 @@ class App:
                     [tool for tool in self.__toolManager.all() if self.__refused[tool["function"]["name"]] < REFUSED_CALLS],
                     stream
                 )
-                calls: list[ToolCall] = []
-                for call in reply.tool_calls:
-                    if call not in calls and len(calls) < MAX_CALLS:
-                        calls.append(call)
-                ignored: int = len(reply.tool_calls) - len(calls)
-                if ignored:
-                    log.warning(f"[app] {len(reply.tool_calls)} calls in one reply: {ignored} ignored")
-                reply.tool_calls = calls
+                ignored: int = self.__keep_calls(reply)
                 if self.__guard is not None and reply.content:
                     self.__screen(question, reply)
                 # Nothing to read and no call: the model called a tool it is not offered, or wrote nothing. Never
                 # saved, and asked again once with the tools it has: the user is never left without an answer
                 if not reply.content.strip() and not reply.tool_calls:
-                    if emptied:
-                        log.warning("[app] empty reply again: the turn ends")
-                        gone: list[str] = sorted({call["function"]["name"] for message in self.session.history
-                                                  for call in message.get("tool_calls") or []
-                                                  if not self.__toolManager.has(call["function"]["name"])})
-                        why: str = GONE_TOOLS.format(tools=", ".join(gone)) if gone else "Reformule ta demande."
-                        self.__bus.dispatch(CHAT_TURN_ENDED, reason="empty", message=EMPTY_MESSAGE + why)
+                    if self.__empty(emptied):
                         return
                     emptied = True
-                    log.warning("[app] empty reply (a call to a tool it is not offered?): asking again")
-                    names: str = ", ".join(schema["function"]["name"] for schema in self.__toolManager.all())
-                    self.session.add("user", EMPTY_PROMPT.format(tools=names))
                     continue
                 self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
                 # What Ollama counted of the prompt: the window measures its estimate on it, to cut in time
@@ -417,11 +633,7 @@ class App:
                     )
                 self.__bus.dispatch(CHAT_REPLY, content=reply.content, tools=[call.name for call in reply.tool_calls])
                 if reply.cut and not reply.tool_calls:
-                    log.warning("[app] the reply reached the most tokens it may take: cut")
-                    self.__bus.dispatch(CHAT_TURN_ENDED, reason="length", message=(
-                        f"Réponse coupée : le modèle a dépassé {self.__settings.get('chat.predict')} tokens sans finir "
-                        "(il tournait peut-être en rond). Demande une partie plus petite."
-                    ))
+                    self.__end_cut()
                     return
 
                 if not reply.tool_calls:
@@ -435,33 +647,12 @@ class App:
                     self.session.add("user", NUDGE_PROMPT)
                     continue
 
-                pending = list(reply.tool_calls)
-                # The share of the context the results of this round may still take
-                room: float = ROUND
-                while pending:
-                    call: ToolCall = pending[0]
-                    key: str = f"{call.name} {json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)}"
-                    reason: str | None = None
-                    if made[key] >= SAME_CALLS:
-                        reason = REPEATED_CALL
-                        repeats += 1
-                    elif room < MIN_ROOM:
-                        reason = NO_ROOM
-                    else:
-                        made[key] += 1
-                    result: str = self.__call(call, refused=reason, most=min(MAX_RESULT, room))
-                    room -= share(result, self.__window.size, self.__window.ratio)
-                    if ignored and len(pending) == 1:
-                        result += IGNORED_CALLS.format(ignored)
-                    self.session.add("tool", result, tool_name=call.name)
-                    pending.pop(0)
+                repeats += self.__run_calls(reply.tool_calls, ignored, made, reply.content)
                 if repeats >= MAX_REFUSED:
                     log.warning(f"[app] {repeats} calls refused for being the same again: the model goes round in circles")
                     self.__bus.dispatch(CHAT_TURN_ENDED, reason="loop", message=LOOP_MESSAGE)
                     return
         except KeyboardInterrupt:
-            for call in pending:
-                self.session.add("tool", CANCELLED_TOOL, tool_name=call.name)
             log.info("[app] turn cancelled by the user")
             self.__bus.dispatch(CHAT_TURN_ENDED, reason="cancelled", message=None)
             return
@@ -477,18 +668,308 @@ class App:
         log.warning(f"[app] stopped after {rounds} rounds of tool calls")
         self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} tours d'appels d'outils.")
 
-    def __chat(self, messages: list[dict], tools: list[dict], stream: Callable | None) -> Reply:
+    def reason(self, text: str) -> None:
+        """
+            Answer a message of the user by the reasoning loop (ReAct): at each step, the model says what it knows and
+            what it will do, then calls tools, and reads their results before the next one (REASONING_STEP). A reply
+            that calls none is a draft: with reason.verify, the model checks it first (REASONING_CHECK), and writes it
+            again with its problems, reason.attempts times at most. The last one is checked too, and given whatever
+            its check says: the user reads what is wrong with it. A draft is only shown once checked, never as it is
+            written: a rejected one is never read by the user. The session keeps every step, the rejected drafts and
+            what was wrong with them: the trace of how the answer was reached. The guard checks every reply as
+            __answer does, and masks the thoughts it shows
+        """
+        self.__bus.dispatch(CHAT_TURN_STARTED)
+        rounds: int = self.__settings.get("chat.tools.maxdepth", 8)
+        verify: bool = bool(self.__settings.get("reason.verify", True))
+        most: int = max(0, int(self.__settings.get("reason.attempts", 2)))
+        checks: int = 0
+        emptied: bool = False
+        self.__refused.clear()
+        made: Counter = Counter()
+        repeats: int = 0
+        try:
+            if self.__cached(text):
+                return
+            question: str = text
+            if self.__guard is not None:
+                verdict: Verdict = self.__guard.check_input(text)
+                if verdict.refused:
+                    self.__bus.dispatch(CHAT_TURN_ENDED, reason="refused", message=verdict.content)
+                    return
+                question = self.__checked(text, verdict.content)
+
+            saved: bool = self.session.saved
+            self.session.add("user", question)
+            if not saved and self.session.saved:
+                self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+
+            for step in range(1, rounds + 1):
+                reply: Reply = self.__chat(
+                    self.__reasoning_view(question),
+                    [tool for tool in self.__toolManager.all() if self.__refused[tool["function"]["name"]] < REFUSED_CALLS],
+                    None
+                )
+                ignored: int = self.__keep_calls(reply)
+                refused: bool = self.__guard is not None and bool(reply.content) and self.__screen(question, reply, show=False)
+                if not reply.content.strip() and not reply.tool_calls:
+                    if self.__empty(emptied):
+                        return
+                    emptied = True
+                    continue
+                self.__window.measured(reply.prompt_tokens)
+                if reply.tokens:
+                    self.__bus.dispatch(
+                        CHAT_CONTEXT, used=reply.tokens, size=self.__settings.get("chat.context", 12288), estimated=False
+                    )
+                # The thought: what the model wrote beside its calls, else what it thought (think). A draft is no thought
+                thought: str = (reply.content if reply.tool_calls else "").strip() or reply.thinking.strip()
+                if self.__guard is not None:
+                    thought = self.__guard.hide({"thought": thought})["thought"]
+                self.__bus.dispatch(REASONING_STEP, step=step, thought=thought, tools=[call.name for call in reply.tool_calls])
+
+                if reply.tool_calls:
+                    self.session.add("assistant", reply.content, tool_calls=reply.tool_calls)
+                    repeats += self.__run_calls(reply.tool_calls, ignored, made, thought)
+                    if repeats >= MAX_REFUSED:
+                        log.warning(f"[app] {repeats} calls refused for being the same again: the model goes round in circles")
+                        self.__bus.dispatch(CHAT_TURN_ENDED, reason="loop", message=LOOP_MESSAGE)
+                        return
+                    continue
+
+                if reply.cut:
+                    self.session.add("assistant", reply.content)
+                    self.__end_cut()
+                    return
+                # A draft. A refusal of the guard is no answer of the model to check: it goes as it is
+                ok, problems = True, []
+                if verify and not refused:
+                    checks += 1
+                    ok, problems = self.__verify(reply.content)
+                    # The problems quote what the model read: shown masked, as the thoughts are. The model fixes the real ones
+                    shown: list[str] = problems if self.__guard is None else \
+                        [self.__guard.hide({"problem": problem})["problem"] for problem in problems]
+                    self.__bus.dispatch(REASONING_CHECK, attempt=checks, ok=ok, problems=shown, revise=not ok and checks <= most)
+                self.session.add("assistant", reply.content)
+                if not ok and checks <= most:
+                    log.info(f"[app] draft #{checks} rejected: written again")
+                    self.session.add("user", REVISE_PROMPT.format(problems="\n".join(f"- {problem}" for problem in problems)))
+                    continue
+                self.__bus.dispatch(CHAT_TEXT, text=reply.content)
+                self.__bus.dispatch(CHAT_REPLY, content=reply.content, tools=[])
+                self.__bus.dispatch(CHAT_TURN_ENDED, reason="done", message=None)
+                return
+        except KeyboardInterrupt:
+            log.info("[app] reasoning cancelled by the user")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="cancelled", message=None)
+            return
+        except ModelException as e:
+            log.error(f"[app] the model failed: {e.message}")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="error", message=e.message)
+            return
+        except Exception as e:
+            log.exception("[app] the reasoning failed")
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="error", message=f"Erreur interne : {type(e).__name__}: {e}")
+            return
+
+        log.warning(f"[app] reasoning stopped after {rounds} steps")
+        self.__bus.dispatch(CHAT_TURN_ENDED, reason="rounds", message=f"Arrêté après {rounds} étapes de raisonnement.")
+
+    def __cached(self, text: str) -> bool:
+        """
+            Answer a message of the user from the semantic cache, when it holds the answer to one that means the same:
+            neither the model nor the input rails of the guard are asked. The user only ever gets a reply the output rails
+            checked when it was kept, given to a question the input rails let through then, that the reranker finds the
+            same: at worst a wrong answer, never one the guard would refuse. The message is kept in the session masked by
+            the patterns of the guard (no model), the answer as any reply: the conversation goes on from them. The cache
+            reads the session: what the model read in it tells if the answer may be stored. A cache that fails never
+            fails the turn: the model answers. Whether it answered
+        """
+        try:
+            hit: Hit | None = self.__cache.lookup(text, model=self.__model.model, prompt=self.__prompt(),
+                                                  history=self.session.history)
+        except Exception:
+            log.exception("[cache] the lookup failed: the model answers")
+            return False
+        if hit is None:
+            return False
+        saved: bool = self.session.saved
+        self.session.add("user", self.__guard.mask(text) if self.__guard is not None else text)
+        if not saved and self.session.saved:
+            self.__bus.dispatch(SESSION_SAVED, id=self.session.id)
+        self.session.add("assistant", hit.answer)
+        self.__bus.dispatch(CACHE_HIT, id=hit.id, score=hit.score, verified=hit.verified, question=hit.question,
+                            age=round(hit.age, 1), hits=hit.hits, seed=hit.seed, by=hit.by)
+        self.__bus.dispatch(CHAT_TEXT, text=hit.answer)
+        self.__bus.dispatch(CHAT_REPLY, content=hit.answer, tools=[])
+        self.__bus.dispatch(CHAT_TURN_ENDED, reason="done", message=None)
+        self.__estimate_context()
+        return True
+
+    def __checked(self, text: str, question: str) -> str:
+        """
+            The message as the input rails let it through: masked, its answer is never kept by the cache (the cache looked
+            it up as it was typed, its sensitive data would be shared with the other users)
+        """
+        if question != text:
+            self.__cache.discard()
+        return question
+
+    def __reasoning_view(self, question: str) -> list[dict]:
+        """
+            The session as the model sees it, with the request being answered told how to reason (REACT_PROMPT): for
+            this request only, the session keeps it as the user asked it
+        """
+        messages: list[dict] = self.__view()
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i]["role"] == "user" and messages[i]["content"] == question:
+                messages[i] = {**messages[i], "content": question + REACT_PROMPT}
+                break
+        return messages
+
+    def __empty(self, emptied: bool) -> bool:
+        """
+            A reply with nothing to read and no call: the model called a tool it is not offered, or wrote nothing. Never
+            saved, and asked again once with the tools it has: the user is never left without an answer. Whether the
+            turn ends (empty again)
+        """
+        if emptied:
+            log.warning("[app] empty reply again: the turn ends")
+            gone: list[str] = sorted({call["function"]["name"] for message in self.session.history
+                                      for call in message.get("tool_calls") or []
+                                      if not self.__toolManager.has(call["function"]["name"])})
+            why: str = GONE_TOOLS.format(tools=", ".join(gone)) if gone else "Reformule ta demande."
+            self.__bus.dispatch(CHAT_TURN_ENDED, reason="empty", message=EMPTY_MESSAGE + why)
+            return True
+        log.warning("[app] empty reply (a call to a tool it is not offered?): asking again")
+        names: str = ", ".join(schema["function"]["name"] for schema in self.__toolManager.all())
+        self.session.add("user", EMPTY_PROMPT.format(tools=names))
+        return False
+
+    def __end_cut(self) -> None:
+        """ The reply reached the most tokens it may take, calling no tool: the turn ends, it was going round in circles """
+        log.warning("[app] the reply reached the most tokens it may take: cut")
+        self.__bus.dispatch(CHAT_TURN_ENDED, reason="length", message=(
+            f"Réponse coupée : le modèle a dépassé {self.__settings.get('chat.predict')} tokens sans finir "
+            "(il tournait peut-être en rond). Demande une partie plus petite."
+        ))
+
+    @staticmethod
+    def __keep_calls(reply: Reply) -> int:
+        """ Keep the first MAX_CALLS different calls of the reply: how many of them are left out (the same again, or too many) """
+        calls: list[ToolCall] = []
+        for call in reply.tool_calls:
+            if call not in calls and len(calls) < MAX_CALLS:
+                calls.append(call)
+        ignored: int = len(reply.tool_calls) - len(calls)
+        if ignored:
+            log.warning(f"[app] {len(reply.tool_calls)} calls in one reply: {ignored} ignored")
+        reply.tool_calls = calls
+        return ignored
+
+    def __run_calls(self, calls: list[ToolCall], ignored: int, made: Counter, intent: str = "") -> int:
+        """
+            Run the calls of a reply, each result kept in the session, the last one telling the ignored calls. A call
+            made SAME_CALLS times already for this message (counted in made) is refused, as one whose results would
+            no longer fit in the context. How many were refused for being the same again: the model goes round in
+            circles. Cancelled, each call not answered yet still gets an answer.
+            With a call as risky as hitl.level, none runs before the user approved the plan of the reply (what the
+            model meant, intent, and each call): approved, they run without asking again; refused, none does
+        """
+        pending: list[ToolCall] = list(calls)
+        repeats: int = 0
+        # The share of the context the results of this round may still take
+        room: float = ROUND
+        try:
+            approved: bool = False
+            refusal: str | None = None
+            if (plan := self.__plan(calls)) is not None:
+                approved, feedback = self.__permissions.propose(intent, plan)
+                log.info(f"[app] plan of {len(plan)} calls {'approved' if approved else 'refused'}"
+                         f"{f': {feedback}' if feedback else ''}")
+                if not approved:
+                    refusal = REFUSED_PLAN + (PLAN_FEEDBACK.format(feedback=feedback) if feedback else PLAN_NO_FEEDBACK)
+            while pending:
+                call: ToolCall = pending[0]
+                key: str = f"{call.name} {json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)}"
+                reason: str | None = None
+                if refusal is not None:
+                    reason = refusal
+                elif made[key] >= SAME_CALLS:
+                    reason = REPEATED_CALL
+                    repeats += 1
+                elif room < MIN_ROOM:
+                    reason = NO_ROOM
+                else:
+                    made[key] += 1
+                result: str = self.__call(call, refused=reason, most=min(MAX_RESULT, room), approved=approved)
+                room -= share(result, self.__window.size, self.__window.ratio)
+                if ignored and len(pending) == 1:
+                    result += IGNORED_CALLS.format(ignored)
+                self.session.add("tool", result, tool_name=call.name)
+                pending.pop(0)
+        except KeyboardInterrupt:
+            for call in pending:
+                self.session.add("tool", CANCELLED_TOOL, tool_name=call.name)
+            raise
+        return repeats
+
+    def __verify(self, draft: str) -> tuple[bool, list[str]]:
+        """
+            The model checks the draft of its answer against what it read in this session (the draft is not in it yet),
+            as JSON that matches CRITIQUE, without tools nor thinking: whether it may go, and its problems. A check the
+            model can not give (it fails, its reply is cut or does not match) counts as ok: it never holds the answer
+            back, the draft was the answer anyway. A draft that names files no tool read is not ok, without asking the
+            model: it is written again anyway, the next check sees the rest
+        """
+        if missing := unsourced(draft, self.__history()):
+            problems: list[str] = [UNSOURCED.format(path=path) for path in missing][:MAX_PROBLEMS]
+            log.info(f"[app] draft checked: files never read: {', '.join(missing)}")
+            return False, problems
+        messages: list[dict] = self.__view() + [
+            {"role": "assistant", "content": draft},
+            {"role": "user", "content": VERIFY_PROMPT + instruction(CRITIQUE)}
+        ]
+        try:
+            reply: Reply = self.__chat(messages, [], None, schema=CRITIQUE, think=False, purpose="check")
+        except ModelException as e:
+            log.warning(f"[app] the draft could not be checked, it goes as it is: {e.message}")
+            return True, []
+        data, errors = (None, ["cut"]) if reply.cut else checked(reply.content, CRITIQUE)
+        if errors:
+            log.warning(f"[app] the check of the draft is no verdict, it goes as it is: {'; '.join(errors)}")
+            return True, []
+        checks: list[dict] = data.get("checks") or []
+        problems: list[str] = [problem.strip() for problem in data["problems"] if problem.strip()]
+        # A claim its source does not confirm is a problem, even when the model forgets to say so
+        failed: list[dict] = [check for check in checks if not check["holds"]]
+        if failed and not problems:
+            problems = [f"{check['claim']} : {check['source']}" for check in failed]
+        problems = [problem[:PROBLEM_CHARS] for problem in problems][:MAX_PROBLEMS]
+        # Not ok without saying why: nothing to fix, asking again would give the same answer
+        ok: bool = (data["ok"] and not failed) or not problems
+        log.info(f"[app] draft checked: {'ok' if ok else 'problems: ' + '; '.join(problems)}, after:\n" + "\n".join(
+            f"- {check['claim']} ({check['source']}): {'holds' if check['holds'] else 'does not hold'}" for check in checks
+        ))
+        return ok, [] if ok else problems
+
+    def __chat(self, messages: list[dict], tools: list[dict], stream: Callable | None,
+               schema: dict | None = None, think: bool | None = None, purpose: str = "reply") -> Reply:
         """
             Ask the model for its next reply, and tell how the request went (MODEL_CALL), even when it fails or the
-            user cancels it: the monitoring records every call, with its latency and its tokens
+            user cancels it: the monitoring records every call, with its latency and its tokens.
+            With a schema, the reply is JSON that matches it, and the model does not think first: what it would
+            think is no JSON. purpose tells the monitoring what the call is for: "reply" (to the user), "structured"
+            (JSON for /json), "check" (of a draft, /react) or "summary" (of what left the context)
         """
         start: float = time.perf_counter()
         reply: Reply | None = None
         status, error = "ok", None
+        think = (self.think and schema is None) if think is None else think
         try:
             reply = self.__model.chat(
-                messages, tools, think=self.think, on_text=stream,
-                on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk)
+                messages, tools, think=think, on_text=stream,
+                on_thinking=lambda chunk: self.__bus.dispatch(CHAT_THINKING, text=chunk), schema=schema
             )
             return reply
         except ModelException as e:
@@ -504,10 +985,11 @@ class App:
             self.__bus.dispatch(
                 MODEL_CALL,
                 model=self.__model.model,
+                purpose=purpose,
                 system=self.__prompt(),
                 messages=messages,
                 tools=[tool["function"]["name"] for tool in tools],
-                think=self.think,
+                think=think,
                 status=status,
                 error=error,
                 latency=round(time.perf_counter() - start, 3),
@@ -515,17 +997,20 @@ class App:
                 reply=asdict(reply) if reply is not None else None
             )
 
-    def __screen(self, question: str, reply: Reply) -> None:
+    def __screen(self, question: str, reply: Reply, show: bool = True) -> bool:
         """
             Put the reply through the output rails, then show it: masked, or replaced by the refusal.
             Kept in the session as it is shown, so the model never reads again what the user could not.
-            A refused reply calls no tool: what the model meant to do with it is not known
+            A refused reply calls no tool: what the model meant to do with it is not known. Without show, it is only
+            screened (the reasoning loop shows a reply once checked). Whether it was refused
         """
         verdict: Verdict = self.__guard.check_output(question, reply.content)
         reply.content = verdict.content
         if verdict.refused:
             reply.tool_calls = []
-        self.__bus.dispatch(CHAT_TEXT, text=reply.content)
+        if show:
+            self.__bus.dispatch(CHAT_TEXT, text=reply.content)
+        return verdict.refused
 
     def __screen_call(self, call: ToolCall, producer: str) -> str | None:
         """
@@ -550,11 +1035,13 @@ class App:
 
     def __screen_result(self, call: ToolCall, result: str) -> str:
         """
-            Put what a tool read outside the project (the knowledge base: documents nobody here wrote) through the
-            tool result rails before the model reads it: the passages that give it orders taken out, the sensitive data
-            masked. Whoever asked for the call. A guard that cannot check gives nothing: an unchecked result is never read
+            Put what a tool read outside the project (the knowledge base: documents nobody here wrote; what an MCP server
+            gave: a program nobody here wrote) through the tool result rails before the model reads it: the passages that
+            give it orders taken out, the sensitive data masked. Whoever asked for the call. A guard that cannot check
+            gives nothing: an unchecked result is never read
         """
-        if self.__guard is None or not self.__guard.screens_result(call.name):
+        untrusted: bool = isinstance(self.__toolManager.get(call.name), McpTool)
+        if self.__guard is None or not (untrusted or self.__guard.screens_result(call.name)):
             return result
         try:
             return self.__guard.check_tool_result(call.name, result).content
@@ -563,8 +1050,44 @@ class App:
             return (f"Erreur : le garde-fou n'a pas pu vérifier le résultat de '{call.name}' ({type(e).__name__}), "
                     "il ne t'est pas donné.")
 
+    def __plan(self, calls: list[ToolCall]) -> list[dict] | None:
+        """
+            The plan of the calls of a reply, to show before any of them runs: each one with its risk, what it would
+            do and change. None when none is as risky as hitl.level (or with hitl.enabled off): they run as usual,
+            each tool asking what it asks. With the guard, what is shown is masked, as the calls are
+        """
+        if not self.__settings.get("hitl.enabled", True):
+            return None
+        level: str = self.__settings.get("hitl.level", IRREVERSIBLE)
+        # A safe call never needs a plan: every reply would wait for the user
+        level = level if level in LEVELS and level != SAFE else IRREVERSIBLE
+        actions: list[dict] = []
+        needed: bool = False
+        for call in calls:
+            tool: Tool | None = self.__toolManager.get(call.name)
+            risk: Risk = self.__risk(tool, call) if tool is not None else NONE
+            needed = needed or risk.at_least(level)
+            action: dict = {"tool": call.name, "arguments": call.arguments, "risk": risk.level,
+                            "consequence": risk.consequence, "undo": risk.undo, "preview": risk.preview}
+            if self.__guard is not None:
+                action = {**action, "arguments": self.__guard.hide(call.arguments),
+                          "preview": self.__guard.hide({"preview": risk.preview})["preview"]}
+            actions.append(action)
+        return actions if needed else None
+
+    def __risk(self, tool: Tool, call: ToolCall) -> Risk:
+        """
+            What the call would do, as its tool judges it. A tool that can not judge it (it crashes) makes it
+            irreversible: a risk that is not known is never taken for none
+        """
+        try:
+            return tool.risk(self, **call.arguments)
+        except Exception:
+            log.exception(f"[tool] the risk of {call.name} could not be judged: taken as irreversible")
+            return Risk(IRREVERSIBLE)
+
     def __call(self, call: ToolCall, producer: str = "model", *, refused: str | None = None,
-               most: float = MAX_RESULT) -> str:
+               most: float = MAX_RESULT, approved: bool = False) -> str:
         """
             Run a tool, asked for by producer ("model", "user" or "system"): whatever goes wrong comes back
             as text, for the model to react. A call refused by the app is not run: refused is its result. The result
@@ -585,7 +1108,14 @@ class App:
             result = refusal
         else:
             try:
-                result = tool.handle(self, **call.arguments)
+                # A call of a plan the user approved asks nothing more: they said yes to it, its diff in the plan.
+                # Else, a call that can not be undone is confirmed each time, whatever "always" was said to its tool
+                self.__permissions.granted = approved
+                self.__permissions.strict = not approved and self.__risk(tool, call).at_least(IRREVERSIBLE)
+                try:
+                    result = tool.handle(self, **call.arguments)
+                finally:
+                    self.__permissions.granted = self.__permissions.strict = False
                 result = self.__screen_result(call, result if isinstance(result, str) else str(result))
             except Exception as e:
                 log.exception(f"[tool] {call.name} failed")

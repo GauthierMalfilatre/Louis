@@ -47,6 +47,9 @@ Tu n'es pas un simple chatbot : tu as des outils pour explorer et lire le code, 
 - L'utilisateur valide chaque modification de fichier quand tu appelles edit_file, write_file ou mkdir.
   Ne lui demande donc pas la permission dans ta réponse : appelle l'outil. S'il refuse, ne retente pas.
   Il valide aussi chaque commit, push, branche et pull request.
+- run_code exécute un programme complet (python, sh, c, cpp, go ou rust) dans un conteneur sans réseau ni accès au projet, et te renvoie
+  sa sortie : sers-t'en pour vérifier un calcul ou une idée au lieu de deviner le résultat. L'utilisateur lit le code
+  avant de l'autoriser. Pour exécuter les fichiers du projet, tu n'as pas d'outil : dis-lui la commande à lancer.
 
 # Git et GitHub
 - Pour partager un travail : git status, puis git branch (une nouvelle branche, comme feat/... ou fix/...,
@@ -67,6 +70,26 @@ Tu n'es pas un simple chatbot : tu as des outils pour explorer et lire le code, 
 - Sois honnête : si tu n'as pas pu vérifier quelque chose, dis-le.
 """
 
+# Asked of the chat model when messages of the conversation no longer fit in its context: what it will read in place of
+# them, after its system prompt (app/context_window.py). Each summary is of the messages just left out, added to the
+# ones before: rewritten each time, a summary loses the oldest facts first
+SUMMARY_PROMPT: str = (
+    "Ces messages viennent de sortir de ta mémoire : résume-les pour toi-même, pour continuer le travail sans les "
+    "relire. Garde ce que l'utilisateur a demandé, ce que tu as appris (les faits, noms, valeurs et extraits utiles des "
+    "fichiers lus, avec leurs chemins), les réponses déjà données, les fichiers modifiés et les décisions. N'invente "
+    "rien : pas d'étape suivante ni d'avis qui ne soient dans les messages. Des puces courtes, 12 au plus, en français. "
+    "Rien d'autre."
+)
+# Asked when the summaries added up grow too long
+MERGE_PROMPT: str = (
+    "Ces résumés de ta conversation sont devenus trop longs : fusionne-les en un seul, deux fois plus court, sans perdre "
+    "les faits (noms, valeurs, chemins), les demandes de l'utilisateur ni les réponses déjà données. Des puces courtes, "
+    "en français. Rien d'autre."
+)
+# Where the summary goes, after the system prompt
+SUMMARY_ASKED: str = "Les premiers messages de cette conversation ne sont plus dans ton contexte : qu'est-ce qu'on s'y est dit ?"
+SUMMARY_TITLE: str = "Voici mon résumé, je m'y fie sans relire les fichiers (sauf s'ils ont pu changer depuis) :\n"
+
 # Sent when the reply of the model is empty, no text and no tool call: Ollama drops the call of a tool the model is
 # not offered (one it saw in an old session, from another version of Louis), and the model believes it acted
 EMPTY_PROMPT: str = (
@@ -81,4 +104,31 @@ NUDGE_PROMPT: str = (
     "Fais-la maintenant en appelant l'outil adapté (cat_file pour lire, edit_file pour modifier un fichier, "
     "write_file pour en créer un). "
     "Si tout est déjà fait, dis-le en une phrase."
+)
+
+# The reasoning loop (/react): put after the request of the user, for this request only (the session keeps it as the
+# user asked it). The model writes its thought in its reply, beside its tool calls: a model that does not think
+# (think) still reasons in the open, and the thought is what the trace keeps of each step
+REACT_PROMPT: str = (
+    "\n\nRaisonne étape par étape, à voix haute. À chaque étape, avant d'appeler un outil, écris en une à trois "
+    "phrases ce que tu sais déjà, ce qui te manque, et ce que tu vas faire pour l'obtenir, puis appelle l'outil dans "
+    "la même réponse. Lis le résultat avant de décider de l'étape suivante. Quand tu en sais assez, réponds sans "
+    "appeler d'outil, en t'appuyant uniquement sur ce que tu as lu ou fait."
+)
+# Asked once the model has a draft of its answer (reason.verify), after it in the conversation: it checks it against
+# what it read, as JSON (app/app.py gives the schema), without tools
+VERIFY_PROMPT: str = (
+    "Avant que ta réponse ne parte, vérifie-la, comme si un autre l'avait écrite : ne la crois pas juste parce que "
+    "c'est la tienne. D'abord, refais toi-même chaque vérification, pas à pas : refais chaque calcul, retrouve chaque "
+    "fait, nom, chemin ou valeur dans ce que tes outils t'ont vraiment renvoyé, contrôle chaque action qu'elle dit "
+    "avoir faite, relis le code qu'elle propose. Donne la source de chacun : la réponse elle-même n'en est pas une, et "
+    "ce qu'aucun outil n'a renvoyé est introuvable. Ensuite seulement, conclus : répond-elle à toute la demande, sans "
+    "rien d'inventé ni de faux ? Ne relève que les vrais problèmes, pas le style : s'il n'y en a aucun, dis que la "
+    "réponse est bonne."
+)
+# Sent when the check found problems: the model goes on, may call tools again, and writes a new answer
+REVISE_PROMPT: str = (
+    "Ta vérification a trouvé ces problèmes dans ta réponse :\n{problems}\n"
+    "Corrige-les : vérifie avec tes outils ce qui doit l'être, puis écris de nouveau ta réponse entière, comme si "
+    "la précédente n'avait pas été envoyée."
 )

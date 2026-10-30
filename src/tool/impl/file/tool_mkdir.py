@@ -5,6 +5,7 @@
 ## Mkdir tool: create a folder, with its missing parents
 ##
 from tool.tool import Tool
+from tool.risk import Risk, NONE, REVERSIBLE
 import os
 from utils.path import resolve_path, display_path
 
@@ -25,6 +26,15 @@ class MkdirTool(Tool):
                 "required": ["path"]
             }
         )
+
+    def risk(self, app, **kwargs) -> Risk:
+        """ A new folder can be removed again """
+        path = kwargs.get("path")
+        full = resolve_path(app, path) if isinstance(path, str) and path else None
+        if full is None or os.path.exists(full):
+            return NONE
+        shown: str = display_path(full)
+        return Risk(REVERSIBLE, f"le dossier {shown} sera créé", f"supprimer le dossier {shown}")
 
     def handle(self, app, **kwargs) -> str:
         """Create a folder and its missing parents."""

@@ -30,6 +30,10 @@ class ToolManager:
         """ Get the tool requested """
         return self.__tools.get(name)
 
+    def tools(self) -> list[Tool]:
+        """ Get the tools themselves """
+        return list(self.__tools.values())
+
     def all(self) -> list[dict]:
         """ Get all the tools """
         return [self.__tools[t].schema for t in self.__tools.keys()]

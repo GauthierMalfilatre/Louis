@@ -1,0 +1,339 @@
+##
+## EPITECH PROJECT, 2026
+## SENSAI
+## File description:
+## MCP manager: the servers declared (mcp.servers, the .mcp.json files), started with Louis, their tools, stopped when
+## it exits
+##
+from logger.logger import log
+from tool.mcp.client import McpClient, McpError
+from tool.mcp.config import Declaration, Trust, HTTP, declarations
+from tool.mcp.transport_http import HttpTransport
+from tool.mcp.transport_stdio import StdioTransport
+from tool.mcp.tool_mcp import McpTool, prompt_name, tool_name
+import atexit
+import fnmatch
+import shlex
+import threading
+import time
+
+# The states of a server: it answers; it never did (no such command, an error at its start...); it stopped by
+# itself once started; Louis stopped it; its declaration says not to start it with Louis; it was declared by the
+# project, and waits for the user to trust it
+RUNNING : str = "running"
+FAILED  : str = "failed"
+CRASHED : str = "crashed"
+STOPPED : str = "stopped"
+DISABLED: str = "disabled"
+PENDING : str = "pending"
+
+class McpServer:
+    """
+        A server declared: how it is launched, how it goes, and its tools once it is started. It can be stopped and
+        started again; one that crashed is started again by itself, restarts times at most
+    """
+    def __init__(self, declaration: Declaration, *, timeout: float = 30.0, start_timeout: float = 30.0,
+                 restarts: int = 0, max_timeout: float = 600.0, log_level: str | None = "info"):
+        """
+            Init a server, not started yet: its calls wait timeout seconds at most (max_timeout while it tells it
+            works on them), its start start_timeout. Its logs of log_level and above go to the log of Louis
+        """
+        self.declaration: Declaration    = declaration
+        self.name    : str               = declaration.name
+        self.command : str               = declaration.command
+        self.args    : list[str]         = declaration.args
+        self.env     : dict[str, str]    = declaration.env
+        self.level   : str | dict[str, str] | None = declaration.level
+        self.timeout : float             = timeout
+        self.max_timeout: float          = max(timeout, max_timeout)
+        self.log_level  : str | None     = log_level
+        self.client  : McpClient | None  = None
+        self.tools   : list[McpTool]     = []
+        # The tools of the server its declaration does not offer (tools, exclude)
+        self.hidden  : int               = 0
+        # Its tools that changed since they were first listed, as tools/list gives them now: offered to the model
+        # neither in their old version nor in their new one, until the user accepts them (/mcp trust)
+        self.held    : list[dict]        = []
+        # Its prompts, as prompts/list gives them: the user runs them as /<server>:<prompt>
+        self.prompts : list[dict]        = []
+        # Why it did not start, None if it did
+        self.error   : str | None        = declaration.error
+        # Its declaration is not valid (error says why): it can not be started
+        self.invalid : bool              = declaration.error is not None
+        # It may be started: declared by the project, only once the user trusts it
+        self.trusted : bool              = not declaration.project
+        self.__start_timeout: float      = start_timeout
+        # The restarts it may still make by itself, after a crash
+        self.__restarts     : int        = max(0, restarts)
+        # Started again by itself since its tools were last offered: they may have changed
+        self.__renewed      : bool       = False
+        # Each of its tools as it was first listed, by its name on the server: the one the user saw in /mcp. Kept
+        # through the restarts, so that a restart never takes a tool that changed
+        self.__pinned       : dict[str, dict] = {}
+        # What tools/list last gave, every tool of it
+        self.__specs        : list[dict] = []
+
+    @property
+    def state(self) -> str:
+        """ How the server goes: running, failed, crashed, stopped, disabled or pending """
+        if self.client is None and self.error is None and not self.trusted:
+            return PENDING
+        if self.client is None and self.error is None and not self.declaration.enabled:
+            return DISABLED
+        if self.error is not None or self.client is None:
+            return FAILED
+        if self.client.alive:
+            return RUNNING
+        return CRASHED if self.client.crashed else STOPPED
+
+    @property
+    def why(self) -> str:
+        """ Why the server does not answer, "" while it does """
+        if self.error is not None:
+            return self.error
+        return self.client.why if self.client is not None else "le serveur n'est pas lancé"
+
+    @property
+    def restarts(self) -> int:
+        """ Get the restarts the server may still make by itself, after a crash """
+        return self.__restarts
+
+    def describe(self) -> dict:
+        """ What an interface needs to show the server, raw and JSON-friendly """
+        return {
+            "name"   : self.name,
+            "source" : self.declaration.source,
+            "transport": self.declaration.transport,
+            "command": self.declaration.url if self.declaration.transport == HTTP else
+                       shlex.join([self.command, *self.args]) if self.command else "",
+            "state"  : self.state,
+            "hidden" : self.hidden,
+            "held"   : [tool_name(self.name, spec["name"]) for spec in self.held],
+            "error"  : self.error if self.error is not None else (self.client.why or None) if self.client else None,
+            "tools"  : [{"name": tool.name, "remote": tool.remote, "description": tool.about, "risk": tool.level}
+                        for tool in self.tools],
+            "prompts": [{"name": prompt_name(self.name, prompt["name"]), "remote": prompt["name"],
+                         "description": (prompt.get("description") or prompt.get("title") or "").strip(),
+                         "arguments": [{"name": argument["name"], "description": argument.get("description") or "",
+                                        "required": bool(argument.get("required"))}
+                                       for argument in prompt.get("arguments") or []
+                                       if isinstance(argument, dict) and isinstance(argument.get("name"), str)]}
+                        for prompt in self.prompts],
+        }
+
+    def start(self) -> "McpServer":
+        """
+            Launch the server, then list its tools, start_timeout seconds at most for both. What goes wrong is its
+            error: the server is stopped and left out
+        """
+        if self.invalid or not self.trusted:
+            return self
+        deadline: float = time.monotonic() + self.__start_timeout
+        self.error, self.tools, self.prompts, self.held = None, [], [], []
+        self.client = McpClient(self.name, self.__transport())
+        try:
+            self.client.start(self.__start_timeout, self.log_level)
+            specs: list[dict] = self.client.list_tools(max(1.0, deadline - time.monotonic()))
+        except FileNotFoundError:
+            self.error = f"la commande {self.command} est introuvable"
+        except OSError as e:
+            self.error = f"la commande {self.command} ne se lance pas ({e.strerror or e})"
+        except McpError as e:
+            self.error = str(e)
+        except Exception as e:
+            log.exception(f"[mcp] {self.name}: start failed")
+            self.error = f"{type(e).__name__} : {e}"
+        if self.error is not None:
+            stderr: str = self.client.stderr
+            self.client.close()
+            # What it wrote before it stopped tells why, more often than not
+            if stderr:
+                self.error += f" — {stderr.splitlines()[-1].strip()}"
+            log.warning(f"[mcp] {self.name}: not started, {self.error}")
+            return self
+        self.tools = self.__offered(specs)
+        self.prompts = self.__prompts(max(1.0, deadline - time.monotonic()))
+        log.info(f"[mcp] {self.name}: {len(self.tools)} tools ({', '.join(tool.remote for tool in self.tools)})"
+                 f"{f', {len(self.prompts)} prompts' if self.prompts else ''}")
+        return self
+
+    def __prompts(self, timeout: float) -> list[dict]:
+        """ The prompts of the server: a server that can not list them still offers its tools """
+        try:
+            return self.client.list_prompts(timeout)
+        except McpError as e:
+            log.warning(f"[mcp] {self.name}: its prompts can not be listed: {e}")
+            return []
+
+    def __transport(self):
+        """ How the server is reached: at its address, or a program launched """
+        if self.declaration.transport == HTTP:
+            return HttpTransport(self.name, self.declaration.url, self.declaration.headers, self.max_timeout)
+        return StdioTransport(self.name, self.command, self.args, self.env)
+
+    def stop(self) -> "McpServer":
+        """ Stop the server, if it was started: its tools are offered no more """
+        if self.client is not None:
+            self.client.close()
+        return self
+
+    def restart(self) -> "McpServer":
+        """ Stop the server and start it again: what it offers is listed again """
+        log.info(f"[mcp] {self.name}: restarted")
+        return self.stop().start()
+
+    def connect(self) -> McpClient | None:
+        """
+            The client to call the server with. A server that crashed is started again first, while it may: the
+            call that saw it crash is never made again, it may have acted
+        """
+        if self.client is not None and self.client.crashed and self.__restarts > 0:
+            self.__restarts -= 1
+            log.warning(f"[mcp] {self.name}: crashed ({self.client.why}), restarted by itself "
+                        f"({self.__restarts} restarts left)")
+            self.restart()
+            self.__renewed = True
+        return self.client
+
+    def refresh(self) -> str | None:
+        """
+            How what the server offers changed since it was last offered: "restarted" (it started again by itself),
+            "tools" or "prompts" (it said they changed: they are listed again), None when nothing did
+        """
+        changed: str | None = "restarted" if self.__renewed else None
+        self.__renewed = False
+        changes: set[str] = self.client.changes() if self.client is not None and self.client.alive else set()
+        if "tools" in changes:
+            try:
+                tools: list[McpTool] = self.__offered(self.client.list_tools(self.timeout))
+            except McpError as e:
+                log.warning(f"[mcp] {self.name}: its tools changed but can not be listed: {e}")
+            else:
+                # A server may say so when it registers its tools at its start: the same ones are no change
+                if [tool.schema for tool in tools] != [tool.schema for tool in self.tools]:
+                    log.info(f"[mcp] {self.name}: its tools changed, {len(tools)} now "
+                             f"({', '.join(tool.remote for tool in tools)})")
+                    changed = changed or "tools"
+                self.tools = tools
+        if "prompts" in changes:
+            self.prompts = self.__prompts(self.timeout)
+            log.info(f"[mcp] {self.name}: its prompts changed, {len(self.prompts)} now")
+            changed = changed or "prompts"
+        return changed
+
+    def accept(self) -> int:
+        """ Take the tools held as they are now: the user saw them. How many there were """
+        held: list[dict] = self.held
+        for spec in held:
+            self.__pinned[spec["name"]] = spec
+        self.tools = self.__offered(self.__specs)
+        log.info(f"[mcp] {self.name}: {len(held)} tools that changed accepted ({', '.join(spec['name'] for spec in held)})")
+        return len(held)
+
+    def __wanted(self, remote: str) -> bool:
+        """ Whether the declaration offers the tool to the model: in tools (all without it), not in exclude """
+        allowed: list[str] | None = self.declaration.tools
+        if allowed is not None and not any(fnmatch.fnmatchcase(remote, pattern) for pattern in allowed):
+            return False
+        return not any(fnmatch.fnmatchcase(remote, pattern) for pattern in self.declaration.exclude)
+
+    def __offered(self, specs: list[dict]) -> list[McpTool]:
+        """
+            The tools of the server the declaration offers, from what tools/list gave: two that would have the same
+            name, the first only. A model offers fewer tools, it chooses better among them. One that changed since it
+            was first listed is held: the model reads its description as it reads the user, a server must not change
+            it behind their back
+        """
+        self.__specs = specs
+        wanted: list[dict] = [spec for spec in specs if self.__wanted(spec["name"])]
+        self.hidden = len(specs) - len(wanted)
+        tools: list[McpTool] = []
+        self.held = []
+        for spec in wanted:
+            tool: McpTool = McpTool(self, spec)
+            if any(known.name == tool.name for known in tools):
+                log.warning(f"[mcp] {self.name}: {spec['name']} left out, another of its tools is named {tool.name}")
+                continue
+            if self.__pinned.setdefault(spec["name"], spec) != spec:
+                log.warning(f"[mcp] {self.name}: {spec['name']} changed since it was first listed, held until the "
+                            "user accepts it (/mcp trust)")
+                self.held.append(spec)
+                continue
+            tools.append(tool)
+        return tools
+
+class McpManager:
+    """
+        The MCP servers Louis talks to: each one launched at the start, its tools listed and offered to the model.
+        A server that does not start is logged and left out, the others go on. Stopped by close(), else when Louis
+        exits: never a process left behind
+    """
+    def __init__(self, settings: dict):
+        """ Init the servers declared: a declaration that is not valid is a server that failed """
+        self.__servers: list[McpServer] = []
+        self.__trust  : Trust           = Trust(settings.get("mcp.trust_file"))
+        for declaration in declarations(settings):
+            # A server slower than the others says so in its declaration
+            timeout: float = declaration.timeout if declaration.timeout is not None else float(settings.get("mcp.timeout", 30.0))
+            server: McpServer = McpServer(
+                declaration, timeout=timeout,
+                start_timeout=float(settings.get("mcp.start_timeout", 30.0)), restarts=int(settings.get("mcp.restarts", 1)),
+                max_timeout=float(settings.get("mcp.max_timeout", 600.0)), log_level=settings.get("mcp.log_level", "info")
+            )
+            server.trusted = self.__trust.trusts(declaration)
+            if server.error is not None:
+                log.warning(f"[mcp] {server.name or '?'}: not started, {server.error}")
+            elif not server.trusted:
+                log.warning(f"[mcp] {server.name}: declared by {declaration.source} in the project, waits for the "
+                            "user to trust it (/mcp trust)")
+            self.__servers.append(server)
+        atexit.register(self.close)
+
+    def start(self) -> "McpManager":
+        """ Start the servers, side by side: one slow to start (npx downloads it the first time) delays none of the others """
+        threads: list[threading.Thread] = [
+            threading.Thread(target=server.start, name=f"mcp-start-{server.name}", daemon=True)
+            for server in self.__servers if server.error is None and server.trusted and server.declaration.enabled
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        return self
+
+    @property
+    def servers(self) -> list[McpServer]:
+        """ Get the servers of the settings, started or not """
+        return list(self.__servers)
+
+    def server(self, name: str) -> McpServer | None:
+        """ Get the server of that name, None if the settings declare none """
+        return next((server for server in self.__servers if server.name == name), None)
+
+    def trust(self, server: McpServer) -> None:
+        """ Trust a server of the project, as it is declared now: it may start. Raises OSError when it can not be kept """
+        self.__trust.trust(server.declaration)
+        server.trusted = True
+
+    @property
+    def trust_file(self) -> str | None:
+        """ Get the file the servers the user trusts are kept in """
+        return self.__trust.path
+
+    def tools(self) -> list[McpTool]:
+        """ The tools of the servers that started """
+        return [tool for server in self.__servers if server.state == RUNNING for tool in server.tools]
+
+    def refresh(self) -> list[tuple[McpServer, str]]:
+        """ The servers whose tools changed since they were last offered, with how: started again, listed again """
+        changes = ((server, server.refresh()) for server in self.__servers)
+        return [(server, change) for server, change in changes if change is not None]
+
+    def describe(self) -> list[dict]:
+        """ Every server, with its state and its tools: what /mcp shows """
+        return [server.describe() for server in self.__servers]
+
+    def close(self) -> None:
+        """ Stop every server: nothing happens a second time """
+        for server in self.__servers:
+            server.stop()

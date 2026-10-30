@@ -4,6 +4,11 @@
 ## File description:
 ## Settings for the sensai project
 ##
+import os
+import sys
+
+# calc, the MCP server of Louis: a program of its own, run by the python that runs Louis
+CALC_SERVER: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tool", "mcp", "servers", "calc.py")
 
 settings: dict[str] = {
 
@@ -16,6 +21,10 @@ settings: dict[str] = {
     "chat.tools.maxdepth"  : 40,
     "chat.think"           : False,
     "chat.keepalive"       : "30m",
+    # When the context is full, the oldest exchanges left out of what the model sees are summed up by the chat model
+    # itself (what was asked, the files read and changed, what is left to do), in its system prompt: it goes on knowing
+    # them. One request each time the cut moves forward (a few seconds on the GPU). False: they are only left out
+    "chat.compact.summary" : True,
     # Tokens the model sees at once. 12288 keeps qwen3:8b at ~92% GPU on 8 GB of VRAM:
     # above that it spills onto the CPU, and gets much slower
     "chat.context"         : 24576,
@@ -35,15 +44,78 @@ settings: dict[str] = {
     "monitor.file"         : "louis.traces.jsonl",
     # Where /export writes the sessions, relative to the working directory
     "export.dir"           : "exports",
-    # Where the public links of /share point to (the server of louis --serve, or the address that reaches it),
-    # unless LOUIS_SHARE_URL gives another
-    "share.base_url"       : "http://localhost:8080",
+    # Where the public links of /share point to: the address that reaches the server of louis --web (it serves them),
+    # unless LOUIS_SHARE_URL gives another. Empty: the address louis --web listens on (http://localhost:8080 without it)
+    "share.base_url"       : "",
+    # Structured replies (/json, louis --schema): the folder of the project where its own schemas are looked for
+    # first (they win over the ones of louis, in src/structured/schemas), and the replies asked of the model before
+    # giving up on one that does not match its schema
+    "structured.dir"       : "schemas",
+    "structured.attempts"  : 3,
+    # Reasoning loop (ReAct, /react): the model says what it knows and what it will do before each action, every step
+    # is traced, and with reason.verify it checks its answer before giving it (asked again with what is wrong,
+    # reason.attempts times at most). On at the start with reason.enabled; its steps are those of chat.tools.maxdepth
+    "reason.enabled"       : False,
+    "reason.verify"        : True,
+    "reason.attempts"      : 2,
+    # Human in the loop (/plan): a reply of the model with a call as risky as hitl.level ("irreversible": a push, a merge,
+    # a file whose content would be lost; "reversible": any change) is suspended before its first call runs, and its plan
+    # shown, what the model meant and each call with what it would change. Its calls run once the user approves it,
+    # without asking again; refused, none does, and what the user said is told to the model. A plan nobody answers (a
+    # script, louis --ask) is refused: nothing risky is ever done without someone to approve it
+    "hitl.enabled"         : True,
+    "hitl.level"           : "irreversible",
     # Guardrails (NeMo) on the messages of the user and the replies of the model, rules in guard/config.
     # Off by default: it needs requirements-guard.txt, and Python 3.13 at most
-    "guard.enabled"        : False,
+    "guard.enabled"        : True,
+    # The model that reads the messages against the policies of guard/config/prompts.yml (one request per check, Yes or
+    # No). None: the chat model, with the context and the keep-alive of the chat, so Ollama keeps one model loaded as
+    # it is. Another one is loaded beside it (VRAM), with guard.context. timeout: seconds a check may take
+    "guard.model"          : None,
+    "guard.context"        : 4096,
+    "guard.timeout"        : 120.0,
     # Louis signs the commits it makes with a "Co-authored-by" line: the user stays their author. For GitHub to show
     # Louis on the commits, it must be the noreply address of a GitHub account (Settings > Emails). Empty: no line
     "git.coauthor"         : "Louis <336655023+louis-sensai@users.noreply.github.com>",
+    # Code the model runs (run_code) goes in a Docker container: no network, no access to the project, read-only disk,
+    # limits on time, memory and processes. The tool is only offered if docker is installed. The images must be pulled
+    # by the user (docker pull python:3.13-alpine alpine:latest golang:alpine rust:alpine gcc:latest): the container never
+    # reaches the network to get them, nor the libraries a program would want (go, rust, c, c++: standard library only)
+    "sandbox.enabled"      : True,
+    # Bytes of the output of the code the model sees, for each of stdout and stderr: the rest is cut
+    "sandbox.output"       : 4000,
+    # What differs from the profile of a language (tool/impl/exec/tool_run.py: python and sh 10 s and 256m, c and c++ 30 s, go and rust
+    # a minute and 1g for their build): its image, timeout (seconds) and memory. {"python": {"image": "python:3.12-slim"}}
+    "sandbox.languages"    : {},
+    # MCP servers (/mcp): programs Louis launches at its start and talks to on their standard input and output. Each
+    # tool of a server is offered to the model as <server>__<tool>. name: its name for the model and /mcp; command and
+    # args: how it is launched, in the working directory; env: what it gets on top of PATH, HOME, LANG... (never the
+    # rest of the environment of Louis: its secrets); risk (optional): "safe", "reversible" or "irreversible" for all
+    # its tools, else what the server says of each one (a tool that does not say it only reads asks before it acts).
+    # A server that does not start is left out, Louis goes on without it. time needs uv (pip install uv)
+    "mcp.servers"          : [
+        {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]},
+        {"name": "time", "command": "uvx", "args": ["mcp-server-time"]},
+    ],
+    # Files that declare more servers, in the format of Claude Code, Cursor and Claude Desktop (a file of theirs can be
+    # copied as is): {"mcpServers": {"<name>": {"command": "npx", "args": [...], "env": {...}}}}. ${VAR} (or
+    # ${VAR:-default}) in command, args and env is the variable of the environment of Louis: how a token reaches a
+    # server without being written in the file. A server of a file replaces the one of the same name declared before it.
+    # A relative path is a file of the project (.mcp.json, beside the code): anyone who wrote in the project may have
+    # declared its servers, they wait for the user to trust them (/mcp trust <name>) before they start, again when
+    # their declaration changes. Its trust is kept in mcp.trust_file, out of every project
+    "mcp.files"            : ["~/.config/louis/mcp.json", ".mcp.json"],
+    "mcp.trust_file"       : "~/.config/louis/mcp-trusted.json",
+    # Seconds a call of a tool may take, and a server to start and list its tools (npx and uvx download it the first time)
+    "mcp.timeout"          : 30.0,
+    "mcp.start_timeout"    : 60.0,
+    # A server that tells it works on a call (its progress) is waited for again at each step, this long in all at most
+    "mcp.max_timeout"      : 600.0,
+    # The logs a server sends, from this level on ("debug", "info", "warning", "error"...), in louis.log; None: as it likes
+    "mcp.log_level"        : "info",
+    # Times a server that crashed is started again by itself, at the next call of one of its tools (the call that saw
+    # it crash is never made again: it may have acted). /mcp restart <name> starts it again whenever the user wants
+    "mcp.restarts"         : 1,
     # Knowledge base (RAG): the folders the user indexes (/index, louis --index: documentation, examples of code...),
     # that the model looks up with search_knowledge. It needs no library beyond numpy; the meaning of the passages is
     # read by an embedding model of Ollama (ollama pull nomic-embed-text), without it the search is by keywords only.
@@ -55,7 +127,117 @@ settings: dict[str] = {
     "rag.embed.query_prefix"   : "search_query: ",
     "rag.embed.document_prefix": "search_document: ",
     "rag.embed.batch"      : 32,
+    # The questions embedded on the GPU too: off, on the CPU (a question takes ~30 ms, the same vectors). On a GPU of a few
+    # GB, every MB the embedding model leaves is one more for the chat model. The passages of /index always go to the GPU:
+    # hundreds at once, ~50 times faster there
+    "rag.embed.gpu"        : False,
     # Passages search_knowledge gives back by default
     "rag.results"          : 4,
+    # A long file with fewer distinct lines than this share was made by a program (a grid of settings, a dump): it is not
+    # indexed, its passages would all look alike and take the places of the others. 0: only those marked "@generated"...
+    # To leave out other files of a folder: /index <dossier> [<nom>] --exclude "<motif>" (kept for its next /index)
+    "rag.index.generated_ratio": 0.10,
+    # Descriptions: for a source indexed with --describe, a model of Ollama writes what each passage of code does, in one
+    # sentence of plain words searched with it ("lit les touches du clavier" for code that only says K_LEFT). One
+    # request per passage at indexing, kept: a passage that did not change is not described again.
+    # model: a small one that fits whole in the GPU writes them several times faster than the chat model (measured on
+    # 6 GB: ~1.5s a passage with qwen3:4b-instruct, 8 to 18s with qwen3:8b, of which a part runs on the CPU). It must
+    # answer without thinking first: an "instruct" model, not a "thinking" one (qwen3:4b is one). None: the chat model.
+    # context: its num_ctx when it is not the chat model (a passage and the outline of its file); predict: the tokens of
+    # an answer at most
+    "rag.describe.model"   : "qwen3:4b-instruct",
+    # The scribe: beside the chat, a small model writes the title and the summary of each session once a reply is done
+    # (the sidebar of louis --web, /sessions, /find) and the sentence that welcomes the user to a new session on the web
+    # page. On the CPU, in its own thread: it never takes the GPU from the chat model, nor slows a reply. Measured on a
+    # laptop CPU, loaded: 1.5 to 4s a request with qwen3:4b-instruct (the same as rag.describe.model: one model for
+    # both); qwen3:1.7b is twice as fast, but writes "vous", or "Louis a…", and proposes what makes no sense. It must
+    # answer without thinking first: an "instruct" model. "": no scribe
+    "scribe.model"         : "qwen3:4b-instruct",
+    "scribe.gpu"           : False,
+    "scribe.keepalive"     : "30m",
+    "scribe.context"       : 4096,
+    "rag.describe.context" : 4096,
+    "rag.describe.predict" : 80,
+    # Reranking: the passages the search found are read again with the question by a cross-encoder (ONNX on the CPU,
+    # by fastembed: installed with the guard, or by requirements-rerank.txt), the best first, and those under
+    # min_score left out (0 to 1: 0 keeps them all). Download the model once: cd src && python -m rag.reranker
+    # Without fastembed or the model, the search goes on in the order of the index. Measured with python -m rag.evaluate
+    # (docs/RAG.md): mmarco-mMiniLMv2 reads French, ~2.5s a search on a laptop CPU; jinaai/jina-reranker-v2-base-multilingual
+    # ranks a little better, but takes ~10s and 5 GB of memory, under a non-commercial license
+    "rag.rerank.enabled"   : True,
+    "rag.rerank.model"     : "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    # Passages of the search the reranker reads: the right one is rarely further down (python -m rag.evaluate: hit@20)
+    "rag.rerank.pool"      : 20,
+    # Measured: 0.05 kept every right answer of the test, and left most of the questions it cannot answer with nothing
+    "rag.rerank.min_score" : 0.05,
+    # What it reads of each passage: its time grows with it, and the start of a passage tells what it is about
+    "rag.rerank.max_chars" : 1000,
+    # Semantic cache (cache/, docs/CACHE.md): a question that means the same as one already answered gets its answer back
+    # at once, without the chat model. Its meaning is read by the embedding model of the knowledge base (rag.embed.model,
+    # on the CPU: ~30 ms). Any question that stands alone is looked up ("et pour la deuxième ?" is not), and only the
+    # answers safe to give again are stored: to a question that does not depend on the time nor the project, in a session
+    # where the model read nothing of the project yet, using no tool but those of cache.tools, let through by the guard.
+    # The cache is in the working directory, unless LOUIS_CACHE gives another path (the launcher of install.sh: the
+    # global one). /cache to see it. Without the embedding model or the reranker, it does nothing: the model answers
+    "cache.enabled"        : True,
+    "cache.file"           : "louis.cache.db",
+    # A question is looked up in three steps. threshold: how close in meaning (cosine, 0 to 1) a question stored must be
+    # to be read again by the reranker (rag.rerank.model, the same model loaded once), which gives its answer if it
+    # finds they ask the same (rerank.min_score), else by the small model (match.model). The meaning alone can not tell
+    # apart questions that differ by one word: "lire un fichier JSON" and "écrire un fichier JSON" are 0.975 close, more
+    # than most questions asked in other words (0.80 to 0.88). Measured with: cd src && python -m cache.evaluate
+    # (docs/CACHE.md): 0.78 finds "Que fait yield ?" (0.795) for no more questions asked to the small model; lower finds
+    # no more, and asks it more of the misses (~2.7 s each). rerank.enabled False: the meaning is enough (unsafe)
+    "cache.threshold"      : 0.78,
+    "cache.rerank.enabled" : True,
+    "cache.rerank.min_score": 0.35,
+    # The reranker never confirmed a wrong question, but misses most of those asked otherwise (4 out of 27, "tu peux me
+    # redire comment fonctionne X" against "comment marche X": 0.010). The closest ones it did not confirm are asked to
+    # a small model, "same question?" (cache/matcher.py): 20 out of 27, and none of the 26 that ask something else.
+    # ~2.4 s on the CPU, paid by the misses that have a close question too (2 at most). The model of the scribe: one model
+    # loaded for both. It must answer without thinking first: an "instruct" model. "": the reranker alone
+    "cache.match.model"    : "qwen3:4b-instruct",
+    "cache.match.gpu"      : False,
+    # Seconds an answer may be given again (7 days), and the answers kept at most, the ones served least lately dropped first
+    "cache.ttl"            : 7 * 24 * 3600,
+    "cache.max_entries"    : 1000,
+    # The tools an answer may have used and still be given again: their sources are known, and the cache forgets the answers
+    # when they change (/index, /unindex). An answer that read the project, ran code or searched the web is never stored
+    "cache.tools"          : ["search_knowledge"],
+    # Whether the users share their answers: a question one asked is answered at once for the others (an answer that
+    # names its user is never stored). Off: each user gets only their own, for a louis --web open to people who must not
+    # read each other's answers
+    "cache.shared"         : True,
+    # The seed: answers written by the team (src/cache/seed/*.jsonl), about Louis itself, useful from the first question
+    # of a new install. Stored on the first lookup, again when its files change; never removed by /cache clear
+    "cache.seed"           : True,
+    # The reranker reads an answer of the seed against the new question (they tell all Louis does about something),
+    # where it reads the answers of the model against the question they were given for: a score of its own. Measured
+    # with python -m cache.evaluate: "valider un JSON avec un schéma en Python" gets 0.74 against the answer about /json,
+    # the questions about Louis asked otherwise 0.06 to 1. Strict: the questions written in the seed files are always
+    # given (the same text needs no reranker), the way to answer more of them is to write more of them there
+    "cache.seed.min_score" : 0.75,
+    # Evaluation (eval/): a model, the judge, reads each answer of Louis again once its turn is done. It splits it into
+    # claims and checks each one against what the tools read (the sources): supported, contradicted, or unverifiable.
+    # It also scores the relevance and the coherence of the answer, from 1 to 5. The scores go to the traces
+    # (louis --dashboard, by prompt and model), /eval shows those of the last answer with the claims it flags.
+    # enabled: every answer is judged; off, only the one /eval asks for. background: in a thread, without making the
+    # user wait (it waits itself for Louis to be done with a turn before asking the model). sample: the share of the
+    # answers judged (1.0 all of them): each one costs 2 or 3 requests to the model
+    "eval.enabled"         : True,
+    "eval.background"      : True,
+    "eval.sample"          : 1.0,
+    # The judge. None: the chat model, already loaded (any other one makes Ollama load a second model). A model
+    # tends to like its own answers: another family judges more fairly, if the GPU holds both. context: its num_ctx
+    # when it is not the chat model (the chat's otherwise: another one would make Ollama reload it)
+    "eval.model"           : None,
+    "eval.context"         : 16384,
+    "eval.predict"         : 2048,
+    "eval.timeout"         : 300.0,
+    # Claims flagged (unverifiable, contradicted) looked at a second time, each alone with its own passages: a small judge
+    # misses some in a long list. One short request per claim flagged, nothing when none is. 0: never
+    "eval.recheck"         : 3,
+    # The tools whose results are sources: what an answer may rely on. tree, mkdir, write_file... tell nothing to check
+    "eval.sources"         : ["search_knowledge", "web_search", "cat_file", "search", "git", "run_code"],
 
 }

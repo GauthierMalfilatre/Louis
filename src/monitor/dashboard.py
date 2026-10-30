@@ -312,6 +312,34 @@ function renderKpis(s) {
     ["Answers", fmt.count(s.turns.turns), "median " + fmt.seconds(s.turns.p50) + " · " + fmt.percent(s.turns.failure_rate) + " failed"],
     ["Tool calls", fmt.count(s.tools.calls), fmt.percent(s.tools.calls ? s.tools.errors / s.tools.calls : null) + " could not do it"],
   ];
+  // Only once JSON replies were asked (/json, louis --ask): most runs never do
+  if (s.structured && s.structured.replies) {
+    tiles.push(["JSON replies", fmt.percent(s.structured.valid_rate) + " valid",
+      fmt.count(s.structured.replies) + " asked · " + fmt.percent(s.structured.first_try_rate) + " at once"]);
+  }
+  // Only once a plan was shown (/plan): how many the user approved, and how long they took to decide
+  if (s.plans && s.plans.plans) {
+    const p = s.plans;
+    tiles.push(["Plans", fmt.percent(p.approved_rate) + " approved",
+      fmt.count(p.plans) + " shown · " + fmt.percent(p.refused_rate) + " refused · " + fmt.count(p.unanswered)
+        + " unanswered · decided in " + fmt.seconds(p.decision_p50)]);
+  }
+  // Only once the reasoning loop answered (/react): the drafts that went at once, and what a check costs
+  if (s.reasoning && s.reasoning.answers) {
+    const r = s.reasoning;
+    tiles.push(["Step by step", r.checked ? fmt.percent(r.first_try_rate) + " right at once" : fmt.count(r.answers) + " answers",
+      fmt.count(r.answers) + " answers · " + (r.steps === null ? "–" : r.steps.toFixed(1)) + " steps · "
+        + fmt.percent(r.revised_rate) + " fixed · " + fmt.percent(r.left_rate) + " left · check " + fmt.seconds(r.check_p50)]);
+  }
+  // Only once the judge scored answers (eval.enabled, /eval)
+  if (s.eval && s.eval.answers) {
+    const grade = (v) => v == null ? "–" : v.toFixed(1) + "/5";
+    tiles.push(["Faithful to sources", fmt.percent(s.eval.faithfulness),
+      fmt.count(s.eval.answers) + " judged · " + fmt.percent(s.eval.flagged_rate) + " claims flagged · " +
+      fmt.count(s.eval.contradicted) + " contradicted"]);
+    tiles.push(["Relevance · coherence", grade(s.eval.relevance) + " · " + grade(s.eval.coherence),
+      "by the judge, " + fmt.count(s.eval.versions.length) + (s.eval.versions.length === 1 ? " version" : " versions")]);
+  }
   document.getElementById("kpis").replaceChildren(...tiles.map(([label, value, sub]) =>
     el("div", { class: "card kpi" }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }),
       el("div", { class: "sub", text: sub }))));

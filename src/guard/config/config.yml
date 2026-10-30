@@ -3,18 +3,9 @@
 # Masking flows anonymize the message, the others refuse it. They run in the order below.
 colang_version: "1.0"
 
-models:
-  # The judge of the self checks: the same model as the chat, so Ollama keeps one model loaded.
-  # NeMo calls the OpenAI API of Ollama (/v1), which cannot set num_ctx nor keep_alive: Ollama uses its own
-  # defaults, and reloads the model when they differ from Louis' (chat.context, chat.keepalive). Start it with
-  #   OLLAMA_CONTEXT_LENGTH=12288 OLLAMA_KEEP_ALIVE=30m ollama serve
-  - type: main
-    engine: ollama
-    model: qwen3.5:9b
-    parameters:
-      base_url: http://localhost:11434/v1
-      # A judge answers Yes or No at once: thinking first, qwen3 takes ~30s per check instead of ~4s
-      reasoning_effort: none
+# No models: no rail asks one through NeMo. The policy checks ask Ollama themselves (guard/policy.py), with the model,
+# the context and the keep-alive of Louis' settings (chat.*, guard.model): NeMo asked it through its OpenAI API (/v1),
+# which can not set the context, and Ollama reloaded the model twice per check (12 to 18 s each on a laptop)
 
 rails:
   config:
@@ -32,7 +23,7 @@ rails:
       - mask french ids on input
       - mask sensitive data on input
       # Refuse: the model judges the message against the policy of prompts.yml (one more model call)
-      - self check input
+      - check input policy
 
   output:
     flows:
@@ -40,7 +31,7 @@ rails:
       - block secrets on output
       - mask french ids on output
       - mask sensitive data on output
-      - self check output
+      - check output policy
 
   # The calls the model asks for, before the tool runs ("output" of the model, in the words of NeMo)
   tool_output:

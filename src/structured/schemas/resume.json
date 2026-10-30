@@ -1,0 +1,13 @@
+{
+  "title": "Résumé",
+  "description": "Le résumé d'un texte : un titre, quelques phrases, ses points clés et son ton",
+  "type": "object",
+  "properties": {
+    "titre": {"type": "string", "minLength": 1, "description": "Le sujet du texte, en quelques mots"},
+    "resume": {"type": "string", "minLength": 1, "description": "Le texte résumé en 2 à 4 phrases"},
+    "points_cles": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 7},
+    "ton": {"type": "string", "enum": ["positif", "neutre", "negatif"]}
+  },
+  "required": ["titre", "resume", "points_cles", "ton"],
+  "additionalProperties": false
+}

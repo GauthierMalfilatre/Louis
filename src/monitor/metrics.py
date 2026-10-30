@@ -24,7 +24,7 @@ ERRORS_DRIFT : float = 0.05
 RECENT  : timedelta = timedelta(days=1)
 BASELINE: timedelta = timedelta(days=7)
 # The ends of a turn where the user got no answer
-FAILED_TURNS: frozenset[str] = frozenset({"error", "loop", "rounds", "length", "empty"})
+FAILED_TURNS: frozenset[str] = frozenset({"error", "loop", "rounds", "length", "empty", "invalid"})
 # Past this span, the series go by day instead of by hour
 HOURLY_SPAN: timedelta = timedelta(days=3)
 # The alerts shown: the most recent ones, the others are in the table of the configurations
@@ -100,8 +100,12 @@ def working(record: dict, key: str) -> float:
     return max(0.0, record.get(key, 0.0) - record.get("waited", 0.0))
 
 def turns_stats(turns: list[dict]) -> dict:
-    """ What the answers tell: how many, how many failed, how long the user waited for the ones that ended well """
-    answered: list[float] = [working(turn, "latency") for turn in turns if turn.get("reason") == "done"]
+    """
+        What the answers tell: how many, how many failed, how long the user waited for the ones that ended well. An answer
+        of the semantic cache takes milliseconds: kept out of the latencies, they would hide a slower model
+    """
+    answered: list[float] = [working(turn, "latency") for turn in turns
+                             if turn.get("reason") == "done" and not turn.get("cached")]
     failed: int = sum(1 for turn in turns if turn.get("reason") in FAILED_TURNS)
     return {
         "turns"       : len(turns),
@@ -110,6 +114,96 @@ def turns_stats(turns: list[dict]) -> dict:
         "p50"         : percentile(answered, 0.50),
         "p95"         : percentile(answered, 0.95),
         "rounds"      : mean([turn.get("rounds", 0) for turn in turns]),
+    }
+
+def cache_stats(lookups: list[dict], turns: list[dict]) -> dict:
+    """
+        The semantic cache: the questions looked up (not those it may not answer: a follow-up, the time...), the share it
+        answered, and how long the user waited for its answers against the model's
+    """
+    looked: list[dict] = [lookup for lookup in lookups if lookup.get("reason") is None]
+    hits: int = sum(1 for lookup in looked if lookup.get("hit"))
+    return {
+        "lookups"   : len(looked),
+        "skipped"   : len(lookups) - len(looked),
+        "hits"      : hits,
+        "hit_rate"  : ratio(hits, len(looked)),
+        "cached_p50": percentile([working(turn, "latency") for turn in turns if turn.get("cached")], 0.50),
+        "lookup_p50": percentile([lookup.get("duration", 0.0) for lookup in looked], 0.50),
+    }
+
+def structured_stats(replies: list[dict]) -> dict:
+    """ The replies asked as JSON: how many matched their schema, how many at once, and the replies they took """
+    valid: list[dict] = [reply for reply in replies if reply.get("valid")]
+    return {
+        "replies"       : len(replies),
+        "valid_rate"    : ratio(len(valid), len(replies)),
+        "first_try_rate": ratio(sum(1 for reply in valid if reply.get("attempts") == 1), len(replies)),
+        "attempts"      : mean([reply.get("attempts", 1) for reply in replies]),
+    }
+
+def reasoning_stats(turns: list[dict], calls: list[dict]) -> dict:
+    """
+        The answers of the reasoning loop (/react): their steps, how many of the checked ones went at once, were written
+        again, or were given with problems left, and how long the model took to check a draft
+    """
+    answers: list[dict] = [turn for turn in turns if turn.get("react")]
+    checked: list[dict] = [turn for turn in answers if turn.get("checks")]
+    checks: list[float] = [call["latency"] for call in calls if call.get("purpose") == "check" and call.get("status") == "ok"]
+    return {
+        "answers"       : len(answers),
+        "steps"         : mean([turn.get("steps", 0) for turn in answers]),
+        "checked"       : len(checked),
+        "first_try_rate": ratio(sum(1 for turn in checked if not turn.get("revised") and not turn.get("left")), len(checked)),
+        "revised_rate"  : ratio(sum(1 for turn in checked if turn.get("revised")), len(checked)),
+        "left_rate"     : ratio(sum(1 for turn in checked if turn.get("left")), len(checked)),
+        "check_p50"     : percentile(checks, 0.50),
+    }
+
+def plan_stats(plans: list[dict]) -> dict:
+    """
+        The plans shown to the user (/plan): how many they approved, refused, or left without an answer, how many
+        refusals told what they would rather have, and how long they took to decide
+    """
+    answered: list[dict] = [plan for plan in plans if plan.get("answered")]
+    refused: list[dict] = [plan for plan in answered if not plan.get("approved")]
+    return {
+        "plans"        : len(plans),
+        "approved_rate": ratio(sum(1 for plan in answered if plan.get("approved")), len(plans)),
+        "refused_rate" : ratio(len(refused), len(plans)),
+        "unanswered"   : len(plans) - len(answered),
+        "feedback_rate": ratio(sum(1 for plan in refused if plan.get("feedback")), len(refused)),
+        "decision_p50" : percentile([plan.get("waited", 0.0) for plan in answered], 0.50),
+    }
+
+def judged(evals: list[dict]) -> dict:
+    """
+        What the judge said of some answers: the means of their scores, and the share of their claims flagged.
+        faithfulness is the mean over the answers that read a source (the others have none)
+    """
+    done: list[dict] = [record for record in evals if record.get("status") == "ok"]
+    claims: int = sum(record.get("claims", 0) for record in done)
+    return {
+        "answers"     : len(evals),
+        "errors"      : len(evals) - len(done),
+        "faithfulness": mean([record["faithfulness"] for record in done if record.get("faithfulness") is not None]),
+        "relevance"   : mean([record["relevance"] for record in done if record.get("relevance") is not None]),
+        "coherence"   : mean([record["coherence"] for record in done if record.get("coherence") is not None]),
+        "claims"      : claims,
+        "contradicted": sum(record.get("contradicted", 0) for record in done),
+        "unverifiable": sum(record.get("unverifiable", 0) for record in done),
+        "flagged_rate": ratio(sum(record.get("contradicted", 0) + record.get("unverifiable", 0) for record in done), claims),
+    }
+
+def eval_stats(evals: list[dict]) -> dict:
+    """ The answers judged: all of them, and by prompt and model, to compare the versions of Louis """
+    by_version: dict[tuple, list[dict]] = {}
+    for record in evals:
+        by_version.setdefault((record.get("prompt"), record.get("model")), []).append(record)
+    return {
+        **judged(evals),
+        "versions": [{"prompt": prompt, "model": model, **judged(records)}
+                     for (prompt, model), records in by_version.items()],
     }
 
 def tools_stats(tools: list[dict]) -> list[dict]:
@@ -319,6 +413,11 @@ def summarize(records: list[dict], *, days: float | None = None, by: str | None 
         "turns": turns_stats(turns),
         "tools": {"calls": len(tools), "errors": sum(1 for tool in tools if not tool.get("ok"))},
         "guard": sum(1 for record in records if record["type"] == "guard"),
+        "structured": structured_stats([record for record in records if record["type"] == "structured"]),
+        "reasoning": reasoning_stats(turns, calls),
+        "cache": cache_stats([record for record in records if record["type"] == "cache"], turns),
+        "plans": plan_stats([record for record in records if record["type"] == "plan"]),
+        "eval": eval_stats([record for record in records if record["type"] == "eval"]),
         "series": series(records, start, end, by),
         "configurations": rows,
         # The first one is where the period starts, not a change

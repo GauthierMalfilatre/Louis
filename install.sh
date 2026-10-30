@@ -17,6 +17,7 @@ VENV="$LOUIS_HOME/venv"
 DATABASE="$LOUIS_HOME/louis.db"
 TRACES="$LOUIS_HOME/louis.traces.jsonl"
 KNOWLEDGE="$LOUIS_HOME/louis.rag.db"
+CACHE="$LOUIS_HOME/louis.cache.db"
 LAUNCHER="$BIN_DIR/louis"
 
 info() { printf '\033[1;34m::\033[0m %s\n' "$*"; }
@@ -32,14 +33,16 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     [[ -f "$DATABASE" ]] && info "Your sessions are kept in $DATABASE: delete it yourself if you don't need them."
     [[ -f "$TRACES" ]] && info "The metrics of your calls are kept in $TRACES: delete it yourself if you don't need them."
     [[ -f "$KNOWLEDGE" ]] && info "Your knowledge base is kept in $KNOWLEDGE: delete it yourself if you don't need it."
+    [[ -f "$CACHE" ]] && info "The answers of the semantic cache are kept in $CACHE: delete it yourself if you don't need them."
     exit 0
 elif [[ $# -gt 0 ]]; then
     die "Unknown option '$1'. Usage: $0 [--uninstall]"
 fi
 
-# src/ nests the same quotes inside f-strings, which needs Python 3.12 (PEP 701)
+# src/ nests the same quotes inside f-strings, which needs Python 3.12 (PEP 701).
+# 3.14 comes last: NeMo Guardrails (guard.enabled) does not support it yet (3.10 to 3.13)
 PYTHON=""
-for candidate in python3.14 python3.13 python3.12 python3; do
+for candidate in python3.13 python3.12 python3.14 python3; do
     if command -v "$candidate" >/dev/null \
         && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; then
         PYTHON="$(command -v "$candidate")"
@@ -71,6 +74,20 @@ if [[ "$GUARD" == "True" ]]; then
     fi
 fi
 
+# The same for the reranker of the knowledge base, and its model downloaded now: louis never downloads it during a chat.
+# The model is kept out of the venv (~/.cache/louis/rerank), venv --clear does not download it again
+RERANK="$("$VENV/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from config.settings import settings as s; print(bool(s.get("rag.enabled") and s.get("rag.rerank.enabled")))' "$REPO/src")"
+if [[ "$RERANK" == "True" ]]; then
+    info "rag.rerank.enabled is on: installing fastembed (requirements-rerank.txt) and the reranking model"
+    if "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$REPO/requirements-rerank.txt" \
+        && (cd "$REPO/src" && "$VENV/bin/python" -m rag.reranker >/dev/null); then
+        info "Reranker installed"
+    else
+        warn "Could not install the reranker: the knowledge base is searched without it. Retry with"
+        warn "  $VENV/bin/pip install -r $REPO/requirements-rerank.txt && (cd $REPO/src && $VENV/bin/python -m rag.reranker)"
+    fi
+fi
+
 # The launcher runs the sources of this repository: a git pull updates louis,
 # and louis keeps the directory it was typed in as the project it works on.
 # It saves the sessions in the global database, and the traces of its calls next to it (louis --dashboard reads them
@@ -84,6 +101,7 @@ cat > "$LAUNCHER" <<EOF
 export LOUIS_DB=$(printf '%q' "$DATABASE")
 export LOUIS_TRACES=$(printf '%q' "$TRACES")
 export LOUIS_RAG=$(printf '%q' "$KNOWLEDGE")
+export LOUIS_CACHE=$(printf '%q' "$CACHE")
 exec $(printf '%q' "$VENV/bin/python") $(printf '%q' "$REPO/src/main.py") "\$@"
 EOF
 chmod +x "$LAUNCHER"
@@ -114,6 +132,13 @@ EMBED="$("$VENV/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); fro
 if [[ -n "${models:-}" ]] \
     && ! awk -v model="$EMBED" 'NR > 1 && ($1 == model || $1 == model ":latest") { found = 1 } END { exit !found }' <<<"$models"; then
     warn "The embedding model $EMBED is not downloaded yet (for the knowledge base): ollama pull $EMBED"
+fi
+
+# Optional too: the model that describes the code of the sources indexed with --describe (empty: the chat model)
+DESCRIBE="$("$VENV/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from config.settings import settings as s; print(s.get("rag.describe.model") or "")' "$REPO/src")"
+if [[ -n "${models:-}" && -n "$DESCRIBE" ]] \
+    && ! awk -v model="$DESCRIBE" 'NR > 1 && ($1 == model || $1 == model ":latest") { found = 1 } END { exit !found }' <<<"$models"; then
+    warn "The model $DESCRIBE is not downloaded yet (it describes the code for /index --describe): ollama pull $DESCRIBE"
 fi
 
 info "Done! Type 'louis' in any directory to start it there."
