@@ -286,7 +286,7 @@ claude mcp add louis -- /chemin/vers/sensai/venv/bin/python /chemin/vers/sensai/
 npx @modelcontextprotocol/inspector --cli venv/bin/python src/main.py --mcp-server --method tools/list
 ```
 
-Le fonctionnement en détail (le protocole, les fichiers, les choix) est dans [docs/MCP.md](docs/MCP.md).
+Le fonctionnement en détail (le protocole, les fichiers, les choix) est dans [docs/MCP.md](docs/MCP.md). Pour apprendre MCP et ajouter un serveur pas à pas : [docs/MCP_GUIDE.md](docs/MCP_GUIDE.md).
 
 ## Notes
 

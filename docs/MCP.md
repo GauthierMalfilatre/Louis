@@ -1,5 +1,7 @@
 # Client (et serveur) MCP
 
+> Pour apprendre ce qu'est MCP, comment le code marche pas à pas et comment ajouter un serveur, lis d'abord le guide : [MCP_GUIDE.md](MCP_GUIDE.md) (en anglais). Ce document-ci est le rapport.
+
 Louis sait appeler des outils pendant qu'il répond : le modèle s'interrompt, émet un appel structuré (le nom d'un outil et ses arguments), Louis l'exécute, lui rend le résultat, et le modèle continue sa réponse avec. Au départ, ces outils étaient tous écrits dans Louis (`cat_file`, `git`, `web_search`…).
 
 Cette fonctionnalité fait de Louis un **client MCP** ([Model Context Protocol](https://modelcontextprotocol.io)) : n'importe quel programme qui parle MCP lui apporte ses outils et ses prompts, sans une ligne de code dans Louis. On le déclare dans un fichier `.mcp.json` ou dans les réglages ; Louis le lance (ou le joint à son adresse), lui demande ce qu'il offre, et le donne au modèle avec ses propres outils. Dans l'autre sens, `louis --mcp-server` fait de Louis un **serveur MCP** pour un autre client.
