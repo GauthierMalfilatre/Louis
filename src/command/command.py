@@ -8,8 +8,9 @@ from logger.logger import log
 from events.event_list import COMMAND_UNKNOWN, COMMAND_ERROR
 import re
 
-# Only a plain word can name a command: "/src/main.py, que fait ce fichier ?" is a message
-WORD: re.Pattern = re.compile(r"[A-Za-z][\w-]*")
+# Only a plain word can name a command: "/src/main.py, que fait ce fichier ?" is a message. The prompts of the MCP
+# servers are named <server>:<prompt>
+WORD: re.Pattern = re.compile(r"[A-Za-z][\w-]*(?::[\w-]+)?")
 
 class Command:
     """ A /command, run by Louis itself instead of being sent to the model """
@@ -74,6 +75,11 @@ class CommandTree:
             if any(known.match(name) for known in self.__commands):
                 raise ValueError(f"The command {self.__prefix}{name} is already registered")
         self.__commands.append(command)
+        return self
+
+    def unregister(self, name: str) -> "CommandTree":
+        """ Withdraw the command of that name, if there is one """
+        self.__commands = [command for command in self.__commands if command.name != name]
         return self
 
     def fetch(self, content: str, app) -> bool:

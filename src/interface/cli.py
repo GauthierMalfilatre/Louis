@@ -19,6 +19,7 @@ from events.event_list import RAG_DESCRIBE_PROGRESS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, EVAL_REPORT
 from events.event_list import CACHE_HIT, CACHE_ENABLED, CACHE_DISABLED, CACHE_CLEARED, CACHE_STATS
 from events.event_list import PLAN_SETTINGS, PLAN_PROPOSED, PLAN_DECIDED
+from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED, MCP_PROGRESS, MCP_PROMPT
 import json
 import os
 import re
@@ -136,6 +137,87 @@ def plan_settings(data: dict) -> str:
                   if data["level"] == "irreversible" else "toute action qui change quelque chose")
     return f"Plan avant d'agir activé, pour {which} : Louis te montre ce qu'il va faire et attend ton accord. /plan off pour le couper."
 
+# How an MCP server goes, said to the user
+MCP_STATES: dict[str, str] = {"running": "actif", "failed": "n'a pas démarré", "crashed": "s'est arrêté", "stopped": "arrêté",
+                              "disabled": "désactivé", "pending": "attend ton accord"}
+
+NO_MCP: str = "Aucun serveur MCP : déclare-les dans un fichier .mcp.json ou le réglage mcp.servers (voir le README)."
+
+def mcp_trouble(servers: list[dict]) -> bool:
+    """ Whether a server needs the user: it did not start, it stopped by itself, or it waits for its accord """
+    return any(server["state"] in ("failed", "crashed", "pending") for server in servers)
+
+def mcp_trust(name: str) -> str:
+    """ What starts a server the project declared """
+    return f"/mcp trust {name} pour l'approuver et le lancer"
+
+def mcp_held(server: dict) -> str:
+    """
+        The tools of a server that changed since they were first listed, held:
+        1 outil modifié depuis sa première liste, retenu : /mcp trust fake pour accepter sa nouvelle version
+    """
+    count: int = len(server.get("held", []))
+    many: str = "s" if count > 1 else ""
+    return (f"{count} outil{many} modifié{many} depuis {'leur' if many else 'sa'} première liste, retenu{many} : "
+            f"/mcp trust {server['name']} pour accepter {'leur' if many else 'sa'} nouvelle version")
+
+def mcp_started(servers: list[dict]) -> str:
+    """ The MCP servers once Louis started them, on one line:  MCP : calc (1 outil) · time : n'a pas démarré (/mcp) """
+    parts: list[str] = [
+        f"{server['name']} ({len(server['tools'])} outil{'s' if len(server['tools']) > 1 else ''})"
+        if server["state"] == "running" else
+        f"{server['name']} : {MCP_STATES['pending']} ({mcp_trust(server['name'])})" if server["state"] == "pending" else
+        f"{server['name']} : {MCP_STATES.get(server['state'], server['state'])}"
+        for server in servers
+    ]
+    trouble: bool = any(server["state"] in ("failed", "crashed") for server in servers)
+    return f"MCP : {' · '.join(parts)}{' (/mcp pour savoir pourquoi)' if trouble else ''}"
+
+def mcp_changed(data: dict) -> tuple[str, bool]:
+    """ What happened to a server once Louis started, on one line, and whether it went well:  MCP : calc relancé (1 outil) """
+    name: str = data["server"]
+    server: dict = next((server for server in data["servers"] if server["name"] == name), {})
+    count: int = len(server.get("tools", []))
+    tools: str = f"{count} outil{'s' if count > 1 else ''}"
+    if data["change"] == "stopped":
+        return f"MCP : {name} arrêté, ses outils ne sont plus proposés au modèle", True
+    if data["change"] == "trusted" and server.get("state") == "disabled":
+        return f"MCP : {name} approuvé, désactivé par son réglage (/mcp restart {name} le lance)", True
+    if server.get("state") != "running":
+        why: str = server.get("error") or MCP_STATES.get(server.get("state", ""), "")
+        return f"MCP : {name} n'a pas pu être {'lancé' if data['change'] == 'trusted' else 'relancé'} : {why}", False
+    if data["change"] == "trusted":
+        return f"MCP : {name} approuvé et lancé ({tools})", True
+    if data["change"] == "accepted":
+        return f"MCP : les outils modifiés de {name} sont acceptés ({tools})", True
+    if data["change"] == "prompts":
+        count = len(server.get("prompts", []))
+        return f"MCP : {name} a changé ses prompts ({count} prompt{'s' if count > 1 else ''})", True
+    text: str = f"MCP : {name} relancé ({tools})" if data["change"] == "restarted" else \
+        f"MCP : {name} a changé ses outils ({tools})"
+    # A tool that changed waits for the user: they are told
+    if server.get("held"):
+        return f"{text} · {mcp_held(server)}", False
+    return text, True
+
+def mcp_prompt_usage(prompt: dict) -> str:
+    """ How a prompt of a server is run:  /calc:explain <expression> """
+    arguments: str = " ".join(f"<{argument['name']}>" if argument["required"] else f"[{argument['name']}]"
+                              for argument in prompt["arguments"])
+    return f"/{prompt['name']} {arguments}".rstrip()
+
+def mcp_progress(data: dict) -> str:
+    """ How far a long call of an MCP tool is, as its server tells it:  3/10 — Téléchargement """
+    progress, total = data.get("progress"), data.get("total")
+    number: bool = isinstance(progress, (int, float))
+    done: str = f"{progress:g}/{total:g}" if number and isinstance(total, (int, float)) and total else \
+        f"{progress:g}" if number else ""
+    return " — ".join(part for part in (done, data.get("message") or "") if part) or "en cours"
+
+def mcp_command(command: str, length: int = 60) -> str:
+    """ How a server is launched, cut from its start if it is too long: its end (the script) says the most """
+    return command if len(command) <= length else "…" + command[-(length - 1):]
+
 def short_path(path: str) -> str:
     """ A path, with ~ for the home folder """
     home: str = os.path.expanduser("~")
@@ -246,6 +328,13 @@ class CLI(Interface):
                       CACHE_DISABLED)
         bus.subscribe(self.__on_cache_cleared, CACHE_CLEARED)
         bus.subscribe(lambda event: self.out("\n" + "\n".join(cache_stats(event.data)) + "\n"), CACHE_STATS)
+        bus.subscribe(self.__on_mcp_started, MCP_STARTED)
+        bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
+        bus.subscribe(self.__on_mcp_changed, MCP_CHANGED)
+        bus.subscribe(lambda event: self.out(f"  … {event.data['tool']} : {mcp_progress(event.data)}", dim=True),
+                      MCP_PROGRESS)
+        bus.subscribe(lambda event: self.out(f"↳ prompt de {event.data['server']} : {preview(event.data['text'])}", dim=True),
+                      MCP_PROMPT)
         return self
 
     def __on_turn_ended(self, event: Event) -> None:
@@ -443,6 +532,41 @@ class CLI(Interface):
     def __on_rag_forgotten(self, event: Event) -> None:
         """ The source removed """
         self.out(f"\nSource « {event.data['source']} » retirée ({event.data['chunks']} passages).\n")
+
+    def __on_mcp_started(self, event: Event) -> None:
+        """ The MCP servers on one line: dim while they all run, plain when one did not start """
+        servers: list[dict] = event.data["servers"]
+        self.out(mcp_started(servers), dim=not mcp_trouble(servers))
+
+    def __on_mcp_changed(self, event: Event) -> None:
+        """ A server started again, stopped, or with other tools: one line, dim when it went well """
+        text, fine = mcp_changed(event.data)
+        self.out(text, dim=fine)
+
+    def __on_mcp_servers(self, event: Event) -> None:
+        """ Each server with its state and how it is launched, why it does not answer, then its tools and their risk """
+        servers: list[dict] = event.data["servers"]
+        if not servers:
+            self.out(f"\n{NO_MCP}\n")
+            return
+        lines: list[str] = [f"\nServeurs MCP ({len(servers)}) :"]
+        for server in servers:
+            lines.append(f"  {server['name']:12} {MCP_STATES.get(server['state'], server['state']):16} "
+                         f"[{mcp_command(server['command'])}]")
+            if server["error"]:
+                lines.append(f"    {server['error']}")
+            if server["state"] == "pending":
+                lines.append(f"    déclaré par {server['source']}, un fichier du projet : {mcp_trust(server['name'])}")
+            if server.get("hidden"):
+                lines.append(f"    {server['hidden']} outils masqués par son réglage (tools, exclude)")
+            if server.get("held"):
+                lines.append(f"    {mcp_held(server)} ({', '.join(server['held'])})")
+            for tool in server["tools"]:
+                lines.append(f"    {tool['name']:32} {RISKS.get(tool['risk'], tool['risk']):12} "
+                             f"{shorten(tool['description'], PREVIEW_LENGTH)}")
+            for prompt in server.get("prompts", []):
+                lines.append(f"    {mcp_prompt_usage(prompt):45} {shorten(prompt['description'], PREVIEW_LENGTH)}")
+        self.out("\n".join(lines) + "\n")
 
     def __on_permission(self, event: Event) -> None:
         """ Show what a tool wants to do and its diff, then grant it if the user agrees, or always agrees """

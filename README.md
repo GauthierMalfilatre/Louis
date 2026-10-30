@@ -63,6 +63,7 @@ Chaque fonctionnalité a sa fiche dans [docs/feature/](docs/feature/) : ce qu'el
 
 **Outils**
 - [T1 · Appel d'outils (MCP)](docs/feature/tools/T1-appel-outils.md)
+- [T1 · Serveurs MCP : client et serveur](docs/feature/tools/T1-serveurs-mcp.md)
 - [T2 · Exécution de code isolée (sandbox)](docs/feature/tools/T2-sandbox.md)
 - [T3 · Recherche web](docs/feature/tools/T3-recherche-web.md)
 - [T4 · Accès aux fichiers avec permissions](docs/feature/tools/T4-acces-fichiers.md)
@@ -86,7 +87,7 @@ Chaque fonctionnalité a sa fiche dans [docs/feature/](docs/feature/) : ce qu'el
 - [X1 · Interface web](docs/feature/ux/X1-web-ui.md)
 - [X3 · Export et publication](docs/feature/ux/X3-export-publication.md)
 
-Pour aller plus loin : [docs/RAG.md](docs/RAG.md), [docs/CACHE.md](docs/CACHE.md), [docs/EVAL.md](docs/EVAL.md).
+Pour aller plus loin : [docs/RAG.md](docs/RAG.md), [docs/CACHE.md](docs/CACHE.md), [docs/EVAL.md](docs/EVAL.md), [docs/MCP.md](docs/MCP.md) et le guide [docs/MCP_GUIDE.md](docs/MCP_GUIDE.md).
 
 ## Notes
 
