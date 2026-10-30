@@ -233,7 +233,8 @@ Dans un fichier `.mcp.json`, au **format de Claude Code, Cursor et Claude Deskto
 | `command`, `args` | le programme à lancer (`uvx`, `npx`, `python`, un chemin…) et ses arguments, dans le dossier courant |
 | `env`     | ses variables d'environnement. Il ne reçoit de celles de Louis que `PATH`, `HOME`, `LANG`… : jamais tes jetons ni tes clés, sauf ceux que tu lui donnes ici |
 | `type`, `url`, `headers` | un serveur qui tourne ailleurs, en Streamable HTTP (`type` vaut `http` ; avec une `url` seule, c'est implicite) : son adresse, et les en-têtes de chaque message (un jeton…). L'ancien transport `sse` n'est pas pris en charge |
-| `risk`    | `safe`, `reversible` ou `irreversible` pour tous ses outils. Sinon, ce que le serveur dit de chacun |
+| `risk`    | `safe`, `reversible` ou `irreversible` pour tous ses outils, ou un niveau par outil, par son nom sur le serveur avec `*` : `{"read_*": "safe", "*": "irreversible"}` (le premier nom qui correspond). Sinon, ce que le serveur dit de chacun |
+| `timeout` | les secondes qu'un appel de ses outils peut prendre, à la place de `mcp.timeout` (30) : un serveur lent en demande plus |
 | `tools`, `exclude` | les outils proposés au modèle (tous sans `tools`), et ceux qu'on retire, par leur nom sur le serveur, avec `*` (`"write_*"`). Un petit modèle choisit mieux parmi moins d'outils |
 | `enabled` | `false` : déclaré, mais pas lancé avec Louis (`/mcp restart <nom>` le lance) |
 
@@ -262,7 +263,7 @@ Serveurs MCP (3) :
 | `/mcp` | les serveurs, leur état (`actif`, `n'a pas démarré`, `s'est arrêté`, `arrêté`, `désactivé`, `attend ton accord`) avec la raison, leurs outils avec leur risque, leurs prompts |
 | `/mcp restart <nom>` | relance un serveur (planté, arrêté, désactivé, qui n'avait pas démarré) : ses outils sont de nouveau proposés |
 | `/mcp stop <nom>` | l'arrête : ses outils ne sont plus proposés au modèle |
-| `/mcp trust <nom>` | approuve un serveur du projet, et le lance |
+| `/mcp trust <nom>` | approuve un serveur du projet, et le lance ; ou accepte la nouvelle version de ses outils modifiés |
 | `/<serveur>:<prompt> …` | un prompt du serveur, écrit par lui avec tes arguments, puis envoyé au modèle comme ton message. Un seul argument : tout le texte. Plusieurs : dans l'ordre, ou `nom=valeur` (entre guillemets pour les espaces) |
 
 ### Ce que Louis garantit
@@ -272,6 +273,7 @@ Serveurs MCP (3) :
 - **Un serveur qui a planté est relancé** au prochain appel d'un de ses outils, `mcp.restarts` fois (1 par défaut). L'appel qui l'a vu planter n'est jamais refait : il a peut-être agi. Une session HTTP que le serveur a oubliée est rouverte de la même façon.
 - **Un appel long** dont le serveur dit où il en est (`notifications/progress`) s'affiche (`… 2/5 — Téléchargement`), et attend `mcp.timeout` secondes de plus à chaque étape, `mcp.max_timeout` (600) en tout.
 - **Les outils et les prompts qui changent** (`list_changed`) sont relus avant ton message suivant : le modèle a les nouveaux, sans relancer Louis.
+- **Un outil qui change après que tu l'as vu est retenu.** Le modèle lit la description d'un outil comme une consigne : un serveur ne peut pas la changer dans ton dos. Un outil dont la description, les paramètres ou les annotations ne sont plus ceux de sa première liste n'est plus proposé au modèle, ni dans son ancienne version ni dans la nouvelle, même après une relance. `/mcp` le montre, `/mcp trust <nom>` accepte sa nouvelle version.
 - **Les journaux d'un serveur** (`notifications/message`, à partir de `mcp.log_level`) vont dans `louis.log`, jamais à l'écran.
 - **Les permissions et le plan** : un outil qui dit ne faire que lire (`readOnlyHint`) ne demande rien. Les autres demandent ton accord avant d'agir. Un outil qui ne dit pas qu'il ne détruit rien est traité comme **irréversible** et passe par le plan (`/plan`).
 - **Les serveurs sont arrêtés** quand Louis se ferme, même s'il plante : aucun processus ne reste derrière, une session HTTP est fermée.

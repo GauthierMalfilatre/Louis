@@ -156,14 +156,14 @@ Everything else (progress, logs, restarts, prompts) is built on top.
 
 | Concept | Class / function | File |
 | --- | --- | --- |
-| A server **as declared** (name, command, url, filters…) | [`Declaration`](../src/tool/mcp/config.py#L29) | `src/tool/mcp/config.py` |
-| Reading every declaration (settings + `.mcp.json` files) | [`declarations()`](../src/tool/mcp/config.py#L209) | `src/tool/mcp/config.py` |
-| **All** servers: start them, list their tools, stop them | [`McpManager`](../src/tool/mcp/manager.py#L238) | `src/tool/mcp/manager.py` |
+| A server **as declared** (name, command, url, filters…) | [`Declaration`](../src/tool/mcp/config.py#L30) | `src/tool/mcp/config.py` |
+| Reading every declaration (settings + `.mcp.json` files) | [`declarations()`](../src/tool/mcp/config.py#L232) | `src/tool/mcp/config.py` |
+| **All** servers: start them, list their tools, stop them | [`McpManager`](../src/tool/mcp/manager.py#L265) | `src/tool/mcp/manager.py` |
 | **One** server's life: state, start, restart, its tools and prompts | [`McpServer`](../src/tool/mcp/manager.py#L30) | `src/tool/mcp/manager.py` |
 | The JSON-RPC **session** with one server | [`McpClient`](../src/tool/mcp/client.py#L48) | `src/tool/mcp/client.py` |
 | How bytes reach a **local** server (child process) | [`StdioTransport`](../src/tool/mcp/transport_stdio.py#L28) | `src/tool/mcp/transport_stdio.py` |
 | How bytes reach a **remote** server (HTTP) | [`HttpTransport`](../src/tool/mcp/transport_http.py#L53) | `src/tool/mcp/transport_http.py` |
-| One server tool, **seen by the model as a normal Louis tool** | [`McpTool`](../src/tool/mcp/tool_mcp.py#L54) | `src/tool/mcp/tool_mcp.py` |
+| One server tool, **seen by the model as a normal Louis tool** | [`McpTool`](../src/tool/mcp/tool_mcp.py#L55) | `src/tool/mcp/tool_mcp.py` |
 | One server prompt, seen by the user as `/<server>:<prompt>` | [`McpPromptCommand`](../src/command/impl/command_mcp_prompt.py#L14) | `src/command/impl/command_mcp_prompt.py` |
 | The `/mcp` command | [`McpCommand`](../src/command/impl/command_mcp.py#L14) | `src/command/impl/command_mcp.py` |
 | The glue in the app | [`App.offer_mcp`](../src/app/app.py#L392), [`App.answer`](../src/app/app.py#L469), [`App.close`](../src/app/app.py#L388) | `src/app/app.py` |
@@ -202,15 +202,15 @@ Three sources, read in this order. A server **replaces** one of the same name de
 
 The list of files is the setting [`mcp.files`](../src/config/settings.py#L107). The code path:
 
-- [`declarations(settings)`](../src/tool/mcp/config.py#L209) goes through the sources in order and handles the
+- [`declarations(settings)`](../src/tool/mcp/config.py#L232) goes through the sources in order and handles the
   replacement by name.
-- [`read(path)`](../src/tool/mcp/config.py#L125) parses one `.mcp.json` (`{"mcpServers": {"<name>": {...}}}`). A
+- [`read(path)`](../src/tool/mcp/config.py#L148) parses one `.mcp.json` (`{"mcpServers": {"<name>": {...}}}`). A
   relative path marks its servers as *project* servers.
-- [`declared(entry)`](../src/tool/mcp/config.py#L71) turns one entry into a `Declaration` and **validates** it. An
+- [`declared(entry)`](../src/tool/mcp/config.py#L90) turns one entry into a `Declaration` and **validates** it. An
   invalid entry is not an exception: it becomes a server whose `error` says what is wrong, so `/mcp` can show it.
-- [`expand()`](../src/tool/mcp/config.py#L52) replaces `${VAR}` and `${VAR:-default}` with environment variables, so
+- [`expand()`](../src/tool/mcp/config.py#L56) replaces `${VAR}` and `${VAR:-default}` with environment variables, so
   a token is *named* in the file, never *written* in it.
-- [`Trust`](../src/tool/mcp/config.py#L147) remembers which project servers you approved, in
+- [`Trust`](../src/tool/mcp/config.py#L170) remembers which project servers you approved, in
   `~/.config/louis/mcp-trusted.json`, keyed by folder and by a SHA-256 of the declaration. Change one character of the
   command and it needs approval again.
 
@@ -240,20 +240,20 @@ sequenceDiagram
 ```
 
 1. [`App.__init__`](../src/app/app.py#L196) creates the manager and calls `.start()`.
-2. [`McpManager.__init__`](../src/tool/mcp/manager.py#L244) builds one `McpServer` per declaration, applies the trust,
-   and registers [`close` with `atexit`](../src/tool/mcp/manager.py#L261) so no process outlives Louis.
-3. [`McpManager.start`](../src/tool/mcp/manager.py#L263) starts **one thread per server** and waits for all of them.
+2. [`McpManager.__init__`](../src/tool/mcp/manager.py#L271) builds one `McpServer` per declaration, applies the trust,
+   and registers [`close` with `atexit`](../src/tool/mcp/manager.py#L290) so no process outlives Louis.
+3. [`McpManager.start`](../src/tool/mcp/manager.py#L292) starts **one thread per server** and waits for all of them.
    A server that takes 20 s (`npx` downloading a package) does not delay the others.
-4. [`McpServer.start`](../src/tool/mcp/manager.py#L115) picks the transport
-   ([`__transport`](../src/tool/mcp/manager.py#L159): HTTP if the declaration has a URL, else stdio), starts the
+4. [`McpServer.start`](../src/tool/mcp/manager.py#L124) picks the transport
+   ([`__transport`](../src/tool/mcp/manager.py#L168): HTTP if the declaration has a URL, else stdio), starts the
    client, lists the tools. **Any failure is caught and stored in `self.error`**, with the last line the server wrote
    on stderr (often the real reason). Louis starts without that server.
 5. [`McpClient.start`](../src/tool/mcp/client.py#L108) does the handshake: `initialize`, then
    `notifications/initialized`, then `logging/setLevel` if the server has logs.
 6. [`McpClient.list_tools`](../src/tool/mcp/client.py#L132) →
    [`__listed`](../src/tool/mcp/client.py#L144) follows `nextCursor` across pages (100 pages at most).
-7. [`McpServer.__offered`](../src/tool/mcp/manager.py#L222) applies the `tools` / `exclude` filters
-   ([`__wanted`](../src/tool/mcp/manager.py#L215)) and wraps each remaining spec in an `McpTool`.
+7. [`McpServer.__offered`](../src/tool/mcp/manager.py#L240) applies the `tools` / `exclude` filters
+   ([`__wanted`](../src/tool/mcp/manager.py#L233)) and wraps each remaining spec in an `McpTool`.
 
 ### Step 3: the tools are offered to the model
 
@@ -265,9 +265,9 @@ sequenceDiagram
 - refuses an MCP tool whose name is already taken by a Louis tool.
 - does the same for prompts: each one becomes an `McpPromptCommand`.
 
-What the model sees comes from [`McpTool.__init__`](../src/tool/mcp/tool_mcp.py#L60):
+What the model sees comes from [`McpTool.__init__`](../src/tool/mcp/tool_mcp.py#L61):
 
-- **name**: [`tool_name()`](../src/tool/mcp/tool_mcp.py#L22) → `<server>__<tool>`, characters a model can't use
+- **name**: [`tool_name()`](../src/tool/mcp/tool_mcp.py#L23) → `<server>__<tool>`, characters a model can't use
   replaced by `_`, cut at 64 characters;
 - **description**: `[MCP <server>] ` + the server's description;
 - **parameters**: the server's `inputSchema`, minus `$schema`.
@@ -309,9 +309,9 @@ Follow it in the code:
 
 1. [`App.__call`](../src/app/app.py#L1024) finds the tool by name and calls
    [`tool.handle(self, **call.arguments)`](../src/app/app.py#L1051). This is the same code path as every Louis tool.
-2. [`McpTool.handle`](../src/tool/mcp/tool_mcp.py#L135):
+2. [`McpTool.handle`](../src/tool/mcp/tool_mcp.py#L136):
    - asks for permission unless the tool is `safe` (see [Safety](#8-safety-risk-permissions-and-trust));
-   - gets the client from [`McpServer.connect`](../src/tool/mcp/manager.py#L176), which restarts a crashed server
+   - gets the client from [`McpServer.connect`](../src/tool/mcp/manager.py#L185), which restarts a crashed server
      (`mcp.restarts` times). **The call that saw the crash is never replayed**: it may already have acted;
    - calls [`client.call_tool`](../src/tool/mcp/client.py#L164);
    - turns **every** failure into a string starting with `Erreur :`. Nothing is raised to Louis.
@@ -328,7 +328,7 @@ Follow it in the code:
    - a **log** (`notifications/message`) → `louis.log`;
    - `tools/list_changed` → just *noted* (handled later, in Louis' thread, see step 6);
    - a **request from the server** (`ping`, `roots/list`) → answered right away.
-5. [`text_of(result)`](../src/tool/mcp/tool_mcp.py#L30) converts the content parts to text for the model: text kept,
+5. [`text_of(result)`](../src/tool/mcp/tool_mcp.py#L31) converts the content parts to text for the model: text kept,
    an image only named (`[image image/png]`), `structuredContent` used if there is no text. `isError: true` →
    `Erreur : <text>`.
 6. [`App.__screen_result`](../src/app/app.py#L971): with the guard on, an MCP result is always checked as
@@ -360,7 +360,7 @@ The client only needs four things from a transport: `open(receive, closed)`, `se
 ### Step 6: servers that change while Louis runs
 
 A server has a [state](../src/tool/mcp/manager.py#L23), computed by
-[`McpServer.state`](../src/tool/mcp/manager.py#L69):
+[`McpServer.state`](../src/tool/mcp/manager.py#L77):
 
 | State | Meaning | How it leaves it |
 | --- | --- | --- |
@@ -373,13 +373,20 @@ A server has a [state](../src/tool/mcp/manager.py#L23), computed by
 
 The reader thread **never touches the tool list** (that would race with the reasoning loop). It only notes that
 something changed. Before each user message, [`App.answer`](../src/app/app.py#L469) calls
-[`McpManager.refresh`](../src/tool/mcp/manager.py#L298) → [`McpServer.refresh`](../src/tool/mcp/manager.py#L189),
+[`McpManager.refresh`](../src/tool/mcp/manager.py#L327) → [`McpServer.refresh`](../src/tool/mcp/manager.py#L198),
 which lists the tools again, and if they really changed, [`App.mcp_changed`](../src/app/app.py#L423) offers them
 again and tells the interfaces (`MCP_CHANGED` event).
 
+**A tool that changed is held.** Each tool is pinned as it was first listed (description, schema, annotations), for
+the whole session and across restarts. If a tool with the same name comes back different, after `list_changed` or a
+restart, [`McpServer.__offered`](../src/tool/mcp/manager.py#L240) holds it: the model gets neither the old nor the new
+version, `/mcp` lists it, and `/mcp trust <server>` accepts it ([`McpServer.accept`](../src/tool/mcp/manager.py#L224)).
+Why: the model reads a description as instructions, so a server must not be able to change it after you saw it.
+New or removed tools are only announced, as before.
+
 ### Step 7: everything is stopped
 
-- [`App.close`](../src/app/app.py#L388) → [`McpManager.close`](../src/tool/mcp/manager.py#L307) → each client →
+- [`App.close`](../src/app/app.py#L388) → [`McpManager.close`](../src/tool/mcp/manager.py#L336) → each client →
   each transport.
 - [`main.py`](../src/main.py#L110) calls `app.close()` in a `finally`, so it happens even when Louis crashes; the
   `atexit` hook is the last safety net.
@@ -503,8 +510,9 @@ Example: give the model read access to a notes folder, with the official filesys
        "notes": {
          "command": "npx",
          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/notes"],
-         "tools": ["read_*", "list_*", "search_files"],
-         "risk": "safe"
+         "tools": ["read_*", "list_*", "search_files", "write_file"],
+         "risk": {"write_file": "irreversible", "*": "safe"},
+         "timeout": 60
        }
      }
    }
@@ -513,14 +521,15 @@ Example: give the model read access to a notes folder, with the official filesys
    If not, `/mcp` says why, and `louis.log` has the details (grep `[mcp] notes`).
 4. **Ask something** that needs it: "What is in my notes about MCP?".
 
-Every key a declaration can have (parsed in [`declared()`](../src/tool/mcp/config.py#L71)):
+Every key a declaration can have (parsed in [`declared()`](../src/tool/mcp/config.py#L90)):
 
 | Key | Meaning |
 | --- | --- |
 | `command`, `args` | The program and its arguments. Run in the project folder. |
 | `env` | Extra environment variables for the server. It gets **nothing else** from Louis' environment except `PATH`, `HOME`, `LANG`… Use `${VAR}` to pass a secret: `{"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"}`. |
 | `type`, `url`, `headers` | For HTTP servers (section B). |
-| `risk` | `"safe"`, `"reversible"` or `"irreversible"` for **all** its tools, overriding what the server claims. |
+| `risk` | `"safe"`, `"reversible"` or `"irreversible"` for **all** its tools, overriding what the server claims. Or a level per tool, by name with `*`: `{"read_*": "safe", "*": "irreversible"}` (the first name that matches wins; a tool none names keeps what the server says). |
+| `timeout` | Seconds a call of its tools may take, instead of `mcp.timeout` (30). |
 | `tools` | Only offer the tools matching these names/globs (`"read_*"`). Without it: all. |
 | `exclude` | Never offer these (`"write_*"`). |
 | `enabled` | `false`: declared but not started; `/mcp restart <name>` starts it. |
@@ -715,12 +724,12 @@ Run `venv/bin/pytest tests/test_mcp*.py -q`.
 
 ## 8. Safety: risk, permissions and trust
 
-**Risk of a tool** ([`McpTool.level`](../src/tool/mcp/tool_mcp.py#L93), then
-[`McpTool.risk`](../src/tool/mcp/tool_mcp.py#L107)):
+**Risk of a tool** ([`risk_of`](../src/tool/mcp/config.py#L81) for the declaration's `risk`, [`McpTool.level`](../src/tool/mcp/tool_mcp.py#L94), then
+[`McpTool.risk`](../src/tool/mcp/tool_mcp.py#L108)):
 
 | The declaration's `risk` | Else, the server's annotations | Level | What Louis does |
 | --- | --- | --- | --- |
-| `"safe"` | `readOnlyHint: true` | safe | runs it, asks nothing |
+| `"safe"` (for all, or for this tool's name) | `readOnlyHint: true` | safe | runs it, asks nothing |
 | `"reversible"` | `destructiveHint: false` | reversible | asks your permission first |
 | `"irreversible"` | anything else, or nothing | irreversible | the answer pauses and shows the **plan** (`/plan`); asked every time |
 
@@ -732,7 +741,10 @@ trust, or force their level with `"risk"`.
 
 - **Reduced environment** for stdio servers ([`INHERITED_ENV`](../src/tool/mcp/transport_stdio.py#L20)): your tokens
   are not leaked to a server that didn't ask for them.
-- **Project servers wait for approval** ([`Trust`](../src/tool/mcp/config.py#L147)): cloning a repo with a malicious
+- **Tools are pinned** ([`McpServer.__offered`](../src/tool/mcp/manager.py#L240)): a tool that changes after you saw
+  it is held until `/mcp trust <server>`, so a server can't rewrite a description to give the model new orders
+  (the "rug pull").
+- **Project servers wait for approval** ([`Trust`](../src/tool/mcp/config.py#L170)): cloning a repo with a malicious
   `.mcp.json` doesn't run its commands. The approval is stored outside any project, and is lost if the declaration
   changes.
 - **Results go through the guard** ([`App.__screen_result`](../src/app/app.py#L971)) when it's enabled: a server's
@@ -754,9 +766,10 @@ server's stderr, its logs, every start/stop).
 | `réglage invalide : …` / `fichier JSON invalide (ligne N)` | typo in the declaration | fix the key/line named |
 | `la variable X n'est pas définie` | `${X}` without a value | `export X=…` before starting Louis |
 | `attend ton accord` | a project `.mcp.json` server | read its command in `/mcp`, then `/mcp trust <name>` |
-| tool calls end in `n'a pas répondu … en 30 s` | the tool is slow and sends no progress | raise `mcp.timeout` ([`settings.py#L110`](../src/config/settings.py#L110)) |
+| tool calls end in `n'a pas répondu … en 30 s` | the tool is slow and sends no progress | give that server a `timeout`, or raise `mcp.timeout` for all ([`settings.py#L110`](../src/config/settings.py#L110)) |
 | `s'est arrêté` | the server crashed | it's restarted on the next call; `/mcp restart <name>` |
 | the model doesn't use the tool | bad description, or too many tools | improve the description, filter with `tools` |
+| `1 outil modifié depuis sa première liste, retenu` | the server changed a tool after you saw it | read it in `/mcp`, then `/mcp trust <name>` |
 
 The full table of failure cases is in [`docs/MCP.md`](MCP.md#ce-qui-peut-mal-tourner).
 
@@ -775,14 +788,15 @@ more code.
 | **No legacy `sse` transport** | Only Streamable HTTP (2025 spec). | Is there an old server we need that only speaks `sse`? |
 | **Internal servers repeat the boilerplate** | `calc.py` ([`main`](../src/tool/mcp/servers/calc.py#L149) + [`answer`](../src/tool/mcp/servers/calc.py#L117)) and `serve.py` ([`serve`](../src/tool/mcp/serve.py#L116) + [`answer`](../src/tool/mcp/serve.py#L72)) contain the same loop and dispatcher. A new internal server copies ~50 lines. | If we plan several internal servers, a small shared helper (`servers/base.py`: register a tool with a decorator, the loop given) would make each one ~15 lines. Worth it from the 2nd or 3rd new server, not before. |
 | **Tool list is resent each request** | Stopping, restarting or trusting a server changes the start of the request; Ollama re-reads the conversation once (slow on CPU). | Acceptable, or should servers be fixed for a session? |
-| **Annotations are self-declared** | A server decides how risky it says it is. | Should project servers default to `irreversible` regardless of their annotations? |
+| **Annotations are self-declared** | A server decides how risky it says it is; `risk` (per server or per tool) overrides it. | Should project servers default to `irreversible` regardless of their annotations? |
+| **Pins last one session** | A tool that changes *between* two runs of Louis is not held, only one that changes while it runs. | Worth storing the pins in `mcp-trusted.json`? |
 
 ---
 
 ## 11. Further reading
 
 - [`docs/MCP.md`](MCP.md): the project report, in French: every requirement and where it is met, the commit list,
-  the tests (93) and every failure case.
+  the tests (101) and every failure case.
 - [README, « Serveurs MCP »](../README.md#serveurs-mcp): the user manual (`/mcp`, the keys, guarantees).
 - [`tests/mcp_fake_server.py`](../tests/mcp_fake_server.py): a server that fails on command (crash, silence, pages,
   progress, logs, prompts). Reading it shows every behaviour the client handles.
