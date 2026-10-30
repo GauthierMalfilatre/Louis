@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "date": "2026-10-30T13:39:37",
+  "label": "MEIN-COMPUTER",
+  "machine": {
+    "system": "Linux 6.6.87.1-microsoft-standard-WSL2",
+    "wsl": true,
+    "cpu": {
+      "name": "Intel(R) Core(TM) i5-10500H CPU @ 2.50GHz",
+      "arch": "x86_64",
+      "physical_cores": 6,
+      "threads": 12,
+      "flags": [
+        "avx",
+        "avx2"
+      ]
+    },
+    "ram": 8230502400,
+    "ram_available": 7505076224,
+    "gpus": [
+      {
+        "name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+        "vram": 6442450944,
+        "vram_free": 6283067392,
+        "driver": "596.36",
+        "backend": "cuda"
+      }
+    ],
+    "disk_free": 961897136128,
+    "python": "3.12.3",
+    "python_ok": true,
+    "docker": true,
+    "on_battery": false,
+    "ollama": "0.40.2"
+  },
+  "settings": {
+    "context": 24576,
+    "repeat": 3,
+    "written": 200,
+    "levels": {
+      "minimum": {
+        "tok_s": 10.0,
+        "typical_ttft": 30.0
+      },
+      "recommended": {
+        "tok_s": 30.0,
+        "typical_ttft": 5.0,
+        "long_ttft": 15.0
+      }
+    }
+  },
+  "runs": [
+    {
+      "model": "qwen3.5:9b",
+      "mode": "default",
+      "scenarios": {
+        "typical": {
+          "tokens": 3195,
+          "written": 200,
+          "ttft": 5.359558772999662,
+          "prefill_tok_s": 614.8944117897034,
+          "tok_s": 5.779357982680421,
+          "runs": 3
+        },
+        "long": {
+          "tokens": 8000,
+          "written": 200,
+          "ttft": 12.49805729000036,
+          "prefill_tok_s": 645.1053118293929,
+          "tok_s": 5.144564976743093,
+          "runs": 3
+        },
+        "full": {
+          "tokens": 17223,
+          "written": 200,
+          "ttft": 28.855727776000094,
+          "prefill_tok_s": 607.9436769874038,
+          "tok_s": 4.083005626198018,
+          "runs": 3
+        }
+      },
+      "quantization": "Q4_K_M",
+      "parameters": "9.0B",
+      "load_s": 17.0172422,
+      "memory": 6681463353,
+      "vram": 3054176827,
+      "gpu_share": 0.4571119627003064,
+      "level": "below minimum",
+      "short_of": [
+        "writes 5.8 tok/s, needs 10"
+      ],
+      "disk": 6550825550
+    },
+    {
+      "model": "qwen3:8b",
+      "mode": "default",
+      "scenarios": {
+        "typical": {
+          "tokens": 3197,
+          "written": 200,
+          "ttft": 4.56652802499957,
+          "prefill_tok_s": 738.6270039907114,
+          "tok_s": 4.907383683842395,
+          "runs": 3
+        },
+        "long": {
+          "tokens": 7994,
+          "written": 200,
+          "ttft": 14.700102252999386,
+          "prefill_tok_s": 580.5813436425182,
+          "tok_s": 3.1747027494068703,
+          "runs": 3
+        },
+        "full": {
+          "tokens": 17201,
+          "written": 200,
+          "ttft": 29.22390327100038,
+          "prefill_tok_s": 630.9664946719978,
+          "tok_s": 1.7343185453569696,
+          "runs": 3
+        }
+      },
+      "quantization": "Q4_K_M",
+      "parameters": "8.2B",
+      "load_s": 20.786822234,
+      "memory": 7408587897,
+      "vram": 4222982553,
+      "gpu_share": 0.5700118040996768,
+      "level": "below minimum",
+      "short_of": [
+        "writes 4.9 tok/s, needs 10"
+      ],
+      "disk": 5225388164
+    }
+  ],
+  "companions": [
+    {
+      "role": "scribe",
+      "model": "qwen3:4b-instruct",
+      "installed": true,
+      "tok_s": 10.306887577623748,
+      "memory": 2900969388
+    },
+    {
+      "role": "embedding",
+      "model": "nomic-embed-text",
+      "installed": true,
+      "memory": 376449269
+    }
+  ]
+}
