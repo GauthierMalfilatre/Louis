@@ -4,6 +4,11 @@
 ## File description:
 ## Settings for the sensai project
 ##
+import os
+import sys
+
+# calc, the MCP server of Louis: a program of its own, run by the python that runs Louis
+CALC_SERVER: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tool", "mcp", "servers", "calc.py")
 
 settings: dict[str] = {
 
@@ -82,6 +87,35 @@ settings: dict[str] = {
     # What differs from the profile of a language (tool/impl/exec/tool_run.py: python and sh 10 s and 256m, c and c++ 30 s, go and rust
     # a minute and 1g for their build): its image, timeout (seconds) and memory. {"python": {"image": "python:3.12-slim"}}
     "sandbox.languages"    : {},
+    # MCP servers (/mcp): programs Louis launches at its start and talks to on their standard input and output. Each
+    # tool of a server is offered to the model as <server>__<tool>. name: its name for the model and /mcp; command and
+    # args: how it is launched, in the working directory; env: what it gets on top of PATH, HOME, LANG... (never the
+    # rest of the environment of Louis: its secrets); risk (optional): "safe", "reversible" or "irreversible" for all
+    # its tools, else what the server says of each one (a tool that does not say it only reads asks before it acts).
+    # A server that does not start is left out, Louis goes on without it. time needs uv (pip install uv)
+    "mcp.servers"          : [
+        {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]},
+        {"name": "time", "command": "uvx", "args": ["mcp-server-time"]},
+    ],
+    # Files that declare more servers, in the format of Claude Code, Cursor and Claude Desktop (a file of theirs can be
+    # copied as is): {"mcpServers": {"<name>": {"command": "npx", "args": [...], "env": {...}}}}. ${VAR} (or
+    # ${VAR:-default}) in command, args and env is the variable of the environment of Louis: how a token reaches a
+    # server without being written in the file. A server of a file replaces the one of the same name declared before it.
+    # A relative path is a file of the project (.mcp.json, beside the code): anyone who wrote in the project may have
+    # declared its servers, they wait for the user to trust them (/mcp trust <name>) before they start, again when
+    # their declaration changes. Its trust is kept in mcp.trust_file, out of every project
+    "mcp.files"            : ["~/.config/louis/mcp.json", ".mcp.json"],
+    "mcp.trust_file"       : "~/.config/louis/mcp-trusted.json",
+    # Seconds a call of a tool may take, and a server to start and list its tools (npx and uvx download it the first time)
+    "mcp.timeout"          : 30.0,
+    "mcp.start_timeout"    : 60.0,
+    # A server that tells it works on a call (its progress) is waited for again at each step, this long in all at most
+    "mcp.max_timeout"      : 600.0,
+    # The logs a server sends, from this level on ("debug", "info", "warning", "error"...), in louis.log; None: as it likes
+    "mcp.log_level"        : "info",
+    # Times a server that crashed is started again by itself, at the next call of one of its tools (the call that saw
+    # it crash is never made again: it may have acted). /mcp restart <name> starts it again whenever the user wants
+    "mcp.restarts"         : 1,
     # Knowledge base (RAG): the folders the user indexes (/index, louis --index: documentation, examples of code...),
     # that the model looks up with search_knowledge. It needs no library beyond numpy; the meaning of the passages is
     # read by an embedding model of Ollama (ollama pull nomic-embed-text), without it the search is by keywords only.

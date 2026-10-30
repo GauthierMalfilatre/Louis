@@ -23,6 +23,8 @@ from tool.impl.git.tool_git import GitTool
 from tool.impl.git.tool_pr import PullRequestTool
 from tool.impl.exec.tool_run import RunTool, available as sandbox_available
 from tool.impl.rag.tool_knowledge import KnowledgeTool
+from tool.mcp.manager import McpManager, RUNNING
+from tool.mcp.tool_mcp import McpTool
 from tool.permission import PermissionManager
 from tool.risk import Risk, NONE, LEVELS, SAFE, IRREVERSIBLE
 from rag.knowledge import Knowledge
@@ -63,6 +65,8 @@ from eval.evaluator import Evaluator
 from command.impl.command_find import FindCommand
 from command.impl.command_cache import CacheCommand
 from cache.semantic_cache import SemanticCache, Hit
+from command.impl.command_mcp import McpCommand
+from command.impl.command_mcp_prompt import McpPromptCommand
 from monitor.recorder import Recorder
 from collections import Counter
 from collections.abc import Callable
@@ -133,8 +137,6 @@ class App:
         if settings.get("sandbox.enabled", True) and sandbox_available():
             self.__toolManager.register(RunTool())
 
-        log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
-
         # What the model sees of the session: cut down before it overflows the context, instead of Ollama cutting it
         # With chat.compact.summary, what it leaves out is summed up by the model, which reads the summary instead
         self.__window: ContextWindow = ContextWindow(
@@ -169,6 +171,7 @@ class App:
             .register(EvalCommand())\
             .register(FindCommand())\
             .register(CacheCommand())\
+            .register(McpCommand())\
 
         # NOTE: Raisable
         self.__model : OllamaModel = OllamaModel(settings["chat.uri"], f"{settings["chat.model.name"]}:{settings["chat.model.parameters"]}")
@@ -201,6 +204,13 @@ class App:
         # before the first session, which it welcomes; never for a script that asks one question and quits
         if settings.get("scribe.model") and stream.describes and (user.db is not None or stream.welcomes):
             Scribe(settings, self.__bus, user.db.path if user.db is not None else None, user.id, welcome=stream.welcomes)
+
+        # The MCP servers of the settings, started side by side, their tools offered to the model with the others.
+        # After the model and the guard, which may raise: a failed start leaves no server behind. close() stops them
+        self.__mcp: McpManager = McpManager(settings).start()
+        self.offer_mcp()
+        log.info(f"[app] tools: {', '.join(tool['function']['name'] for tool in self.__toolManager.all())}")
+
         self.__bus.dispatch(
             APP_STARTED,
             model=self.__model.model,
@@ -208,6 +218,8 @@ class App:
             react=self.react,
             commands=[command.describe() for command in self.__commands.commands]
         )
+        if self.__mcp.servers:
+            self.__bus.dispatch(MCP_STARTED, servers=self.__mcp.describe())
 
         # Started once the model answers: a failed start leaves no empty session behind
         self.new_session()
@@ -387,6 +399,52 @@ class App:
         """ Get the knowledge base the user indexed, None if it is turned off (rag.enabled) """
         return self.__knowledge
 
+    @property
+    def mcp(self) -> McpManager:
+        """ Get the MCP servers of the settings, for /mcp to show them """
+        return self.__mcp
+
+    def close(self) -> None:
+        """ Stop what Louis started beside it: its MCP servers """
+        self.__mcp.close()
+
+    def offer_mcp(self) -> None:
+        """
+            Offer the model the tools of the MCP servers that run, and the user their prompts as commands; withdraw
+            those of the ones that do not run any more: again each time a server starts, stops or changes what it
+            offers. A tool of Louis is never replaced
+        """
+        # Always in the same order, after the tools of Louis, server after server: the same tools are the same
+        # request, and Ollama goes on from what it already read of the conversation instead of reading it all again
+        for tool in self.__toolManager.tools():
+            if isinstance(tool, McpTool):
+                self.__toolManager.unregister(tool.name)
+        for tool in self.__mcp.tools():
+            if self.__toolManager.has(tool.name):
+                log.warning(f"[mcp] {tool.name} left out: Louis already has a tool of that name")
+                continue
+            self.__toolManager.register(tool)
+        # The room the tools take in the context changes with them
+        self.__window.set_tools(self.__toolManager.all())
+        for command in self.__commands.commands:
+            if isinstance(command, McpPromptCommand):
+                self.__commands.unregister(command.name)
+        for server in self.__mcp.servers:
+            if server.state != RUNNING:
+                continue
+            for spec in server.prompts:
+                command: McpPromptCommand = McpPromptCommand(server, spec)
+                try:
+                    self.__commands.register(command)
+                except ValueError:
+                    log.warning(f"[mcp] {server.name}: its prompt {spec['name']} left out, /{command.name} is taken")
+
+    def mcp_changed(self, server: str, change: str) -> None:
+        """ A server started again, stopped or changed its tools: what it offers now is offered, the user is told """
+        self.offer_mcp()
+        self.__bus.dispatch(MCP_CHANGED, server=server, change=change, servers=self.__mcp.describe(),
+                            commands=[command.describe() for command in self.__commands.commands])
+
     def offer_knowledge(self) -> None:
         """
             Offer search_knowledge to the model while something is indexed, and withdraw it when nothing is any more.
@@ -422,10 +480,19 @@ class App:
             log.info(f"[user] {u.strip()}")
             try:
                 if not self.__commands.fetch(u, self):
-                    self.reason(u) if self.__react else self.__answer(u)
+                    self.answer(u)
             except KeyboardInterrupt:
                 # Ctrl+C in a command: back to the input, the answers handle it themselves
                 log.info("[app] command interrupted by the user")
+
+    def answer(self, text: str) -> None:
+        """
+            Answer a message of the user, by the reasoning loop with /react. The tools of the MCP servers that changed
+            since the last message (one started again, one that said its tools changed) are offered again first
+        """
+        for server, change in self.__mcp.refresh():
+            self.mcp_changed(server.name, change)
+        self.reason(text) if self.__react else self.__answer(text)
 
     def structured(self, text: str, name: str, schema: dict) -> tuple[bool, Any]:
         """
@@ -968,11 +1035,13 @@ class App:
 
     def __screen_result(self, call: ToolCall, result: str) -> str:
         """
-            Put what a tool read outside the project (the knowledge base: documents nobody here wrote) through the
-            tool result rails before the model reads it: the passages that give it orders taken out, the sensitive data
-            masked. Whoever asked for the call. A guard that cannot check gives nothing: an unchecked result is never read
+            Put what a tool read outside the project (the knowledge base: documents nobody here wrote; what an MCP server
+            gave: a program nobody here wrote) through the tool result rails before the model reads it: the passages that
+            give it orders taken out, the sensitive data masked. Whoever asked for the call. A guard that cannot check
+            gives nothing: an unchecked result is never read
         """
-        if self.__guard is None or not self.__guard.screens_result(call.name):
+        untrusted: bool = isinstance(self.__toolManager.get(call.name), McpTool)
+        if self.__guard is None or not (untrusted or self.__guard.screens_result(call.name)):
             return result
         try:
             return self.__guard.check_tool_result(call.name, result).content

@@ -8,6 +8,8 @@ from interface.interface import Interface
 from interface.cli import LABELS, call_detail, result_summary, short_path, shorten, thought_lines, plan_settings, preview as one_line
 from interface.cli import cache_hit, cache_cleared, cache_stats
 from interface.cli import plan_title, plan_details
+from interface.cli import RISKS, MCP_STATES, NO_MCP, mcp_started, mcp_changed, mcp_progress, mcp_command
+from interface.cli import mcp_trouble, mcp_trust, mcp_prompt_usage, mcp_held
 from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import APP_STARTED, APP_STOPPED, THINKING_ENABLED, THINKING_DISABLED
@@ -23,6 +25,7 @@ from events.event_list import RAG_FORGOTTEN, RAG_RETRIEVED
 from events.event_list import CACHE_HIT, CACHE_ENABLED, CACHE_DISABLED, CACHE_CLEARED, CACHE_STATS
 from events.event_list import REASONING_ENABLED, REASONING_DISABLED, REASONING_STEP, REASONING_CHECK, PLAN_SETTINGS
 from events.event_list import PLAN_PROPOSED, PLAN_DECIDED
+from events.event_list import MCP_STARTED, MCP_SERVERS, MCP_CHANGED, MCP_PROGRESS, MCP_PROMPT
 from config.settings import settings
 from export.render_html import MARKDOWN, render
 from session.database import Database, now
@@ -237,6 +240,8 @@ class WebInterface(Interface):
         self.__thinking     : int | None = None
         self.__progress     : int | None = None
         self.__running      : list[tuple[int, str]] = []
+        # The progress of the long calls of MCP tools running, by tool: closed when the call ends
+        self.__mcp_progress : dict[str, int] = {}
         self.__calls        : list[dict] = []      # The requests to the model of the turn, summed up at its end
 
         self.__database: str | None = database
@@ -347,6 +352,16 @@ class WebInterface(Interface):
         ), CACHE_ENABLED, CACHE_DISABLED)
         bus.subscribe(lambda event: self.__notice(cache_cleared(event.data), "success"), CACHE_CLEARED)
         bus.subscribe(lambda event: self.__notice("\n".join(cache_stats(event.data))), CACHE_STATS)
+        bus.subscribe(lambda event: self.__notice(
+            mcp_started(event.data["servers"]),
+            "warn" if mcp_trouble(event.data["servers"]) else "info"
+        ), MCP_STARTED)
+        bus.subscribe(self.__on_mcp_servers, MCP_SERVERS)
+        bus.subscribe(self.__on_mcp_changed, MCP_CHANGED)
+        bus.subscribe(self.__on_mcp_progress, MCP_PROGRESS)
+        bus.subscribe(lambda event: self.__notice(
+            f"Prompt /{event.data['command']} du serveur MCP {event.data['server']} : {one_line(event.data['text'])}"
+        ), MCP_PROMPT)
         return self
 
     def getUserInput(self) -> str:
@@ -505,6 +520,7 @@ class WebInterface(Interface):
         """ Another session: its conversation in place of the one shown """
         self.__text = self.__thinking = self.__progress = None
         self.__running = []
+        self.__mcp_progress = {}
         self.__emit({"type": "reset", "log": [{**item, "id": next(self.__ids)} for item in items]})
 
     def __close_thinking(self) -> None:
@@ -655,6 +671,9 @@ class WebInterface(Interface):
         for identifier, _ in self.__running:
             self.__patch(identifier, status="cancelled")
         self.__running = []
+        for identifier in self.__mcp_progress.values():
+            self.__patch(identifier, done=True)
+        self.__mcp_progress = {}
         summary: dict | None = stats(self.__calls)
         if summary is not None:
             self.__add(kind="stats", **summary)
@@ -718,13 +737,62 @@ class WebInterface(Interface):
         self.__running.append((identifier, event.data["name"]))
 
     def __on_tool_ended(self, event: Event) -> None:
-        """ The last call of this tool still running: what it gave """
+        """ The last call of this tool still running: what it gave. Its progress, for an MCP tool, is done """
         name: str = event.data["name"]
+        progress: int | None = self.__mcp_progress.pop(name, None)
+        if progress is not None:
+            self.__patch(progress, value=1.0, done=True)
         found: tuple[int, str] | None = next((call for call in reversed(self.__running) if call[1] == name), None)
         if found is None:
             return
         self.__running.remove(found)
         self.__patch(found[0], **tool_result(name, event.data["result"], event.data["ok"], event.data["duration"]))
+
+    def __on_mcp_progress(self, event: Event) -> None:
+        """ How far a long call of an MCP tool is: a bar when its server knows the total """
+        data: dict = event.data
+        fields: dict = {"detail": mcp_progress(data)}
+        progress, total = data.get("progress"), data.get("total")
+        if isinstance(progress, (int, float)) and isinstance(total, (int, float)) and total:
+            fields["value"] = min(1.0, progress / total)
+        identifier: int | None = self.__mcp_progress.get(data["tool"])
+        if identifier is None:
+            self.__mcp_progress[data["tool"]] = self.__add(
+                kind="progress", text=f"{data['tool']} (serveur MCP {data['server']}) en cours…", done=False,
+                **{"value": 0.0, **fields}
+            )
+        else:
+            self.__patch(identifier, **fields)
+
+    def __on_mcp_changed(self, event: Event) -> None:
+        """ A server started again, stopped, or with other tools: a notice, and the commands there are now """
+        text, fine = mcp_changed(event.data)
+        self.__notice(text, "info" if fine else "warn")
+        self.__set(commands=event.data["commands"])
+
+    def __on_mcp_servers(self, event: Event) -> None:
+        """ A row per server, its state, how it is launched and why it does not answer, then a row per tool """
+        servers: list[dict] = event.data["servers"]
+        if not servers:
+            self.__notice(NO_MCP)
+            return
+        rows: list[dict] = []
+        for server in servers:
+            rows.append({"text": f"{server['name']} — {MCP_STATES.get(server['state'], server['state'])}",
+                         "meta": " · ".join(part for part in (
+                             mcp_command(server["command"]), server["error"],
+                             f"déclaré par {server['source']} : {mcp_trust(server['name'])}"
+                             if server["state"] == "pending" else "",
+                             f"{plural(server['hidden'], 'outil')} masqués par son réglage" if server.get("hidden") else "",
+                             f"{mcp_held(server)} ({', '.join(server['held'])})" if server.get("held") else ""
+                         ) if part)})
+            rows += [{"text": f"  {tool['name']}",
+                      "meta": " · ".join(part for part in (RISKS.get(tool["risk"], tool["risk"]), tool["description"]) if part)}
+                     for tool in server["tools"]]
+            rows += [{"text": f"  {mcp_prompt_usage(prompt)}", "meta": prompt["description"],
+                      "fill": f"/{prompt['name']}{' ' if prompt['arguments'] else ''}"}
+                     for prompt in server.get("prompts", [])]
+        self.__card(f"Serveurs MCP ({len(servers)})", rows)
 
     def __on_permission(self, event: Event) -> None:
         """

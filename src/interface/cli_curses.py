@@ -10,7 +10,7 @@ from events.event_bus import EventBus
 from events.event import Event
 from events.event_list import CHAT_TURN_STARTED, CHAT_TURN_ENDED, CHAT_CONTEXT, CHAT_THINKING, APP_STARTED
 from events.event_list import SESSION_CREATED, SESSION_SAVED, SESSION_RESUMED, THINKING_ENABLED, THINKING_DISABLED
-from events.event_list import REASONING_ENABLED, REASONING_DISABLED, EVAL_STARTED, EVAL_SCORED
+from events.event_list import REASONING_ENABLED, REASONING_DISABLED, EVAL_STARTED, EVAL_SCORED, MCP_CHANGED
 import curses
 import locale
 import os
@@ -173,6 +173,8 @@ class CursesCLI(CLI):
         bus.subscribe(self.__on_turn_ended, CHAT_TURN_ENDED)
         bus.subscribe(self.__on_thinking, CHAT_THINKING)
         bus.subscribe(self.__on_started, APP_STARTED)
+        # The commands of the MCP servers come and go with them: Tab completes the ones there are now
+        bus.subscribe(self.__on_commands, MCP_CHANGED)
         bus.subscribe(self.__on_session_created, SESSION_CREATED)
         bus.subscribe(lambda event: self.__set(session=event.data["id"]), SESSION_SAVED)
         bus.subscribe(lambda event: self.__set(session=event.data["id"]), SESSION_RESUMED)
@@ -483,8 +485,12 @@ class CursesCLI(CLI):
 
     def __on_started(self, event: Event) -> None:
         """ The model and the commands, for the status bar and for Tab """
-        self.__commands = [command["name"] for command in event.data["commands"]]
+        self.__on_commands(event)
         self.__set(model=event.data["model"], think=event.data["think"], react=event.data.get("react", False))
+
+    def __on_commands(self, event: Event) -> None:
+        """ The commands Tab completes """
+        self.__commands = [command["name"] for command in event.data["commands"]]
 
     def __on_session_created(self, event: Event) -> None:
         """ The user, in the status bar: saved or not. The new session has no number before its first message """
