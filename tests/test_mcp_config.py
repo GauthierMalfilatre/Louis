@@ -14,6 +14,7 @@ from conftest import CALC, FAKE, Person, fake
 from events.event_list import MCP_CHANGED, MCP_STARTED, COMMAND_ERROR
 from interface.cli import mcp_started
 from tool.mcp.manager import RUNNING, FAILED, DISABLED, PENDING
+from tool.tool import failed
 
 def servers_file(path, **servers) -> str:
     """ A .mcp.json file that declares the servers given, as Claude Code writes it """
@@ -73,6 +74,13 @@ def test_a_file_that_is_not_valid_is_a_server_that_failed(mcp, tmp_path, content
     assert why in manager.servers[1].error
 
 # What a declaration offers
+
+def test_a_declaration_gives_its_server_a_timeout_of_its_own(mcp, app):
+    manager = mcp(fake("hasty", timeout=0.3), fake("other"), timeout=5.0)
+    assert (manager.server("hasty").timeout, manager.server("other").timeout) == (0.3, 5.0)
+    result = tools(manager)["hasty__slow"].handle(app, seconds="1")
+    assert failed(result) and "en 0.3 s" in result
+    assert tools(manager)["other__slow"].handle(app, seconds="0.5") == "enfin"
 
 def test_a_declaration_offers_the_tools_it_names_but_those_it_excludes(mcp):
     manager = mcp(fake("some", tools=["e*", "c*"], exclude=["crash"]), fake("all"))

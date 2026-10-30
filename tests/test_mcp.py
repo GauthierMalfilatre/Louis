@@ -122,6 +122,9 @@ def test_a_server_that_does_not_start_is_left_out_and_the_others_go_on(mcp, app)
     ({"name": "a", "command": "x", "args": "--flag"}, "args"),
     ({"name": "a", "command": "x", "env": {"N": 1}}, "env"),
     ({"name": "a", "command": "x", "risk": "maybe"}, "risk"),
+    ({"name": "a", "command": "x", "risk": {"read_*": "maybe"}}, "risk"),
+    ({"name": "a", "command": "x", "timeout": 0}, "timeout"),
+    ({"name": "a", "command": "x", "timeout": "30"}, "timeout"),
     ("calc", "dict"),
 ])
 def test_a_declaration_that_is_not_valid_is_a_server_that_failed(mcp, entry, why):
@@ -140,6 +143,13 @@ def test_the_risk_of_a_tool_is_what_the_server_says_unless_the_settings_say_othe
     assert (found["fake__echo"].level, found["fake__gentle"].level, found["fake__act"].level) == (SAFE, REVERSIBLE,
                                                                                                 IRREVERSIBLE)
     assert found["trusted__act"].level == SAFE
+
+def test_the_settings_may_give_each_tool_its_risk_by_its_name(mcp):
+    found = tools(mcp(fake("fake", risk={"act": "safe", "ech*": "irreversible", "e*": "safe"})))
+    # The first name that matches it
+    assert (found["fake__act"].level, found["fake__echo"].level, found["fake__env"].level) == (SAFE, IRREVERSIBLE, SAFE)
+    # One it does not name: what the server says
+    assert found["fake__gentle"].level == REVERSIBLE
 
 def test_a_tool_that_acts_asks_first_and_a_refusal_is_told_to_the_model(mcp, app):
     found = tools(mcp(fake()))
