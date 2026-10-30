@@ -5,8 +5,9 @@
 ## MCP tool: a tool of an MCP server, offered to the model as <server>__<tool>, run through call_tool
 ##
 from tool.tool import Tool
-from tool.risk import Risk, NONE, LEVELS, SAFE, REVERSIBLE, IRREVERSIBLE
+from tool.risk import Risk, NONE, SAFE, REVERSIBLE, IRREVERSIBLE
 from tool.mcp.client import McpClient, McpError, McpTimeout
+from tool.mcp.config import risk_of
 from events.event_list import MCP_PROGRESS
 import json
 import re
@@ -53,7 +54,7 @@ def text_of(result: dict) -> str:
 
 class McpTool(Tool):
     """
-        A tool of an MCP server. Its risk is what the settings of its server say, else what the server says of it
+        A tool of an MCP server. Its risk is what the settings of its server say of it, else what the server says of it
         (its annotations): one that only reads asks nothing, the others ask before they act, and join the plan.
         It calls the server as it is now: one started again since the tool was made is called all the same
     """
@@ -71,7 +72,7 @@ class McpTool(Tool):
         self.__server     : str        = server.name
         self.__host                    = server
         self.__remote     : str        = spec["name"]
-        self.__level      : str | None = server.level if server.level in LEVELS else None
+        self.__level      : str | None = risk_of(server.level, spec["name"])
         self.__annotations: dict       = spec.get("annotations") or {}
 
     @property

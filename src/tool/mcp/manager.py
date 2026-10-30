@@ -43,7 +43,7 @@ class McpServer:
         self.command : str               = declaration.command
         self.args    : list[str]         = declaration.args
         self.env     : dict[str, str]    = declaration.env
-        self.level   : str | None        = declaration.level
+        self.level   : str | dict[str, str] | None = declaration.level
         self.timeout : float             = timeout
         self.max_timeout: float          = max(timeout, max_timeout)
         self.log_level  : str | None     = log_level
@@ -246,8 +246,10 @@ class McpManager:
         self.__servers: list[McpServer] = []
         self.__trust  : Trust           = Trust(settings.get("mcp.trust_file"))
         for declaration in declarations(settings):
+            # A server slower than the others says so in its declaration
+            timeout: float = declaration.timeout if declaration.timeout is not None else float(settings.get("mcp.timeout", 30.0))
             server: McpServer = McpServer(
-                declaration, timeout=float(settings.get("mcp.timeout", 30.0)),
+                declaration, timeout=timeout,
                 start_timeout=float(settings.get("mcp.start_timeout", 30.0)), restarts=int(settings.get("mcp.restarts", 1)),
                 max_timeout=float(settings.get("mcp.max_timeout", 600.0)), log_level=settings.get("mcp.log_level", "info")
             )

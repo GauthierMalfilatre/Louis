@@ -9,6 +9,7 @@
 from logger.logger import log
 from tool.risk import LEVELS
 from dataclasses import dataclass, field
+import fnmatch
 import hashlib
 import json
 import os
@@ -33,7 +34,8 @@ class Declaration:
     command: str                    = ""
     args   : list[str]              = field(default_factory=list)
     env    : dict[str, str]         = field(default_factory=dict)
-    level  : str | None             = None
+    # The risk of its tools: a level for all of them, or one by their name on the server ({"read_*": "safe"})
+    level  : str | dict[str, str] | None = None
     # Started with Louis; else only by /mcp restart
     enabled: bool                   = True
     # The tools offered to the model, by their name on the server (globs: "read_*"): all of them without tools
@@ -48,6 +50,8 @@ class Declaration:
     transport: str                  = STDIO
     url    : str                    = ""
     headers: dict[str, str]         = field(default_factory=dict)
+    # Seconds a call of its tools may take, else the setting mcp.timeout
+    timeout: float | None           = None
 
 def expand(value: str) -> str:
     """ The text with the variables it names replaced by their value. Raises KeyError for one that has none """
@@ -68,6 +72,21 @@ def strings(value) -> bool:
     """ Whether the value is a dict of texts """
     return isinstance(value, dict) and all(isinstance(key, str) and isinstance(item, str) for key, item in value.items())
 
+def risky(value) -> bool:
+    """ Whether the value is a risk a declaration may give: a level, or a level by name of tool """
+    if isinstance(value, dict):
+        return strings(value) and all(level in LEVELS for level in value.values())
+    return value in LEVELS
+
+def risk_of(level, tool: str) -> str | None:
+    """
+        The risk a declaration gives a tool of its server, by its name on the server: its level for all of them, else
+        the first name that matches it ("read_*"). None when it gives none: the server says
+    """
+    if isinstance(level, dict):
+        return next((value for pattern, value in level.items() if fnmatch.fnmatchcase(tool, pattern)), None)
+    return level if level in LEVELS else None
+
 def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaration:
     """ A server as an entry declares it: its error says what is wrong with it """
     if not isinstance(entry, dict):
@@ -76,15 +95,16 @@ def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaratio
     name, command = entry.get("name"), entry.get("command")
     args, env, level = entry.get("args", []), entry.get("env", {}), entry.get("risk")
     enabled, tools, exclude = entry.get("enabled", True), entry.get("tools"), entry.get("exclude", [])
-    url, headers = entry.get("url"), entry.get("headers", {})
+    url, headers, timeout = entry.get("url"), entry.get("headers", {}), entry.get("timeout")
     # A file of Claude Code says its type; Cursor gives an url alone
     kind = entry.get("type") or (HTTP if url is not None and command is None else STDIO)
+    seconds: bool = isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0
     declaration: Declaration = Declaration(
         name if isinstance(name, str) else "", source, command if isinstance(command, str) else "",
-        args if isinstance(args, list) else [], env if isinstance(env, dict) else {}, level if level in LEVELS else None,
+        args if isinstance(args, list) else [], env if isinstance(env, dict) else {}, level if risky(level) else None,
         enabled is not False, tools if texts(tools) else None, exclude if texts(exclude) else [],
         project=project, raw=entry, transport=TRANSPORTS.get(kind, STDIO), url=url if isinstance(url, str) else "",
-        headers=headers if strings(headers) else {}
+        headers=headers if strings(headers) else {}, timeout=float(timeout) if seconds else None
     )
     if not declaration.name.strip():
         declaration.error = "réglage invalide : il lui faut un nom (name)"
@@ -103,8 +123,11 @@ def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaratio
         declaration.error = "réglage invalide : args est une liste de textes"
     elif not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
         declaration.error = "réglage invalide : env est un dict de textes"
-    elif level is not None and level not in LEVELS:
-        declaration.error = f"réglage invalide : risk vaut {', '.join(LEVELS)}"
+    elif level is not None and not risky(level):
+        declaration.error = (f"réglage invalide : risk vaut {', '.join(LEVELS)}, ou un niveau par outil "
+                             '({"read_*": "safe", "*": "irreversible"})')
+    elif timeout is not None and not seconds:
+        declaration.error = "réglage invalide : timeout est un nombre de secondes, plus grand que 0"
     elif not isinstance(enabled, bool):
         declaration.error = "réglage invalide : enabled vaut true ou false"
     elif (tools is not None and not texts(tools)) or not texts(exclude):
