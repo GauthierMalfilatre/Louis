@@ -51,7 +51,7 @@ class AddTool(Tool):
 app._App__toolManager.register(AddTool())
 ```
 
-> Louis n'a pas encore de client MCP : les outils sont ceux de Louis, appelés par le tool calling d'Ollama.
+> Louis est aussi un **client MCP** : les outils des serveurs MCP déclarés (`calc`, `time`, ceux d'un `.mcp.json`) sont proposés au modèle à côté de ceux-ci, sous le nom `<serveur>__<outil>`, et appelés de la même façon. Voir [T1 · Serveurs MCP](T1-serveurs-mcp.md).
 
 ## Mesure réelle : avec et sans
 

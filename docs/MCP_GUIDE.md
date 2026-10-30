@@ -4,7 +4,7 @@ This guide explains **what MCP is**, **why it is useful**, **how it works inside
 server**. Every part links to the code that does it, so you can open the file at the right line and read along.
 
 > Companion documents: [`docs/MCP.md`](MCP.md) is the project report (requirements, commits, tests, every edge case,
-> in French). The README section [« Serveurs MCP »](../README.md#serveurs-mcp) is the short user manual. This guide is
+> in French). The page [« T1 · Serveurs MCP »](feature/tools/T1-serveurs-mcp.md) is the short user manual. This guide is
 > the one to read first.
 >
 > Line numbers drift as the code changes. Each link also names the function or class, so if a line moved, search for
@@ -797,7 +797,7 @@ more code.
 
 - [`docs/MCP.md`](MCP.md): the project report, in French: every requirement and where it is met, the commit list,
   the tests (101) and every failure case.
-- [README, « Serveurs MCP »](../README.md#serveurs-mcp): the user manual (`/mcp`, the keys, guarantees).
+- [« T1 · Serveurs MCP »](feature/tools/T1-serveurs-mcp.md): the user manual (`/mcp`, the keys, guarantees).
 - [`tests/mcp_fake_server.py`](../tests/mcp_fake_server.py): a server that fails on command (crash, silence, pages,
   progress, logs, prompts). Reading it shows every behaviour the client handles.
 - The specification: <https://modelcontextprotocol.io/specification/2025-06-18>, and the list of public servers:

@@ -28,7 +28,7 @@ Elle a été faite en deux branches :
 | `/mcp` liste les serveurs, leur état et leurs outils | `src/command/impl/command_mcp.py`, les interfaces |
 | Démo avec un serveur existant et un serveur à nous | `time` (mcp-server-time) et `calc` (le nôtre) |
 | `tests/test_mcp.py` : outils découverts, appel réussi, appel en échec, serveur qui ne démarre pas | `tests/test_mcp.py`, `tests/mcp_fake_server.py` |
-| README : comment ajouter un serveur MCP | `README.md`, section « Serveurs MCP » |
+| README : comment ajouter un serveur MCP | `docs/feature/tools/T1-serveurs-mcp.md` (sorti du README à la fusion avec `dev`, où chaque fonctionnalité a sa fiche) |
 
 ### Les améliorations (`feat/mcp-improvements`)
 
