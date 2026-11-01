@@ -92,10 +92,17 @@ settings: dict[str] = {
     # args: how it is launched, in the working directory; env: what it gets on top of PATH, HOME, LANG... (never the
     # rest of the environment of Louis: its secrets); risk (optional): "safe", "reversible" or "irreversible" for all
     # its tools, else what the server says of each one (a tool that does not say it only reads asks before it acts).
-    # A server that does not start is left out, Louis goes on without it. time needs uv (pip install uv)
+    # A server that does not start is left out, Louis goes on without it. time needs uv (pip install uv). github needs
+    # docker and gh, logged in once (gh auth login): its token is the one of gh (env_from), or GITHUB_TOKEN when it is
+    # set. Its tools of issues only, and of them the three the model needs, a small model choosing better among few
     "mcp.servers"          : [
         {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]},
         {"name": "time", "command": "uvx", "args": ["mcp-server-time"]},
+        {"name": "github", "command": "docker",
+         "args": ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "-e", "GITHUB_TOOLSETS", "ghcr.io/github/github-mcp-server"],
+         "env": {"GITHUB_TOOLSETS": "issues"},
+         "env_from": {"GITHUB_PERSONAL_ACCESS_TOKEN": ["gh", "auth", "token"]},
+         "tools": ["list_issues", "search_issues", "issue_write"]},
     ],
     # Files that declare more servers, in the format of Claude Code, Cursor and Claude Desktop (a file of theirs can be
     # copied as is): {"mcpServers": {"<name>": {"command": "npx", "args": [...], "env": {...}}}}. ${VAR} (or

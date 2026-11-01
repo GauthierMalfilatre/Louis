@@ -149,5 +149,12 @@ if [[ -n "${models:-}" && -n "$DESCRIBE" ]] \
     warn "The model $DESCRIBE is not downloaded yet (it describes the code for /index --describe): ollama pull $DESCRIBE"
 fi
 
+# Optional as well: GitHub, for the pull request tools and the github MCP server, which takes the token of gh
+if ! command -v gh >/dev/null; then
+    warn "gh is not installed, the pull requests and the GitHub issues need it: https://cli.github.com"
+elif ! gh auth status >/dev/null 2>&1; then
+    warn "gh is not logged in to GitHub, the pull requests and the GitHub issues need it: gh auth login"
+fi
+
 info "Done! Type 'louis' in any directory to start it there."
 info "louis runs from $REPO: keep this folder, and run install.sh again when requirements.txt changes."

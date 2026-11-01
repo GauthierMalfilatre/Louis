@@ -60,7 +60,7 @@ Tout le code MCP est dans `src/tool/mcp/` : un outil MCP est un outil de Louis c
 | `src/command/impl/command_mcp.py` | `/mcp`, `/mcp restart|stop|trust <serveur>`. |
 | `src/command/impl/command_mcp_prompt.py` | `/<serveur>:<prompt>` : un prompt d'un serveur, envoyé au modèle. |
 | `src/command/command.py` | Un nom de commande peut avoir la forme `serveur:prompt` ; `CommandTree.unregister`. |
-| `src/config/settings.py` | `mcp.servers` (`calc` et `time`), `mcp.files`, `mcp.trust_file`, `mcp.timeout`, `mcp.start_timeout`, `mcp.max_timeout`, `mcp.restarts`, `mcp.log_level`. |
+| `src/config/settings.py` | `mcp.servers` (`calc`, `time` et `github`), `mcp.files`, `mcp.trust_file`, `mcp.timeout`, `mcp.start_timeout`, `mcp.max_timeout`, `mcp.restarts`, `mcp.log_level`. |
 | `src/events/event_list.py` | `MCP_STARTED`, `MCP_SERVERS`, `MCP_CHANGED`, `MCP_PROGRESS`, `MCP_PROMPT`. |
 | `src/app/app.py` | Démarre les serveurs, `App.offer_mcp` (outils et prompts proposés, toujours dans le même ordre), `App.answer` (relit ce qui a changé avant chaque message), `App.mcp_changed`, `App.close`. Les résultats MCP passent par le garde-fou. |
 | `src/tool/tool_manager.py` | `ToolManager.tools()`. |
@@ -214,7 +214,7 @@ Le SDK Python `mcp` est asynchrone (anyio) et apporte une quinzaine de dépendan
 
 Trois sources, lues dans cet ordre ; un serveur remplace celui du même nom déclaré avant lui :
 
-1. les réglages, `mcp.servers` (une liste ; c'est là que sont `calc` et `time`) ;
+1. les réglages, `mcp.servers` (une liste ; c'est là que sont `calc`, `time` et `github`) ;
 2. `~/.config/louis/mcp.json`, les serveurs de l'utilisateur ;
 3. `.mcp.json`, dans le dossier du projet.
 
