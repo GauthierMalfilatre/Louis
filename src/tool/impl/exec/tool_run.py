@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import threading
 import uuid
+from utils.path import get_cwd
 
 @dataclass(frozen=True)
 class Language:
@@ -27,7 +28,8 @@ class Language:
 
 LANGUAGES: dict[str, Language] = {
     "python": Language("python:3.13-alpine", ["python3", "-u", "-"]),
-    "sh": Language("alpine:latest", ["sh", "-s"]),
+    # The Python image is Alpine too: sh, and python3 for a script run from it
+    "sh": Language("python:3.13-alpine", ["sh", "-s"]),
     # No go.mod, so no module to download; no cgo, the image has no C compiler; the toolchain is the one of the image
     "go": Language("golang:alpine", ["sh", "-c", "cat > main.go && go run main.go"], timeout=60, memory="1g",
                    compiled=True, env={"GOCACHE": "/tmp/gocache", "GOPATH": "/tmp/gopath", "CGO_ENABLED": "0",
@@ -45,6 +47,12 @@ ALIASES: dict[str, str] = {
     "py": "python", "python3": "python", "bash": "sh", "shell": "sh", "zsh": "sh", "golang": "go", "rs": "rust",
     "cc": "c", "gcc": "c", "c++": "cpp", "cxx": "cpp", "g++": "cpp",
 }
+
+# The project in the container: read-only at /project, copied to /tmp/work so the code can write beside its files. Never
+# copied: the repository, the environments, the caches, and what holds secrets or the conversations (.env, keys, *.db, logs, traces)
+EXCLUDED = (".git", ".venv", "venv", "node_modules", "__pycache__", ".env", ".env.*", "*.pem", "*.key", "*.db", "*.log", "trace.jsonl", "*.traces.jsonl")
+COPY = ("mkdir /tmp/work && tar -C /project " + " ".join(f"--exclude='{x}'" for x in EXCLUDED)
+        + " -cf - . | tar -C /tmp/work -xf - && cd /tmp/work && exec \"$@\"")
 
 OUTPUT = 4000
 # The code goes through a pipe the container reads as it runs: kept below the 64 KiB of a pipe, writing it never blocks
@@ -88,21 +96,26 @@ class Capture(threading.Thread):
         """ What was kept, as text: a cut inside a character, or a program that prints bytes, is not an error """
         return self.__kept.decode("utf-8", errors="replace")
 
-def sandbox(name: str, language: Language) -> list[str]:
+def sandbox(name: str, language: Language, project: str | None = None) -> list[str]:
     """
         The docker command that runs a program cut off from everything: no network, a read-only disk but a small
-        /tmp, nobody as the user, no capability and no way to get one, and limits on processes, memory and cpu
+        /tmp, nobody as the user, no capability and no way to get one, and limits on processes, memory and cpu.
+        With a project folder, it is mounted read-only and the code runs in a copy of it in /tmp/work (PYTHONPATH there and in src)
     """
-    tmp = "/tmp:size=512m,exec" if language.compiled else "/tmp:size=16m,noexec"
+    tmp = "/tmp:size=512m,exec" if language.compiled else "/tmp:size=64m,exec" if project else "/tmp:size=16m,noexec"
     env = {"HOME": "/tmp", "PYTHONDONTWRITEBYTECODE": "1", **language.env}
+    command = ["sh", "-c", COPY, "sh", *language.command] if project else language.command
+    if project:
+        env["PYTHONPATH"] = "/tmp/work:/tmp/work/src"
     return [
         "docker", "run", "--rm", "--init", "--interactive", "--name", name, "--pull", "never",
         "--network", "none", "--read-only", "--tmpfs", tmp, "--workdir", "/tmp",
         "--user", "65534:65534", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
         "--pids-limit", "256" if language.compiled else "64", "--memory", language.memory,
         "--memory-swap", language.memory, "--cpus", "2" if language.compiled else "1",
+        *(["--volume", f"{project}:/project:ro"] if project else []),
         *[arg for key, value in env.items() for arg in ("--env", f"{key}={value}")],
-        language.image, *language.command,
+        language.image, *command,
     ]
 
 def image_problem(image: str) -> str | None:
@@ -126,10 +139,11 @@ class RunTool(Tool):
         super().__init__(
             "run_code",
             "Exécute du code et renvoie sa sortie, pour tester une idée, un calcul ou un script avant de l'écrire "
-            "dans un fichier. Le code tourne dans un conteneur isolé : sans réseau, sans accès aux fichiers du projet, "
+            "dans un fichier. Le code tourne dans un conteneur isolé : sans réseau, et sans accès aux fichiers du projet sauf avec project=true "
             "et arrêté au bout de quelques secondes (30 s pour c et c++, une minute pour go et rust, compilation comprise). Il ne peut donc "
-            "ni installer de paquet, de crate ou de bibliothèque (bibliothèque standard seulement), ni lire ou modifier le projet : "
-            "pour ça, utilise cat_file et edit_file. Donne un programme complet (package main pour go, fn main pour "
+            "ni installer de paquet, de crate ou de bibliothèque (bibliothèque standard seulement). Avec project=true, il part d'une "
+            "copie du projet (sans .git, .env ni bases de données) : tu peux y lancer un de ses fichiers (language sh, code "
+            "\"python3 src/main.py\"), mais tes modifications n'atteignent pas le vrai projet : pour ça, utilise edit_file. Donne un programme complet (package main pour go, fn main pour "
             "rust, main pour c et c++) qui affiche ce que tu veux voir (print, echo) : seule la sortie te revient.",
             {
                 "type": "object",
@@ -141,6 +155,10 @@ class RunTool(Tool):
                     "code": {
                         "type": "string",
                         "description": "Le programme complet à exécuter, qui affiche son résultat"
+                    },
+                    "project": {
+                        "type": "boolean",
+                        "description": "true : le code s'exécute dans une copie du projet (dossier de travail), pour lancer ses fichiers"
                     }
                 },
                 "required": ["language", "code"]
@@ -149,9 +167,12 @@ class RunTool(Tool):
 
     def handle(self, app, **kwargs) -> str:
         """ Run the code in the sandbox, after the user has read it """
-        extra: list[str] = [name for name in kwargs if name not in ("language", "code")]
+        extra: list[str] = [name for name in kwargs if name not in ("language", "code", "project")]
         if extra:
-            return f"Erreur : {', '.join(extra)} n'existe pas pour {self.name}. Ses paramètres sont : language, code."
+            return f"Erreur : {', '.join(extra)} n'existe pas pour {self.name}. Ses paramètres sont : language, code, project."
+        project = kwargs.get("project", False)
+        if not isinstance(project, bool):
+            return "Erreur : 'project' doit être true ou false."
         language, code = kwargs.get("language"), kwargs.get("code")
         if not isinstance(language, str) or not isinstance(code, str) or not code.strip():
             return "Erreur : 'language' et 'code' sont requis, et doivent être du texte."
@@ -166,10 +187,14 @@ class RunTool(Tool):
         # Before asking the user: no point in letting them read code that can not run
         if (problem := image_problem(profile.image)) is not None:
             return problem
-        if not app.permissions.request(self.name, f"Exécution de code {language} dans un conteneur isolé", code):
+        folder: str | None = get_cwd(app) if project else None
+        what: str = f"Exécution de code {language} dans un conteneur isolé"
+        if folder:
+            what += f", avec une copie du projet ({folder})"
+        if not app.permissions.request(self.name, what, code):
             return ("Refusé : l'utilisateur n'a pas autorisé l'exécution. "
                     "Ne la retente pas : demande-lui ce qu'il veut à la place.")
-        return self.__execute(profile, code, int(settings.get("sandbox.output", OUTPUT)))
+        return self.__execute(profile, code, int(settings.get("sandbox.output", OUTPUT)), folder)
 
     @staticmethod
     def __configured(language: str, settings: dict) -> Language:
@@ -177,12 +202,12 @@ class RunTool(Tool):
         wanted: dict = settings.get("sandbox.languages", {}).get(language, {})
         return replace(LANGUAGES[language], **{k: v for k, v in wanted.items() if k in ("image", "timeout", "memory")})
 
-    def __execute(self, language: Language, code: str, limit: int) -> str:
+    def __execute(self, language: Language, code: str, limit: int, project: str | None = None) -> str:
         """ Start the container, hand it the code, and give back what it printed, or why it was stopped """
         timeout, memory = language.timeout, language.memory
         name: str = f"louis-sandbox-{uuid.uuid4().hex[:12]}"
         try:
-            proc = subprocess.Popen(sandbox(name, language),
+            proc = subprocess.Popen(sandbox(name, language, project),
                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as e:
             return f"Erreur : docker n'a pas pu démarrer : {e.strerror or e}"

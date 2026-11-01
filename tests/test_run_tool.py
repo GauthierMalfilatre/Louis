@@ -16,7 +16,6 @@ def image_ready(image: str) -> bool:
     return tool_run.available() and tool_run.image_problem(image) is None
 
 needs_python = pytest.mark.skipif(not image_ready("python:3.13-alpine"), reason="docker or python:3.13-alpine missing")
-needs_sh = pytest.mark.skipif(not image_ready("alpine:latest"), reason="docker or alpine:latest missing")
 needs_go = pytest.mark.skipif(not image_ready("golang:alpine"), reason="docker or golang:alpine missing")
 needs_rust = pytest.mark.skipif(not image_ready("rust:alpine"), reason="docker or rust:alpine missing")
 needs_gcc = pytest.mark.skipif(not image_ready("gcc:latest"), reason="docker or gcc:latest missing")
@@ -66,7 +65,7 @@ def test_the_model_names_of_a_language_are_understood(app, monkeypatch):
     run_code(app, language="rs", code="fn main() {}")
     run_code(app, language="C++", code="int main() {}")
     run_code(app, language="gcc", code="int main() {}")
-    assert seen == ["alpine:latest", "python:3.13-alpine", "golang:alpine", "rust:alpine", "gcc:latest", "gcc:latest"]
+    assert seen == ["python:3.13-alpine", "python:3.13-alpine", "golang:alpine", "rust:alpine", "gcc:latest", "gcc:latest"]
     # cc is the C compiler, not C++
     assert tool_run.ALIASES["cc"] == "c" and tool_run.ALIASES["c++"] == "cpp"
 
@@ -82,9 +81,26 @@ def test_the_container_is_cut_off_from_everything():
     for flag in ("--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges",
                  "--pids-limit 64", "--memory 256m", "--memory-swap 256m", "--user 65534:65534", "--pull never"):
         assert flag in command
-    # Nothing of the project, or of the machine, is mounted
+    # Nothing of the project, or of the machine, is mounted unless the project is asked for
     assert "--volume" not in command and " -v " not in command and "--mount" not in command
     assert "noexec" in command and command.endswith("img cmd")
+
+def test_the_project_is_mounted_read_only_and_copied_without_what_is_secret():
+    command: list[str] = sandbox("n", LANGUAGES["sh"], "/my/project")
+    assert command[command.index("--volume") + 1] == "/my/project:/project:ro"
+    assert "/tmp:size=64m,exec" in " ".join(command) and "PYTHONPATH=/tmp/work:/tmp/work/src" in " ".join(command)
+    # The language command is run after the copy, in the copy
+    assert command[-5:] == ["-c", tool_run.COPY, "sh", "sh", "-s"] and "cd /tmp/work" in tool_run.COPY
+    for secret in (".git", ".env", "*.db"):
+        assert f"--exclude='{secret}'" in tool_run.COPY
+
+def test_project_must_be_a_boolean(app, no_docker_call):
+    assert run_code(app, language="sh", code="ls", project="yes").startswith("Erreur : 'project' doit être")
+
+def test_the_user_is_told_the_project_is_visible(app, no_docker_call):
+    app.permissions.answer = False
+    run_code(app, language="sh", code="ls", project=True)
+    assert "copie du projet" in app.permissions.asked[0]
 
 def test_a_compiled_language_gets_a_tmp_that_runs_programs_and_the_room_to_build():
     command: str = " ".join(sandbox("n", LANGUAGES["go"]))
@@ -127,7 +143,7 @@ def test_the_code_can_not_write_outside_tmp(app):
     assert "tmp ok" in result and "Read-only file system" in result
 
 @needs_python
-def test_the_project_is_not_there(app, folder):
+def test_the_project_is_not_there_unless_asked(app, folder):
     (folder / "secret.txt").write_text("hunter2")
     code = f"import os\nprint(os.path.exists({str(folder / 'secret.txt')!r}))\n"
     assert run_code(app, language="python", code=code).endswith("False")
@@ -158,7 +174,7 @@ def test_the_memory_limit_kills_a_program_that_eats_it(app):
     result = run_code(app, language="python", code="x = bytearray(1024 ** 3)\nprint(len(x))\n")
     assert result.startswith("Code de sortie : 137")
 
-@needs_sh
+@needs_python
 def test_a_shell_script_runs_too(app):
     assert run_code(app, language="sh", code="echo hello; id -u").endswith("hello\n65534")
 
@@ -209,3 +225,20 @@ def test_c_can_not_eat_the_memory_of_the_machine(app):
     code = ('#include <stdlib.h>\n#include <string.h>\nint main(void) { char *p = malloc(4UL << 30); '
             'memset(p, 1, 4UL << 30); return 0; }\n')
     assert run_code(app, language="c", code=code).startswith("Code de sortie : 137")
+
+@needs_python
+def test_a_file_of_the_project_runs_from_sh_and_the_real_project_is_untouched(app, folder):
+    (folder / "hello.py").write_text("print('hello', 6 * 7)\n")
+    (folder / ".env").write_text("TOKEN=hunter2")
+    (folder / "louis.db").write_text("conversations")
+    code = "python3 hello.py; echo changed > hello.py; echo new > created.txt; ls -A | tr '\\n' ' '"
+    result = run_code(app, language="sh", code=code, project=True)
+    assert "hello 42" in result and "hello.py" in result and "created.txt" in result
+    assert ".env" not in result.split("hello 42")[1] and "louis.db" not in result.split("hello 42")[1]
+    assert (folder / "hello.py").read_text() == "print('hello', 6 * 7)\n" and not (folder / "created.txt").exists()
+
+@needs_python
+def test_python_code_imports_the_modules_of_the_project(app, folder):
+    (folder / "src").mkdir()
+    (folder / "src" / "mine.py").write_text("VALUE = 42\n")
+    assert run_code(app, language="python", code="import mine\nprint(mine.VALUE)", project=True).endswith("42")

@@ -77,15 +77,15 @@ settings: dict[str] = {
     # Louis signs the commits it makes with a "Co-authored-by" line: the user stays their author. For GitHub to show
     # Louis on the commits, it must be the noreply address of a GitHub account (Settings > Emails). Empty: no line
     "git.coauthor"         : "Louis <336655023+louis-sensai@users.noreply.github.com>",
-    # Code the model runs (run_code) goes in a Docker container: no network, no access to the project, read-only disk,
+    # Code the model runs (run_code) goes in a Docker container: no network, no access to the project (unless the model asks for a copy of it, project=true), read-only disk,
     # limits on time, memory and processes. The tool is only offered if docker is installed. The images must be pulled
-    # by the user (docker pull python:3.13-alpine alpine:latest golang:alpine rust:alpine gcc:latest): the container never
+    # by the user (docker pull python:3.13-alpine golang:alpine rust:alpine gcc:latest): the container never
     # reaches the network to get them, nor the libraries a program would want (go, rust, c, c++: standard library only)
     "sandbox.enabled"      : True,
     # Bytes of the output of the code the model sees, for each of stdout and stderr: the rest is cut
     "sandbox.output"       : 4000,
-    # What differs from the profile of a language (tool/impl/exec/tool_run.py: python and sh 10 s and 256m, c and c++ 30 s, go and rust
-    # a minute and 1g for their build): its image, timeout (seconds) and memory. {"python": {"image": "python:3.12-slim"}}
+    # What differs from the profile of a language (tool/impl/exec/tool_run.py: python and sh 10 s and 256m, same image, c and c++ 30 s, go and rust
+    # a minute and 1g for their build): its image, timeout (seconds) and memory. {"python": {"image": "python:3.12-slim"}}. For the project's own dependencies: docker/louis-python.Dockerfile
     "sandbox.languages"    : {},
     # MCP servers (/mcp): programs Louis launches at its start and talks to on their standard input and output. Each
     # tool of a server is offered to the model as <server>__<tool>. name: its name for the model and /mcp; command and
