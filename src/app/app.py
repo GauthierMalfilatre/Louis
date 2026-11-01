@@ -19,7 +19,7 @@ from tool.impl.file.tool_write import WriteTool
 from tool.impl.file.tool_search import SearchTool
 from tool.impl.file.tool_mkdir import MkdirTool
 from tool.impl.web.tool_websearch import InternetTool
-from tool.impl.git.tool_git import GitTool
+from tool.impl.git.tool_git import GitTool, github_repository
 from tool.impl.git.tool_pr import PullRequestTool
 from tool.impl.exec.tool_run import RunTool, available as sandbox_available
 from tool.impl.rag.tool_knowledge import KnowledgeTool
@@ -285,12 +285,16 @@ class App:
 
     def __context(self) -> str:
         """
-            What the model can not guess, put after its prompt: the user, and the date (for web_search). Never the
-            folder of the project: the model gives its name to the tools as a path, which they do not find
+            What the model can not guess, put after its prompt: the user, the date (for web_search), and the repository
+            of GitHub of the project (the owner and repo the tools of the github MCP server ask for). Never the folder
+            of the project: the model gives its name to the tools as a path, which they do not find
         """
         lines: list[str] = [f"- Date : {date.today().isoformat()}"]
         if not self.__user.is_anonymous:
             lines.insert(0, f"- Utilisateur : {self.__user.name}")
+        repository: str | None = github_repository()
+        if repository is not None:
+            lines.append(f"- Dépôt GitHub du projet (owner/repo des outils GitHub) : {repository}")
         return CONTEXT + "\n".join(lines) + "\n"
 
     def __prompt(self) -> str:

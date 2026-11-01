@@ -8,11 +8,14 @@
 import sqlite3
 from datetime import date
 import pytest
+import utils.path
+from conftest import git
 from events.event_list import SESSION_LIST, SESSION_RESUMED, SESSION_SAVED, COMMAND_ERROR
 from model.reply import Reply
 from session.database import Database
 from session.session import Session
 from session.user import User
+from tool.impl.git import tool_git
 from tool.tool_call import ToolCall
 
 @pytest.fixture
@@ -80,6 +83,21 @@ def test_the_model_is_told_who_the_user_is_and_the_date(chat, db):
     assert "- Utilisateur : ada" in prompt and f"- Date : {date.today().isoformat()}" in prompt
     # Anonymous: no name to give
     assert "Utilisateur" not in chat([]).session.messages[0].content
+
+@pytest.mark.parametrize("origin, repository", [
+    ("git@github.com:louis-sensai/snake.git", "louis-sensai/snake"),
+    ("https://github.com/louis-sensai/snake", "louis-sensai/snake"),
+    ("https://gitlab.com/louis-sensai/snake.git", None),
+])
+def test_the_model_is_told_the_github_repository_of_the_project(chat, project, monkeypatch, origin, repository):
+    # The git tools run in the project of the test, not in the repository of Louis
+    monkeypatch.setattr(tool_git, "ROOT", utils.path.ROOT)
+    git(project, "remote", "set-url", "origin", origin)
+    prompt: str = chat([]).session.messages[0].content
+    if repository is None:
+        assert "Dépôt GitHub" not in prompt
+    else:
+        assert f"- Dépôt GitHub du projet (owner/repo des outils GitHub) : {repository}" in prompt
 
 def test_clear_starts_a_new_session_on_the_prompt_given(chat):
     app = chat([])
