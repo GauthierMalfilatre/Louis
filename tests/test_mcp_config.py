@@ -3,8 +3,8 @@
 ## SENSAI
 ## File description:
 ## Tests of how the MCP servers are declared: the .mcp.json files (the format of Claude Code), the variables of the
-## environment they name, the tools a declaration offers, a server disabled, and the servers of the project, started
-## only once the user trusts them
+## environment they name and those a command prints (env_from), the tools a declaration offers, a server disabled, and
+## the servers of the project, started only once the user trusts them
 ##
 import json
 import os
@@ -27,6 +27,10 @@ def fake_entry(*options: str, **extra) -> dict:
 
 def tools(manager) -> dict:
     return {tool.name: tool for tool in manager.tools()}
+
+def printing(text: str) -> list[str]:
+    """ A command that prints the text given, as gh auth token prints its token """
+    return [sys.executable, "-c", f"print({text!r})"]
 
 def states(manager) -> dict[str, str]:
     return {server.name: server.state for server in manager.servers}
@@ -55,6 +59,19 @@ def test_the_variables_of_the_environment_are_given_to_the_server(mcp, app, tmp_
     assert (env.handle(app, name="GREETING"), env.handle(app, name="OTHER")) == ("salut", "défaut")
     assert manager.server("broken").state == FAILED and "LOUIS_TEST_ABSENT n'est pas définie" in manager.server("broken").error
 
+def test_a_variable_of_env_from_is_what_its_command_prints_unless_env_gives_it(mcp, app):
+    manager = mcp(fake(env={"GIVEN": "written"}, env_from={"TOKEN": printing("token"), "GIVEN": printing("printed")}))
+    env = tools(manager)["fake__env"]
+    assert (env.handle(app, name="TOKEN"), env.handle(app, name="GIVEN")) == ("token", "written")
+
+def test_a_command_of_env_from_that_fails_leaves_its_server_out(mcp):
+    logged_out: list[str] = [sys.executable, "-c", "import sys; sys.exit('no oauth token found for github.com')"]
+    manager = mcp(fake("logged_out", env_from={"TOKEN": logged_out}),
+                  fake("absent", env_from={"TOKEN": ["louis-no-such-command"]}), CALC)
+    assert states(manager) == {"logged_out": FAILED, "absent": FAILED, "calc": RUNNING}
+    assert manager.server("logged_out").error.endswith("a échoué (pour TOKEN) — no oauth token found for github.com")
+    assert manager.server("absent").error == "la commande louis-no-such-command est introuvable (elle donne TOKEN)"
+
 def test_a_server_of_a_file_replaces_the_one_declared_before_it(mcp, tmp_path):
     user = servers_file(tmp_path / "user.json", calc={"command": "louis-no-such-command"})
     other = servers_file(tmp_path / "other.json", calc={"command": CALC["command"], "args": CALC["args"]})
@@ -66,6 +83,8 @@ def test_a_server_of_a_file_replaces_the_one_declared_before_it(mcp, tmp_path):
     ('{"servers": {}}', "mcpServers"),
     ('{"mcpServers": {"a": {"command": "x", "tools": "echo"}}}', "tools et exclude"),
     ('{"mcpServers": {"a": {"command": "x", "enabled": "no"}}}', "enabled"),
+    ('{"mcpServers": {"a": {"command": "x", "env_from": {"T": "gh auth token"}}}}', "env_from donne une commande"),
+    ('{"mcpServers": {"a": {"url": "http://127.0.0.1:1/mcp", "env_from": {"T": ["gh"]}}}}', "lancé par Louis (stdio)"),
 ])
 def test_a_file_that_is_not_valid_is_a_server_that_failed(mcp, tmp_path, content, why):
     (tmp_path / "mcp.json").write_text(content)
@@ -139,6 +158,14 @@ def test_a_trust_that_can_not_be_kept_is_told_and_the_server_waits(louis, projec
     app = louis([], [], user, **{"mcp.files": [".mcp.json"], "mcp.trust_file": str(tmp_path / "file" / "trusted.json")})
     app._App__commands.fetch("/mcp trust fake", app)
     assert user.seen(COMMAND_ERROR)[-1]["reason"] == "failed" and app.mcp.server("fake").state == PENDING
+
+def test_a_command_of_env_from_of_the_project_runs_only_once_the_user_trusts_it(louis, folder):
+    ran: list[str] = [sys.executable, "-c", "open('ran', 'w'); print('token')"]
+    servers_file(folder / ".mcp.json", fake=fake_entry(env_from={"TOKEN": ran}))
+    app = louis([], [], Person(), **{"mcp.files": [".mcp.json"]})
+    assert app.mcp.server("fake").state == PENDING and not (folder / "ran").exists()
+    app._App__commands.fetch("/mcp trust fake", app)
+    assert app.mcp.server("fake").state == RUNNING and (folder / "ran").exists()
 
 def test_the_servers_of_a_file_out_of_the_project_are_trusted(mcp, tmp_path):
     manager = mcp(**{"mcp.files": [servers_file(tmp_path / "user.json", fake=fake_entry())]})

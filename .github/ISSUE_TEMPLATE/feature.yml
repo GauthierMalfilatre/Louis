@@ -8,6 +8,9 @@ body:
     attributes:
       label: Goal
       description: What should exist when this is done?
+      value: |
+        **Subject** :
+        **Resume** :
     validations:
       required: true
   - type: textarea
@@ -16,6 +19,7 @@ body:
       label: Acceptance criteria
       description: Tick-able statements a reviewer can check against the PR.
       value: |
+        **To determine**
         - [ ]
         - [ ]
     validations:

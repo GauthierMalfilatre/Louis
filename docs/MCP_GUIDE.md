@@ -17,7 +17,7 @@ server**. Every part links to the code that does it, so you can open the file at
 3. [Why is it useful?](#3-why-is-it-useful)
 4. [The vocabulary, mapped to our code](#4-the-vocabulary-mapped-to-our-code)
 5. [How it works, step by step](#5-how-it-works-step-by-step)
-6. [Our servers: `calc` (internal) and `time` (external)](#6-our-servers-calc-internal-and-time-external)
+6. [Our servers: `calc` (internal), `time` and `github` (external)](#6-our-servers-calc-internal-time-and-github-external)
 7. [How to add a new MCP server](#7-how-to-add-a-new-mcp-server)
 8. [Safety: risk, permissions and trust](#8-safety-risk-permissions-and-trust)
 9. [Troubleshooting](#9-troubleshooting)
@@ -35,10 +35,11 @@ server**. Every part links to the code that does it, so you can open the file at
   (`calc__calculate`).
 - When the model calls one of these tools, Louis forwards the call to the server, gets the result back, and hands it to
   the model. **The model never knows the tool came from somewhere else.**
-- Servers are declared in [`settings.py`](../src/config/settings.py#L96) or in a `.mcp.json` file (same format as
+- Servers are declared in [`settings.py`](../src/config/settings.py#L98) or in a `.mcp.json` file (same format as
   Claude Code). **Adding one is configuration, not code**, unless you write the server yourself.
-- We declare two today: **`calc`** (ours, [`servers/calc.py`](../src/tool/mcp/servers/calc.py)) and **`time`**
-  (someone else's, `mcp-server-time` from PyPI). Louis can also *be* a server: `louis --mcp-server`.
+- We declare three today: **`calc`** (ours, [`servers/calc.py`](../src/tool/mcp/servers/calc.py)), **`time`**
+  (someone else's, `mcp-server-time` from PyPI) and **`github`** (GitHub's own, run with Docker, issues only). Louis
+  can also *be* a server: `louis --mcp-server`.
 - All the client code is in [`src/tool/mcp/`](../src/tool/mcp/), about 1,500 lines of standard-library Python.
 
 ---
@@ -129,7 +130,7 @@ Everything else (progress, logs, restarts, prompts) is built on top.
 **For Louis specifically:**
 
 1. **New tools without touching Louis.** The `time` server gives the model two tools, and our repository holds zero
-   lines of code for it, only [one line of configuration](../src/config/settings.py#L98). The hundreds of existing
+   lines of code for it, only [one line of configuration](../src/config/settings.py#L100). The hundreds of existing
    MCP servers (filesystem, GitHub, databases, browsers…) are available the same way.
 2. **Any language.** A server is just a program that reads and writes JSON lines. `calc` is Python; the official
    filesystem server is Node (`npx`); it could be Go or Rust.
@@ -196,11 +197,11 @@ Three sources, read in this order. A server **replaces** one of the same name de
 
 | # | Where | Who writes it | Started automatically? |
 | --- | --- | --- | --- |
-| 1 | [`settings["mcp.servers"]`](../src/config/settings.py#L96) | us, in the code: `calc` and `time` | yes |
+| 1 | [`settings["mcp.servers"]`](../src/config/settings.py#L98) | us, in the code: `calc` and `time` | yes |
 | 2 | `~/.config/louis/mcp.json` | you, for every project | yes |
 | 3 | `.mcp.json` at the root of the project | whoever wrote the project | **only after `/mcp trust <name>`** |
 
-The list of files is the setting [`mcp.files`](../src/config/settings.py#L107). The code path:
+The list of files is the setting [`mcp.files`](../src/config/settings.py#L114). The code path:
 
 - [`declarations(settings)`](../src/tool/mcp/config.py#L232) goes through the sources in order and handles the
   replacement by name.
@@ -404,18 +405,23 @@ A prompt is a message template written by the server. `/calc:explain (3+4)*sqrt(
 
 ---
 
-## 6. Our servers: `calc` (internal) and `time` (external)
+## 6. Our servers: `calc` (internal), `time` and `github` (external)
 
-Both are declared in [`settings.py`](../src/config/settings.py#L96):
+All three are declared in [`settings.py`](../src/config/settings.py#L98):
 
 ```python
 "mcp.servers": [
     {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]},   # ours
     {"name": "time", "command": "uvx", "args": ["mcp-server-time"]},       # someone else's
+    {"name": "github", "command": "docker",                               # someone else's, with a token
+     "args": ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "-e", "GITHUB_TOOLSETS", "ghcr.io/github/github-mcp-server"],
+     "env": {"GITHUB_TOOLSETS": "issues"},
+     "env_from": {"GITHUB_PERSONAL_ACCESS_TOKEN": ["gh", "auth", "token"]},
+     "tools": ["list_issues", "search_issues", "issue_write"]},
 ],
 ```
 
-For Louis, **there is no difference between them**: both are a command to launch and talk to over stdio. "Internal"
+For Louis, **there is no difference between them**: each is a command to launch and talk to over stdio. "Internal"
 only means *the code is in our repository*.
 
 ### `calc`, the internal one
@@ -450,7 +456,31 @@ the file.
 - If `uvx` is missing, the server is `failed` with `la commande uvx est introuvable` in `/mcp`, and Louis runs without
   it. Nothing else breaks.
 
-Try both:
+### `github`, the external one with a token
+
+- It is [`github-mcp-server`](https://github.com/github/github-mcp-server), GitHub's official server, run from its
+  Docker image. Pull it once (`docker pull ghcr.io/github/github-mcp-server`), or the first start downloads it and can
+  run past `mcp.start_timeout`.
+- **Its token is the one of `gh`**, the GitHub CLI that Louis' pull request tools already use. Log in once with
+  `gh auth login`, and there is nothing else to do. Each time the server starts, `env_from` runs `gh auth token`,
+  which gives `GITHUB_TOKEN` (or `GH_TOKEN`) when one is set and the token of the login otherwise. Louis puts it in
+  the server's env, and `-e GITHUB_PERSONAL_ACCESS_TOKEN` hands it on to the container. The token is never written
+  anywhere or logged.
+- **Without `gh`, or logged out**, the server is `failed`, with `la commande gh est introuvable` or
+  `gh auth token a échoué … no oauth token found for github.com` in `/mcp`, and Louis runs without it, like `time`
+  without `uvx`. `install.sh` warns about both.
+- **Two filters** keep the model's choice small. `GITHUB_TOOLSETS=issues` makes the server offer its issue tools only
+  (10 of them), and `tools` keeps 3 of those: `github__list_issues` and `github__search_issues` (`readOnlyHint`: safe)
+  and `github__issue_write`, which creates or updates an issue. That one doesn't say it only reads, so Louis treats it
+  as irreversible: the answer stops on its plan, with its arguments, until you approve it.
+- Its tools ask for the `owner` and `repo` of a repository. Louis tells the model which one the project is: when
+  Louis runs in a clone of a GitHub repository, the context after its system prompt says
+  `Dépôt GitHub du projet (owner/repo des outils GitHub) : owner/name`. That line is read from `origin` by
+  [`github_repository()`](../src/tool/impl/git/tool_git.py), so "the repo of the project" is enough in a request.
+- Its two prompts become commands: `/github:AssignCodingAgent` and `/github:issue_to_fix_workflow`.
+- To change what it offers, declare a `github` server in `~/.config/louis/mcp.json`: it replaces this one.
+
+Try them:
 
 ```
 python src/main.py
@@ -458,6 +488,7 @@ python src/main.py
 > What time is it in Tokyo right now?   → time__get_current_time
 > How much is 1234 * 5678 + 91?         → calc__calculate
 > /calc:explain (3+4)*sqrt(16)          → the prompt of calc
+> Which issues are open on owner/repo?  → github__list_issues
 ```
 
 ### Bonus: Louis as a server
@@ -491,7 +522,7 @@ And choose **where** to declare it:
 
 | You want the server… | Declare it in | Note |
 | --- | --- | --- |
-| for **everyone** using Louis, shipped by default | [`settings["mcp.servers"]`](../src/config/settings.py#L96) | needs a commit; same keys as below, plus `"name"` |
+| for **everyone** using Louis, shipped by default | [`settings["mcp.servers"]`](../src/config/settings.py#L98) | needs a commit; same keys as below, plus `"name"` |
 | for **you**, in every project | `~/.config/louis/mcp.json` | not in the repo |
 | for **this project** only | `.mcp.json` at the project root | starts only after `/mcp trust <name>` |
 
@@ -527,6 +558,7 @@ Every key a declaration can have (parsed in [`declared()`](../src/tool/mcp/confi
 | --- | --- |
 | `command`, `args` | The program and its arguments. Run in the project folder. |
 | `env` | Extra environment variables for the server. It gets **nothing else** from Louis' environment except `PATH`, `HOME`, `LANG`… Use `${VAR}` to pass a secret: `{"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"}`. |
+| `env_from` | Environment variables whose value is what a command prints, for the ones `env` doesn't give: `{"GITHUB_PERSONAL_ACCESS_TOKEN": ["gh", "auth", "token"]}`. The command runs with Louis' whole environment, each time the server starts (so never before `/mcp trust`), and what it prints is never logged. If it fails, the server doesn't start, and `/mcp` gives the command's last error line. stdio servers only. |
 | `type`, `url`, `headers` | For HTTP servers (section B). |
 | `risk` | `"safe"`, `"reversible"` or `"irreversible"` for **all** its tools, overriding what the server claims. Or a level per tool, by name with `*`: `{"read_*": "safe", "*": "irreversible"}` (the first name that matches wins; a tool none names keeps what the server says). |
 | `timeout` | Seconds a call of its tools may take, instead of `mcp.timeout` (30). |
@@ -675,6 +707,7 @@ WORDS_SERVER: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 "mcp.servers": [
     {"name": "calc", "command": sys.executable, "args": [CALC_SERVER]},
     {"name": "time", "command": "uvx", "args": ["mcp-server-time"]},
+    {"name": "github", ...},
     {"name": "words", "command": sys.executable, "args": [WORDS_SERVER]},
 ],
 ```
@@ -765,8 +798,9 @@ server's stderr, its logs, every start/stop).
 | `pas de réponse à initialize après 60 s` | first `npx`/`uvx` download is slow, or the server writes nothing | run it once by hand, or raise `mcp.start_timeout` |
 | `réglage invalide : …` / `fichier JSON invalide (ligne N)` | typo in the declaration | fix the key/line named |
 | `la variable X n'est pas définie` | `${X}` without a value | `export X=…` before starting Louis |
+| `gh auth token a échoué (pour …)` | `github` takes the token of `gh`, and nobody is logged in | `gh auth login`, then `/mcp restart github` |
 | `attend ton accord` | a project `.mcp.json` server | read its command in `/mcp`, then `/mcp trust <name>` |
-| tool calls end in `n'a pas répondu … en 30 s` | the tool is slow and sends no progress | give that server a `timeout`, or raise `mcp.timeout` for all ([`settings.py#L110`](../src/config/settings.py#L110)) |
+| tool calls end in `n'a pas répondu … en 30 s` | the tool is slow and sends no progress | give that server a `timeout`, or raise `mcp.timeout` for all ([`settings.py#L117`](../src/config/settings.py#L117)) |
 | `s'est arrêté` | the server crashed | it's restarted on the next call; `/mcp restart <name>` |
 | the model doesn't use the tool | bad description, or too many tools | improve the description, filter with `tools` |
 | `1 outil modifié depuis sa première liste, retenu` | the server changed a tool after you saw it | read it in `/mcp`, then `/mcp trust <name>` |

@@ -7,7 +7,7 @@
 ##
 from logger.logger import log
 from tool.mcp.client import McpClient, McpError
-from tool.mcp.config import Declaration, Trust, HTTP, declarations
+from tool.mcp.config import Declaration, Trust, HTTP, declarations, filled
 from tool.mcp.transport_http import HttpTransport
 from tool.mcp.transport_stdio import StdioTransport
 from tool.mcp.tool_mcp import McpTool, prompt_name, tool_name
@@ -129,8 +129,13 @@ class McpServer:
         if self.invalid or not self.trusted:
             return self
         deadline: float = time.monotonic() + self.__start_timeout
-        self.error, self.tools, self.prompts, self.held = None, [], [], []
-        self.client = McpClient(self.name, self.__transport())
+        self.tools, self.prompts, self.held = [], [], []
+        # What its env_from gives, asked now: a token of the moment, and nothing run before the user trusts it
+        env, self.error = filled(self.env, self.declaration.env_from)
+        if self.error is not None:
+            log.warning(f"[mcp] {self.name}: not started, {self.error}")
+            return self
+        self.client = McpClient(self.name, self.__transport(env))
         try:
             self.client.start(self.__start_timeout, self.log_level)
             specs: list[dict] = self.client.list_tools(max(1.0, deadline - time.monotonic()))
@@ -165,11 +170,11 @@ class McpServer:
             log.warning(f"[mcp] {self.name}: its prompts can not be listed: {e}")
             return []
 
-    def __transport(self):
-        """ How the server is reached: at its address, or a program launched """
+    def __transport(self, env: dict[str, str]):
+        """ How the server is reached: at its address, or a program launched with the env given """
         if self.declaration.transport == HTTP:
             return HttpTransport(self.name, self.declaration.url, self.declaration.headers, self.max_timeout)
-        return StdioTransport(self.name, self.command, self.args, self.env)
+        return StdioTransport(self.name, self.command, self.args, env)
 
     def stop(self) -> "McpServer":
         """ Stop the server, if it was started: its tools are offered no more """

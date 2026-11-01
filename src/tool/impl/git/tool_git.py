@@ -8,6 +8,7 @@ from tool.tool import Tool
 from tool.risk import Risk, NONE, REVERSIBLE, IRREVERSIBLE
 from utils.path import ROOT, resolve_path
 import os
+import re
 import subprocess
 
 # Nobody can answer a prompt from inside a tool: no password, no editor, no pager, no colors
@@ -30,6 +31,8 @@ ALIASES: dict[str, str] = {
 }
 # The git commands left to the user: they can lose work, or end in conflicts a model can not solve
 UNSUPPORTED: tuple[str, ...] = ("merge", "rebase", "reset", "stash", "cherry-pick", "revert", "restore", "clean")
+# The address of a repository of GitHub, by ssh (git@github.com:owner/name.git) or https: its owner and its name
+GITHUB_REMOTE: re.Pattern = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
 
 def run(*args: str, timeout: int = 60) -> tuple[bool, str]:
     """ Run git or gh without a shell: what the model writes is never read by bash """
@@ -41,6 +44,12 @@ def run(*args: str, timeout: int = 60) -> tuple[bool, str]:
     except subprocess.TimeoutExpired:
         return False, f"'{' '.join(args[:3])}' n'a pas répondu en {timeout}s."
     return res.returncode == 0, (res.stdout + res.stderr).strip()
+
+def github_repository() -> str | None:
+    """ The repository of GitHub the project is pushed to, owner/name from its origin: None if it has none """
+    ok, out = run("git", "remote", "get-url", "origin", timeout=5)
+    match: re.Match | None = GITHUB_REMOTE.search(out) if ok else None
+    return f"{match.group(1)}/{match.group(2)}" if match else None
 
 def current_branch() -> str | None:
     """ The branch checked out, None outside a repository or on a detached HEAD """

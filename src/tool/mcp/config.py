@@ -14,10 +14,15 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import subprocess
 import tempfile
 
 # A variable of the environment of Louis in a declaration: ${GITHUB_TOKEN}, or ${PORT:-8080} with a default
 VARIABLE: re.Pattern = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+# Seconds a command of env_from has to print the value of its variable (gh auth token: a few hundredths)
+ENV_FROM_TIMEOUT: float = 10.0
 
 SETTINGS: str = "settings"
 
@@ -52,6 +57,9 @@ class Declaration:
     headers: dict[str, str]         = field(default_factory=dict)
     # Seconds a call of its tools may take, else the setting mcp.timeout
     timeout: float | None           = None
+    # The variables of its env that env does not give, each one what a command prints when the server starts:
+    # {"GITHUB_PERSONAL_ACCESS_TOKEN": ["gh", "auth", "token"]}, the token of the user logged in with gh
+    env_from: dict[str, list[str]]  = field(default_factory=dict)
 
 def expand(value: str) -> str:
     """ The text with the variables it names replaced by their value. Raises KeyError for one that has none """
@@ -71,6 +79,38 @@ def texts(value) -> bool:
 def strings(value) -> bool:
     """ Whether the value is a dict of texts """
     return isinstance(value, dict) and all(isinstance(key, str) and isinstance(item, str) for key, item in value.items())
+
+def commands(value) -> bool:
+    """ Whether the value is a command by name of variable, each one a program and its arguments """
+    return isinstance(value, dict) and all(isinstance(key, str) and texts(item) and item for key, item in value.items())
+
+def filled(env: dict[str, str], env_from: dict[str, list[str]]) -> tuple[dict[str, str], str | None]:
+    """
+        The env of a server, with what the commands of its env_from print for the variables env does not give. Run
+        when the server starts, never when it is declared: a server of the project runs nothing before the user
+        trusts it. The commands get the environment of Louis (gh reads GITHUB_TOKEN there, else its login). What
+        they print is never logged. The error says which one failed, and why
+    """
+    env = dict(env)
+    for name, command in env_from.items():
+        if env.get(name):
+            continue
+        what: str = shlex.join(command)
+        try:
+            done = subprocess.run(command, capture_output=True, text=True, timeout=ENV_FROM_TIMEOUT)
+        except FileNotFoundError:
+            return env, f"la commande {command[0]} est introuvable (elle donne {name})"
+        except subprocess.TimeoutExpired:
+            return env, f"{what} n'a rien donné en {ENV_FROM_TIMEOUT:g} s (pour {name})"
+        except OSError as e:
+            return env, f"{what} ne se lance pas ({e.strerror or e}) (pour {name})"
+        value: str = done.stdout.strip()
+        if done.returncode != 0 or not value:
+            # What it wrote last tells why: gh says it has no token, until the user logs in (gh auth login)
+            lines: list[str] = done.stderr.strip().splitlines()
+            return env, f"{what} a échoué (pour {name}){f' — {lines[-1].strip()}' if lines else ''}"
+        env[name] = value
+    return env, None
 
 def risky(value) -> bool:
     """ Whether the value is a risk a declaration may give: a level, or a level by name of tool """
@@ -93,7 +133,7 @@ def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaratio
         return Declaration("", source, error="réglage invalide : chaque serveur est un dict {name, command, args, env}",
                            project=project)
     name, command = entry.get("name"), entry.get("command")
-    args, env, level = entry.get("args", []), entry.get("env", {}), entry.get("risk")
+    args, env, env_from, level = entry.get("args", []), entry.get("env", {}), entry.get("env_from", {}), entry.get("risk")
     enabled, tools, exclude = entry.get("enabled", True), entry.get("tools"), entry.get("exclude", [])
     url, headers, timeout = entry.get("url"), entry.get("headers", {}), entry.get("timeout")
     # A file of Claude Code says its type; Cursor gives an url alone
@@ -104,7 +144,8 @@ def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaratio
         args if isinstance(args, list) else [], env if isinstance(env, dict) else {}, level if risky(level) else None,
         enabled is not False, tools if texts(tools) else None, exclude if texts(exclude) else [],
         project=project, raw=entry, transport=TRANSPORTS.get(kind, STDIO), url=url if isinstance(url, str) else "",
-        headers=headers if strings(headers) else {}, timeout=float(timeout) if seconds else None
+        headers=headers if strings(headers) else {}, timeout=float(timeout) if seconds else None,
+        env_from=env_from if commands(env_from) else {}
     )
     if not declaration.name.strip():
         declaration.error = "réglage invalide : il lui faut un nom (name)"
@@ -123,6 +164,11 @@ def declared(entry, source: str = SETTINGS, project: bool = False) -> Declaratio
         declaration.error = "réglage invalide : args est une liste de textes"
     elif not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
         declaration.error = "réglage invalide : env est un dict de textes"
+    elif not commands(env_from):
+        declaration.error = ('réglage invalide : env_from donne une commande par variable, une liste de textes '
+                             '({"TOKEN": ["gh", "auth", "token"]})')
+    elif env_from and declaration.transport == HTTP:
+        declaration.error = "réglage invalide : env_from ne sert qu'à un serveur lancé par Louis (stdio)"
     elif level is not None and not risky(level):
         declaration.error = (f"réglage invalide : risk vaut {', '.join(LEVELS)}, ou un niveau par outil "
                              '({"read_*": "safe", "*": "irreversible"})')
